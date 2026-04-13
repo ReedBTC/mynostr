@@ -333,8 +333,8 @@ export default function LoginScreen({ onLogin }) {
 
         {/* Logo / title */}
         <div className="text-center">
-          <img src="/nostrmd.png" alt="NostrMD" className="h-16 mx-auto mb-2" />
-          <p className="mt-2 text-neutral-500 text-sm">Long-form publishing for Nostr</p>
+          <img src="/mynostr.png" alt="MyNostr" className="h-16 mx-auto mb-2" />
+          <p className="mt-2 text-neutral-500 text-sm">Your personal Nostr portal</p>
         </div>
 
         {/* NIP-07 extension login */}
