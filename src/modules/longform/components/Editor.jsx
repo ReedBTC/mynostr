@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from 'react'
 import MDEditor, { commands } from '@uiw/react-md-editor'
+import rehypeSanitize from 'rehype-sanitize'
 import { isSafeUrl, parseDateString, parseFrontmatter, buildFrontmatter, titleToSlug } from '../../../lib/utils.js'
 import { uploadToBlossom } from '../../../lib/blossom.js'
 import { exportEpub } from '../../../lib/epub.js'
@@ -337,6 +338,7 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
             <MDEditor.Markdown
               source={content}
               style={{ backgroundColor: 'transparent', color: 'inherit' }}
+              rehypePlugins={[rehypeSanitize]}
             />
           </div>
         </div>

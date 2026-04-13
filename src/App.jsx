@@ -47,6 +47,10 @@ export default function App() {
   const [activeModule, setActiveModule] = useState('longform')
 
   function handleLogout() {
+    // Clear any persisted drafts before losing the pubkey reference
+    if (user?.pubkey) {
+      try { localStorage.removeItem(`mynostr_draft_${user.pubkey}`) } catch {}
+    }
     setUser(null)
     setActiveModule('longform')
   }

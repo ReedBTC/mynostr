@@ -130,11 +130,26 @@ export default function BoostModal({ user, onClose, readOnly }) {
     }
   }
 
-  function handleCopy() {
-    navigator.clipboard.writeText(invoice).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
+  async function handleCopy() {
+    try {
+      // Clipboard API requires HTTPS or localhost — fails on LAN (192.168.x.x)
+      await navigator.clipboard.writeText(invoice)
+    } catch {
+      try {
+        const el = document.createElement('textarea')
+        el.value = invoice
+        el.style.cssText = 'position:fixed;opacity:0'
+        document.body.appendChild(el)
+        el.focus()
+        el.select()
+        document.execCommand('copy')
+        document.body.removeChild(el)
+      } catch {
+        return // both methods failed
+      }
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   function handleReset() {

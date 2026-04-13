@@ -16,3 +16,4 @@ id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
 # Override with `wrangler secret put RELAYS` for production
 [vars]
 RELAYS = '["wss://relay.damus.io","wss://nos.lol","wss://relay.nostr.band","wss://relay.primal.net"]'
+ALLOWED_ORIGINS = "https://mynostr.net"

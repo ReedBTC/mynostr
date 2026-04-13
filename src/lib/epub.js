@@ -2,11 +2,23 @@ import JSZip from 'jszip'
 import { marked } from 'marked'
 import { titleToSlug, isSafeUrl, parseDateString } from './utils.js'
 
+// Strip dangerous HTML elements and attributes from rendered markdown.
+// Epub readers typically sandbox content, but a compromised epub opened in a
+// WebView-based reader (e.g. some Android readers) could execute scripts.
+function stripUnsafeHtml(html) {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
+    .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
+    .replace(/<embed\b[^>]*\/?>/gi, '')
+    .replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '')
+}
+
 // Convert markdown to XHTML-compatible HTML for epub content
 function mdToXhtml(markdown) {
   const html = marked.parse(markdown || '')
-  // Epub content must be valid XHTML — fix self-closing void elements
-  return html
+  // Sanitize, then fix self-closing void elements for XHTML compliance
+  return stripUnsafeHtml(html)
     .replace(/<br>/gi, '<br/>')
     .replace(/<hr>/gi, '<hr/>')
     .replace(/<img([^>]*?)(?<!\/)>/gi, '<img$1/>')
