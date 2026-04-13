@@ -69,19 +69,32 @@ async function generateCoverBlob(title, author, coverUrl) {
   const ctx = canvas.getContext('2d')
 
   // ── Background ────────────────────────────────────────────────────────────
+  // Fetch the cover image as a blob and create a blob:// URL.
+  // This sidesteps the browser CORS cache-poisoning problem: the preview pane
+  // loads the same URL via a plain <img> (no crossOrigin), which caches the
+  // response without CORS headers. A subsequent canvas drawImage with
+  // crossOrigin='anonymous' against that cached response taints the canvas and
+  // causes toBlob() to fail silently. A blob:// URL is always same-origin, so
+  // the canvas accepts it without any CORS check.
   let usedPhoto = false
+  let blobUrl = null
   if (coverUrl && isSafeUrl(coverUrl)) {
     try {
-      const img = await Promise.race([
-        new Promise((res, rej) => {
-          const i = new Image()
-          i.crossOrigin = 'anonymous'
-          i.onload = () => res(i)
-          i.onerror = rej
-          i.src = coverUrl
-        }),
+      const res = await Promise.race([
+        fetch(coverUrl),
         new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000)),
       ])
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      blobUrl = URL.createObjectURL(blob)
+
+      const img = await new Promise((res, rej) => {
+        const i = new Image()
+        i.onload = () => res(i)
+        i.onerror = rej
+        i.src = blobUrl
+      })
+
       // Cover-fill: scale to fill canvas, crop to centre
       const scale = Math.max(W / img.width, H / img.height)
       const sw = img.width * scale
@@ -89,7 +102,9 @@ async function generateCoverBlob(title, author, coverUrl) {
       ctx.drawImage(img, (W - sw) / 2, (H - sh) / 2, sw, sh)
       usedPhoto = true
     } catch {
-      // CORS or timeout — fall through to gradient
+      // Network error or timeout — fall through to gradient
+    } finally {
+      if (blobUrl) URL.revokeObjectURL(blobUrl)
     }
   }
 
