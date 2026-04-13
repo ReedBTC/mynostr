@@ -33,7 +33,7 @@ import { FALLBACK_RELAYS } from './ndk.js'
 export const PROJECT_OWNER_NPUB = 'npub1v3rlad7z2v5u4hnpy7eh2fe3rtyfcv2exvdfpalek0ql2982fekqt37xu5'
 
 // Hard fallback if kind 0 fetch fails
-export const FALLBACK_LUD16 = 'nostrmd@getalby.com'
+export const FALLBACK_LUD16 = 'mynostrapp@getalby.com'
 
 // Validate that a lud16 looks like a valid lightning address
 const LUD16_RE = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+$/
