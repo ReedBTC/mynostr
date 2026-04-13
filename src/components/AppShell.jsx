@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { MODULES } from '../App.jsx'
 import { truncateNpub } from '../lib/utils.js'
 import { resetNDK } from '../lib/ndk.js'
+import BoostModal from './BoostModal.jsx'
 
 /**
  * AppShell — persistent layout wrapping every module.
@@ -8,6 +10,7 @@ import { resetNDK } from '../lib/ndk.js'
  * Full viewport below the bar is handed to the active module.
  */
 export default function AppShell({ user, activeModule, onModuleChange, onLogout, children }) {
+  const [boostOpen, setBoostOpen] = useState(false)
   const profile = user?.profile
 
   function handleLogout() {
@@ -43,7 +46,7 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
           ))}
         </nav>
 
-        {/* Right: read-only badge · avatar · logout */}
+        {/* Right: read-only badge · avatar · boost · logout */}
         <div className="flex items-center gap-2 shrink-0 pl-2">
           {user?.readOnly && (
             <span className="text-xs text-amber-500 border border-amber-900 rounded px-2 py-0.5">
@@ -63,6 +66,14 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
           </div>
 
           <button
+            onClick={() => setBoostOpen(true)}
+            className="text-xs text-amber-600 hover:text-amber-400 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700"
+            aria-label="Send a lightning boost to support MyNostr"
+          >
+            ⚡
+          </button>
+
+          <button
             onClick={handleLogout}
             className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
             aria-label="Logout"
@@ -71,6 +82,8 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
           </button>
         </div>
       </header>
+
+      {boostOpen && <BoostModal user={user} onClose={() => setBoostOpen(false)} readOnly={!!user?.readOnly} />}
 
       {/* ── Module content ──────────────────────────────────────── */}
       <main className="flex-1 overflow-hidden flex flex-col">

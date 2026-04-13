@@ -186,7 +186,7 @@ export async function publishDonationBoostagram({
     content: message || '',
     tags: [
       ['d', paymentHash],
-      ['app', 'nostrmd', '1.0.0'],
+      ['app', 'mynostr', '1.0.0'],
       ['type', 'donation_boostagram'],
       ['sender', donorNpub],
       ['recipient', recipientLud16],
