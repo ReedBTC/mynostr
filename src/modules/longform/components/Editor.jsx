@@ -124,7 +124,7 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
   function handleExport() {
     const frontmatter = buildFrontmatter(metadata, source)
     const fullContent = frontmatter + content
-    const filename = (titleToSlug(metadata.title) || 'nostrmd-export') + '.md'
+    const filename = (titleToSlug(metadata.title) || 'mynostr-export') + '.md'
     const blob = new Blob([fullContent], { type: 'text/markdown' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

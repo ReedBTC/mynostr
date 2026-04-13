@@ -1,6 +1,6 @@
 import { useRef, useCallback } from 'react'
 
-const DRAFT_KEY_PREFIX = 'nostrmd_draft_'
+const DRAFT_KEY_PREFIX = 'mynostr_draft_'
 const DEBOUNCE_MS = 500
 
 // Persists editor state to localStorage, keyed per pubkey so multiple

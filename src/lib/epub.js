@@ -181,7 +181,7 @@ function contentOpf({ bookId, title, author, description, subjects, lang, date, 
   const creatorTag = author ? `\n    <dc:creator>${esc(author)}</dc:creator>` : ''
   const descTag = description ? `\n    <dc:description>${esc(description)}</dc:description>` : ''
   const subjectTags = subjects.map(s => `\n    <dc:subject>${esc(s)}</dc:subject>`).join('')
-  const publisherTag = '\n    <dc:publisher>NostrMD</dc:publisher>'
+  const publisherTag = '\n    <dc:publisher>MyNostr</dc:publisher>'
   const createdTag = date ? `\n    <meta property="dcterms:created">${esc(date)}</meta>` : ''
   const sourceTag = naddr ? `\n    <dc:source>https://njump.me/${esc(naddr)}</dc:source>` : ''
   const coverMeta = hasCover ? '\n    <meta name="cover" content="cover-image"/>' : ''
@@ -360,7 +360,7 @@ export async function exportEpub(content, metadata, source, author = '', naddr =
   const lang = 'en'
   const date = metadata.publishedAtDate || new Date().toISOString().split('T')[0]
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
-  const slug = titleToSlug(title) || 'nostrmd-export'
+  const slug = titleToSlug(title) || 'mynostr-export'
 
   const bodyHtml = mdToXhtml(content)
 

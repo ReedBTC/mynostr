@@ -168,7 +168,7 @@ export default function LoginScreen({ onLogin }) {
       const ndk = getNDK()
       const signer = NDKNip46Signer.nostrconnect(ndk, 'wss://relay.primal.net', undefined, {
         name: 'MyNostr',
-        url: 'https://nostrmd.xyz',
+        url: 'https://mynostr.net',
       })
       qrSignerRef.current = signer
 

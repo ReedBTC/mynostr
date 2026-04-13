@@ -20,13 +20,13 @@ export default function HelpModal({ onClose }) {
       <div
         className="fixed inset-0 z-30 flex items-center justify-center p-6"
         role="dialog"
-        aria-label="How to use NostrMD"
+        aria-label="How to use MyNostr"
       >
         <div className="bg-neutral-900 border border-neutral-800 rounded-lg w-full max-w-2xl max-h-[80vh] flex flex-col">
 
           {/* Header */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800">
-            <h2 className="text-sm font-semibold text-neutral-200">How to Use NostrMD</h2>
+            <h2 className="text-sm font-semibold text-neutral-200">How to Use MyNostr</h2>
             <button
               onClick={onClose}
               className="text-neutral-500 hover:text-neutral-300 transition-colors text-lg leading-none"
@@ -40,9 +40,9 @@ export default function HelpModal({ onClose }) {
           <div className="overflow-y-auto px-6 py-5 space-y-6 text-sm text-neutral-400 leading-relaxed">
 
             <section className="space-y-2">
-              <h3 className="text-neutral-200 font-semibold">What is NostrMD?</h3>
+              <h3 className="text-neutral-200 font-semibold">What is MyNostr?</h3>
               <p>
-                NostrMD is a single-purpose tool for publishing long-form articles to Nostr (NIP-23 Kind 30023 events).
+                MyNostr is a single-purpose tool for publishing long-form articles to Nostr (NIP-23 Kind 30023 events).
                 It's designed for writers migrating content from other platforms — Substack, Medium, personal blogs — with
                 accurate metadata, original source attribution, and proper backdating.
               </p>
@@ -69,7 +69,7 @@ export default function HelpModal({ onClose }) {
               <h3 className="text-neutral-200 font-semibold">The Editor</h3>
               <p>
                 <span className="text-neutral-300">Upload .md file</span> — click to open a file picker and load a markdown file into the editor.
-                If the file has YAML frontmatter (from a previous NostrMD export), all metadata fields will be auto-populated.
+                If the file has YAML frontmatter (from a previous MyNostr export), all metadata fields will be auto-populated.
               </p>
               <p>
                 <span className="text-neutral-300">Write / Paste</span> — switch to a blank editor to write or paste content directly.
@@ -110,7 +110,7 @@ export default function HelpModal({ onClose }) {
                 which is the date displayed by NIP-23 clients like Habla and Highlighter. Leave blank to use today's date.
               </p>
               <p>
-                When a source name is provided, NostrMD automatically prepends an italicized attribution line to your content before signing:
+                When a source name is provided, MyNostr automatically prepends an italicized attribution line to your content before signing:
                 <span className="block mt-1 italic text-neutral-500 pl-3 border-l border-neutral-700">
                   Originally published at [Platform] on Month Day, Year
                 </span>
@@ -121,7 +121,7 @@ export default function HelpModal({ onClose }) {
               <h3 className="text-neutral-200 font-semibold">Publishing</h3>
               <p>
                 Click <span className="text-neutral-300">Publish to Nostr</span> to sign and broadcast your article.
-                NostrMD reads your Kind 10002 relay list and publishes to your write relays. If none are found, it falls
+                MyNostr reads your Kind 10002 relay list and publishes to your write relays. If none are found, it falls
                 back to a curated set of long-form friendly relays.
               </p>
               <p>
@@ -149,7 +149,7 @@ export default function HelpModal({ onClose }) {
               <p>
                 Use <span className="text-neutral-300">My Articles</span> to load a note, then <span className="text-neutral-300">Export .md</span> to
                 save it locally. The exported file contains all metadata in YAML frontmatter — title, date, tags, source, cover image.
-                Uploading it back into NostrMD restores everything exactly as it was.
+                Uploading it back into MyNostr restores everything exactly as it was.
               </p>
               <p>
                 This gives you a complete local archive of your Nostr long-form content, independent of any relay.

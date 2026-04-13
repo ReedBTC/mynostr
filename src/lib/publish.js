@@ -37,7 +37,7 @@ export async function publishArticle({ content, metadata, source }) {
     ['d', titleToSlug(metadata.title)],
     ['title', metadata.title],
     ['published_at', publishedAt],
-    ['client', 'nostrmd'],
+    ['client', 'mynostr'],
   ]
   if (metadata.summary) tags.push(['summary', metadata.summary])
   if (metadata.image) tags.push(['image', metadata.image])
