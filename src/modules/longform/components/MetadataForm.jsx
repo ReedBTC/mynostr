@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { uploadToBlossom } from '../lib/blossom.js'
+import { uploadToBlossom } from '../../../lib/blossom.js'
 
 export default function MetadataForm({ metadata, onChange, readOnly }) {
   const coverInputRef = useRef(null)

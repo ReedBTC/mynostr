@@ -10,7 +10,7 @@ import {
   generateBurnerKeypair,
   publishDonationBoostagram,
   pollVerify,
-} from '../lib/boostagram.js'
+} from '../../../lib/boostagram.js'
 
 const POLL_INTERVAL_MS = 2500
 const PRESETS = [21, 210, 2100, 21000]

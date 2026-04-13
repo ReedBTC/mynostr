@@ -1,8 +1,8 @@
 import { useRef, useState, useEffect } from 'react'
 import MDEditor, { commands } from '@uiw/react-md-editor'
-import { isSafeUrl, parseDateString, parseFrontmatter, buildFrontmatter, titleToSlug } from '../lib/utils.js'
-import { uploadToBlossom } from '../lib/blossom.js'
-import { exportEpub } from '../lib/epub.js'
+import { isSafeUrl, parseDateString, parseFrontmatter, buildFrontmatter, titleToSlug } from '../../../lib/utils.js'
+import { uploadToBlossom } from '../../../lib/blossom.js'
+import { exportEpub } from '../../../lib/epub.js'
 
 export default function Editor({ content, onChange, activeTab, onTabChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr }) {
   const fileInputRef = useRef(null)

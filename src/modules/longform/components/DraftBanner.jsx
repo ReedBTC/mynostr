@@ -1,4 +1,4 @@
-import { formatDraftAge } from '../lib/useDraft.js'
+import { formatDraftAge } from '../../../lib/useDraft.js'
 
 export default function DraftBanner({ draft, onRestore, onDiscard }) {
   return (

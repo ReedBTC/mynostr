@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
-import { getNDK } from '../lib/ndk.js'
+import { getNDK } from '../../../lib/ndk.js'
 
 // Pulls a single tag value from an event's tag array
 function getTag(event, name) {

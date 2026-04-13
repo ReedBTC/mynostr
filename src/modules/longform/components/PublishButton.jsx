@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { publishArticle } from '../lib/publish.js'
+import { publishArticle } from '../../../lib/publish.js'
 
 // Publish states
 const STATE = {
