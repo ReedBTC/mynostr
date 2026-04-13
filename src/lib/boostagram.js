@@ -30,7 +30,7 @@ import { FALLBACK_RELAYS } from './ndk.js'
 // ─── Project owner constants ────────────────────────────────────────────────
 // TODO: replace with your actual npub (find it in your Nostr client or at njump.me).
 // This is used to fetch your kind 0 profile → lud16 at runtime.
-export const PROJECT_OWNER_NPUB = 'npub1v3rlad7z2v5u4hnpy7eh2fe3rtyfcv2exvdfpalek0ql2982fekqt37xu5'
+export const PROJECT_OWNER_NPUB = 'npub1mp9png4wg4jhvy6qtf3wp0m3fey2qn5z5sq4rlak9r3wg3uatpastcrk6j'
 
 // Hard fallback if kind 0 fetch fails
 export const FALLBACK_LUD16 = 'mynostrapp@getalby.com'
