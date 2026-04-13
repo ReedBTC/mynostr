@@ -1,0 +1,18 @@
+name = "mynostr-scheduler"
+main = "functions/scheduler/index.js"
+compatibility_date = "2024-09-23"
+
+# Cron trigger — fires every minute to publish due scheduled notes
+[triggers]
+crons = ["* * * * *"]
+
+# KV namespace for scheduled notes
+# Run `wrangler kv:namespace create SCHEDULED_NOTES` to provision, then paste the id here
+[[kv_namespaces]]
+binding = "SCHEDULED_NOTES"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Relay list passed to the worker at runtime
+# Override with `wrangler secret put RELAYS` for production
+[vars]
+RELAYS = '["wss://relay.damus.io","wss://nos.lol","wss://relay.nostr.band","wss://relay.primal.net"]'

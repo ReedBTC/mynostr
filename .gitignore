@@ -1,0 +1,38 @@
+# ── Build outputs ──────────────────────────────────────────
+dist/
+.output/
+.vercel/
+.cloudflare/
+
+# ── Dependencies ───────────────────────────────────────────
+node_modules/
+
+# ── Environment / secrets ──────────────────────────────────
+.env
+.env.*
+.dev.vars
+*.local
+
+# ── Claude / AI instruction & planning files ───────────────
+custom-prompt.md
+mynostr_build_plan.md
+task_plan.md
+findings.md
+progress.md
+CLAUDE.md
+.claude/
+
+# ── Editor & OS ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/settings.json
+.idea/
+
+# ── Logs ───────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── Wrangler local state ───────────────────────────────────
+.wrangler/
