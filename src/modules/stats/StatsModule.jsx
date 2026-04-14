@@ -1,11 +1,11 @@
 /**
- * StatsModule — Module 8 (Week 12)
+ * StatsModule — Module 8 (Week 3)
  * Personal Nostr analytics via Primal cache → relay.nostr.band fallback.
  * Zaps sent/received, likes, reposts, comments, note counts by kind.
  * All charts via Recharts with responsive layout and tooltips.
  */
 export default function StatsModule() {
-  return <ComingSoon module="Stats" week="12" description="Your personal Nostr analytics — zaps, likes, reposts, note counts over time. Powered by Primal + relay.nostr.band." />
+  return <ComingSoon module="Stats" week="3" description="Your personal Nostr analytics — zaps, likes, reposts, note counts over time. Powered by Primal + relay.nostr.band." />
 }
 
 function ComingSoon({ module, week, description }) {

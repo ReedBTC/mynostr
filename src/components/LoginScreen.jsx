@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { NDKNip07Signer, NDKPrivateKeySigner, NDKNip46Signer } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { QRCodeSVG } from 'qrcode.react'
-import { getNDK } from '../lib/ndk.js'
+import { getNDK, resetNDK } from '../lib/ndk.js'
 
 export default function LoginScreen({ onLogin }) {
   const [nsecValue, setNsecValue] = useState('')
@@ -72,6 +72,8 @@ export default function LoginScreen({ onLogin }) {
     }
     setLoading(true)
     try {
+      // Reset NDK to clear any stale relay state from the QR flow
+      resetNDK()
       const signer = new NDKNip07Signer()
       const ndk = getNDK()
       ndk.signer = signer
@@ -116,6 +118,7 @@ export default function LoginScreen({ onLogin }) {
     }
     setLoading(true)
     try {
+      resetNDK()
       const decoded = nip19.decode(val)
       const ndk = getNDK()
 
@@ -284,6 +287,7 @@ export default function LoginScreen({ onLogin }) {
     }
     setLoading(true)
     try {
+      resetNDK()
       const ndk = getNDK()
       const signer = NDKNip46Signer.bunker(ndk, token)
 

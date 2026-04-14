@@ -36,14 +36,14 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-2.5 px-4 pt-3 pb-2">
       <h2 className="text-xs font-semibold text-neutral-500 uppercase tracking-widest">
         Article Metadata
       </h2>
 
       {/* Title — required */}
-      <div className="space-y-1">
-        <label htmlFor="meta-title" className="block text-sm text-neutral-400">
+      <div className="space-y-0.5">
+        <label htmlFor="meta-title" className="block text-xs text-neutral-400">
           Title <span className="text-red-500">*</span>
         </label>
         <input
@@ -53,14 +53,14 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
           onChange={e => update('title', e.target.value)}
           placeholder="Article title"
           disabled={readOnly}
-          className="w-full px-3 py-2 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full px-2.5 py-1.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
           aria-required="true"
         />
       </div>
 
       {/* Summary / subtitle */}
-      <div className="space-y-1">
-        <label htmlFor="meta-summary" className="block text-sm text-neutral-400">
+      <div className="space-y-0.5">
+        <label htmlFor="meta-summary" className="block text-xs text-neutral-400">
           Summary / Subtitle
         </label>
         <input
@@ -70,16 +70,16 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
           onChange={e => update('summary', e.target.value)}
           placeholder="Optional subtitle or summary"
           disabled={readOnly}
-          className="w-full px-3 py-2 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full px-2.5 py-1.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
         />
       </div>
 
       {/* Cover image URL + upload */}
-      <div className="space-y-1">
-        <label htmlFor="meta-image" className="block text-sm text-neutral-400">
+      <div className="space-y-0.5">
+        <label htmlFor="meta-image" className="block text-xs text-neutral-400">
           Cover Image
         </label>
-        <div className="flex gap-2">
+        <div className="flex gap-1.5">
           <input
             id="meta-image"
             type="url"
@@ -87,13 +87,13 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
             onChange={e => update('image', e.target.value)}
             placeholder="https://..."
             disabled={readOnly}
-            className="flex-1 min-w-0 px-3 py-2 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm font-mono disabled:opacity-40 disabled:cursor-not-allowed"
+            className="flex-1 min-w-0 px-2.5 py-1.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm font-mono disabled:opacity-40 disabled:cursor-not-allowed"
           />
           <button
             type="button"
             onClick={() => coverInputRef.current?.click()}
             disabled={uploading || readOnly}
-            className="px-3 py-2 rounded border border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+            className="px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
             aria-label="Upload cover image to Blossom"
           >
             {uploading ? 'Uploading…' : 'Upload'}
@@ -113,8 +113,8 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
       </div>
 
       {/* Tags / hashtags */}
-      <div className="space-y-1">
-        <label htmlFor="meta-tags" className="block text-sm text-neutral-400">
+      <div className="space-y-0.5">
+        <label htmlFor="meta-tags" className="block text-xs text-neutral-400">
           Tags
         </label>
         <input
@@ -124,9 +124,35 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
           onChange={e => handleTagsInput(e.target.value)}
           placeholder="writing, nostr, essay"
           disabled={readOnly}
-          className="w-full px-3 py-2 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+          className="w-full px-2.5 py-1.5 rounded bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 text-sm disabled:opacity-40 disabled:cursor-not-allowed"
         />
         <p className="text-xs text-neutral-600">Comma-separated. # is optional.</p>
+      </div>
+
+      {/* Recipe toggle */}
+      <div className="pt-1 border-t border-neutral-800">
+        <label className={`flex items-center gap-2 ${readOnly ? 'cursor-not-allowed opacity-40' : 'cursor-pointer'}`}>
+          <input
+            type="checkbox"
+            disabled={readOnly}
+            checked={metadata.tags?.includes('recipe') || false}
+            onChange={e => {
+              const base = (metadata.tags || []).filter(t => t !== 'recipe')
+              const tags = e.target.checked ? [...base, 'recipe'] : base
+              const rawBase = (metadata.tagsRaw || '')
+                .split(',').map(t => t.trim().replace(/^#/, '')).filter(t => t && t !== 'recipe')
+              const tagsRaw = e.target.checked ? [...rawBase, 'recipe'].join(', ') : rawBase.join(', ')
+              onChange({ ...metadata, tags, tagsRaw })
+            }}
+            className="accent-purple-600 w-3.5 h-3.5 opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity"
+          />
+          <span className="text-xs text-neutral-400">This is a recipe</span>
+        </label>
+        {(metadata.tags?.includes('recipe')) && (
+          <p className="text-xs text-neutral-600 mt-1 ml-5.5">
+            Adds <code className="text-neutral-500">#recipe</code> tag — shows up in the Recipes feed.
+          </p>
+        )}
       </div>
 
     </div>

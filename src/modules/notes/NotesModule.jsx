@@ -1,10 +1,10 @@
 /**
- * NotesModule — Module 2 (Week 3–4)
- * Kind 1 short note publisher with character count, hashtags, @mentions,
- * content warnings, image attach, reply threading, and preview pane.
+ * NotesModule — Module 2 (Week 2)
+ * Kind 1 short note publisher with scheduling, editing, image attach,
+ * reply threading, and preview pane.
  */
 export default function NotesModule() {
-  return <ComingSoon module="Notes" week="3–4" description="Fast kind 1 note publisher. Character count, hashtag autocomplete, @mentions, image attach, and preview before publishing." />
+  return <ComingSoon module="Notes" week="2" description="Kind 1 note publisher with scheduling, editing, image attach, reply threading, and preview before publishing." />
 }
 
 function ComingSoon({ module, week, description }) {

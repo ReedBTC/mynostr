@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { MODULES } from '../App.jsx'
-import { truncateNpub } from '../lib/utils.js'
+import { truncateNpub, isSafeUrl } from '../lib/utils.js'
 import { resetNDK } from '../lib/ndk.js'
 import BoostModal from './BoostModal.jsx'
+import HelpModal from '../modules/longform/components/HelpModal.jsx'
 
 /**
  * AppShell — persistent layout wrapping every module.
@@ -11,6 +12,7 @@ import BoostModal from './BoostModal.jsx'
  */
 export default function AppShell({ user, activeModule, onModuleChange, onLogout, children }) {
   const [boostOpen, setBoostOpen] = useState(false)
+  const [helpOpen,  setHelpOpen]  = useState(false)
   const profile = user?.profile
 
   function handleLogout() {
@@ -68,10 +70,20 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
           <button
             onClick={() => setBoostOpen(true)}
             className="text-xs text-amber-600 hover:text-amber-400 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700"
-            aria-label="Send a lightning boost to support MyNostr"
+            aria-label="Donate to support MyNostr"
           >
-            ⚡
+            ⚡ Donate
           </button>
+
+          {activeModule === 'longform' && (
+            <button
+              onClick={() => setHelpOpen(true)}
+              className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
+              aria-label="Help"
+            >
+              ?
+            </button>
+          )}
 
           <button
             onClick={handleLogout}
@@ -84,6 +96,7 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
       </header>
 
       {boostOpen && <BoostModal user={user} onClose={() => setBoostOpen(false)} readOnly={!!user?.readOnly} />}
+      {helpOpen  && <HelpModal onClose={() => setHelpOpen(false)} />}
 
       {/* ── Module content ──────────────────────────────────────── */}
       <main className="flex-1 overflow-hidden flex flex-col">
@@ -114,7 +127,7 @@ function Tab({ mod, active, onClick }) {
 
 /** User avatar circle */
 function UserAvatar({ profile }) {
-  if (profile?.image) {
+  if (profile?.image && isSafeUrl(profile.image)) {
     return (
       <img
         src={profile.image}

@@ -1,11 +1,9 @@
 /**
- * EventsModule — Module 3 (Week 5–6)
- * Kind 31923 event publisher with scheduler (Cloudflare Worker backend).
- * Supports title, description, datetimes, location, geohash, capacity,
- * future publish time, and pre-event kind 1 reminder notes.
+ * EventsModule — Module 3 (Week 1)
+ * Kind 31923 event publisher, editor, and manager with .ics exporting.
  */
 export default function EventsModule() {
-  return <ComingSoon module="Events" week="5–6" description="Kind 31923 event publisher with Cloudflare-backed scheduler. Set a future publish time and send pre-event reminders automatically." />
+  return <ComingSoon module="Events" week="1" description="Kind 31923 event publisher, editor, and manager. Includes .ics exporting." />
 }
 
 function ComingSoon({ module, week, description }) {

@@ -78,7 +78,7 @@ export function buildFrontmatter(metadata, source) {
 // Checks if a URL uses a safe protocol (http/https only).
 // Blocks javascript:, data:, vbscript:, etc.
 export function isSafeUrl(url) {
-  if (!url) return true
+  if (!url) return false
   try {
     const parsed = new URL(url)
     return ['http:', 'https:'].includes(parsed.protocol)

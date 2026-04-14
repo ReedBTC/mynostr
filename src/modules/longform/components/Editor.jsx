@@ -5,7 +5,7 @@ import { isSafeUrl, parseDateString, parseFrontmatter, buildFrontmatter, titleTo
 import { uploadToBlossom } from '../../../lib/blossom.js'
 import { exportEpub } from '../../../lib/epub.js'
 
-export default function Editor({ content, onChange, activeTab, onTabChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr }) {
+export default function Editor({ content, onChange, activeTab, onTabChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr, onOpenDrawer, onOpenDraftDrawer }) {
   const fileInputRef = useRef(null)
   const imageInputRef = useRef(null)
   const [clearPending, setClearPending] = useState(false)
@@ -143,7 +143,7 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
       const author = user?.profile?.displayName || user?.profile?.name || ''
       await exportEpub(content, metadata, source, author, naddr)
     } catch (err) {
-      console.error('epub export failed:', err)
+      if (import.meta.env.DEV) console.error('epub export failed:', err)
       setEpubError(err.message || 'Export failed.')
       setTimeout(() => setEpubError(''), 5000)
     } finally {
@@ -182,6 +182,30 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
           aria-pressed={activeTab === 'write'}
         >
           Write / Paste
+        </button>
+        {onOpenDrawer && (
+          <button
+            onClick={onOpenDrawer}
+            disabled={readOnly}
+            className={`px-4 py-1.5 rounded text-sm transition-colors ${
+              readOnly
+                ? 'text-neutral-700 cursor-not-allowed'
+                : 'text-neutral-500 hover:text-neutral-300'
+            }`}
+          >
+            My Articles
+          </button>
+        )}
+        <button
+          onClick={onOpenDraftDrawer}
+          disabled={readOnly || !onOpenDraftDrawer}
+          className={`px-4 py-1.5 rounded text-sm transition-colors ${
+            readOnly || !onOpenDraftDrawer
+              ? 'text-neutral-700 cursor-not-allowed'
+              : 'text-neutral-500 hover:text-neutral-300'
+          }`}
+        >
+          My Drafts
         </button>
         <input
           ref={fileInputRef}

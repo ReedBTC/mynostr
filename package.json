@@ -12,6 +12,7 @@
     "@nostr-dev-kit/ndk": "^2",
     "@tanstack/react-virtual": "^3",
     "@uiw/react-md-editor": "^4",
+    "dompurify": "^3.4.0",
     "jszip": "^3.10.1",
     "marked": "^18.0.0",
     "nostr-tools": "^2",

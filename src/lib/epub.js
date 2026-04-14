@@ -1,24 +1,20 @@
 import JSZip from 'jszip'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { titleToSlug, isSafeUrl, parseDateString } from './utils.js'
 
-// Strip dangerous HTML elements and attributes from rendered markdown.
-// Epub readers typically sandbox content, but a compromised epub opened in a
-// WebView-based reader (e.g. some Android readers) could execute scripts.
-function stripUnsafeHtml(html) {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
-    .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
-    .replace(/<embed\b[^>]*\/?>/gi, '')
-    .replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '')
-}
-
-// Convert markdown to XHTML-compatible HTML for epub content
+// Convert markdown to sanitized XHTML-compatible HTML for epub content.
+// DOMPurify handles all XSS vectors (script injection, event handlers,
+// dangerous elements) far more reliably than regex stripping.
 function mdToXhtml(markdown) {
   const html = marked.parse(markdown || '')
-  // Sanitize, then fix self-closing void elements for XHTML compliance
-  return stripUnsafeHtml(html)
+  const clean = DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select', 'button'],
+    FORBID_ATTR: ['style'],
+  })
+  // Fix self-closing void elements for XHTML compliance
+  return clean
     .replace(/<br>/gi, '<br/>')
     .replace(/<hr>/gi, '<hr/>')
     .replace(/<img([^>]*?)(?<!\/)>/gi, '<img$1/>')
@@ -364,47 +360,212 @@ function uuid4() {
   })
 }
 
-export async function exportEpub(content, metadata, source, author = '', naddr = '') {
-  const zip = new JSZip()
+// ─── Chapterized epub helpers ─────────────────────────────────────────────────
 
-  const bookId = uuid4()
-  const title = metadata.title || 'Untitled'
-  const lang = 'en'
-  const date = metadata.publishedAtDate || new Date().toISOString().split('T')[0]
+function chapterizedOpf({ bookId, title, lang, date, modified, hasCover, chapters }) {
+  const chapterManifest = chapters.map((_, i) =>
+    `\n    <item id="ch${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
+  ).join('')
+  const chapterSpine = chapters.map((_, i) =>
+    `\n    <itemref idref="ch${i + 1}"/>`
+  ).join('')
+  const coverMeta      = hasCover ? '\n    <meta name="cover" content="cover-image"/>' : ''
+  const coverManifest  = hasCover
+    ? '\n    <item id="cover-image" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>\n    <item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>'
+    : ''
+  const coverSpine = hasCover ? '\n    <itemref idref="cover-page" linear="no"/>' : ''
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">urn:uuid:${bookId}</dc:identifier>
+    <dc:title>${esc(title)}</dc:title>
+    <dc:publisher>MyNostr</dc:publisher>
+    <dc:language>${esc(lang)}</dc:language>
+    <dc:date>${esc(date)}</dc:date>
+    <meta property="dcterms:modified">${esc(modified)}</meta>${coverMeta}
+  </metadata>
+  <manifest>
+    <item id="nav"   href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx"   href="toc.ncx"   media-type="application/x-dtbncx+xml"/>
+    <item id="style" href="style.css"  media-type="text/css"/>${coverManifest}${chapterManifest}
+  </manifest>
+  <spine toc="ncx">${coverSpine}${chapterSpine}
+  </spine>
+</package>`
+}
+
+function chapterizedNcx({ bookId, title, chapters }) {
+  const navPoints = chapters.map((ch, i) => `
+    <navPoint id="np${i + 1}" playOrder="${i + 1}">
+      <navLabel><text>${esc(ch.title || `Chapter ${i + 1}`)}</text></navLabel>
+      <content src="ch${i + 1}.xhtml"/>
+    </navPoint>`).join('')
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<ncx version="2005-1" xmlns="http://www.daisy.org/z3986/2005/ncx/">
+  <head>
+    <meta name="dtb:uid" content="urn:uuid:${bookId}"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>${esc(title)}</text></docTitle>
+  <navMap>${navPoints}
+  </navMap>
+</ncx>`
+}
+
+function chapterizedNav({ title, chapters }) {
+  const items = chapters.map((ch, i) =>
+    `\n      <li><a href="ch${i + 1}.xhtml">${esc(ch.title || `Chapter ${i + 1}`)}</a></li>`
+  ).join('')
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><title>${esc(title)}</title></head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <ol>${items}
+    </ol>
+  </nav>
+</body>
+</html>`
+}
+
+/**
+ * Export multiple articles as a single chapterized .epub file.
+ * @param {Array<{content: string, metadata: object, author: string}>} articles
+ * @param {string} collectionTitle
+ */
+export async function exportChapterizedEpub(articles, collectionTitle = 'Reading List') {
+  const zip      = new JSZip()
+  const bookId   = uuid4()
+  const lang     = 'en'
+  const date     = new Date().toISOString().split('T')[0]
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
-  const slug = titleToSlug(title) || 'mynostr-export'
+  const slug     = titleToSlug(collectionTitle) || 'mynostr-collection'
 
-  const bodyHtml = mdToXhtml(content)
+  const chapters = articles.map(a => ({
+    title:    a.metadata?.title || 'Untitled',
+    author:   a.author || '',
+    content:  a.content || '',
+    metadata: a.metadata || {},
+  }))
 
-  // Generate cover image — always produced (photo bg or gradient fallback)
-  const coverUrl = metadata.image && isSafeUrl(metadata.image) ? metadata.image : null
-  const coverBlob = await generateCoverBlob(title, author, coverUrl)
+  // Gradient-only cover (collection has no single hero image)
+  const coverBlob = await generateCoverBlob(
+    collectionTitle,
+    `${chapters.length} article${chapters.length !== 1 ? 's' : ''}`,
+    null
+  )
   const hasCover = !!coverBlob
 
-  // mimetype must be first and stored uncompressed — epub spec requirement
+  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
+  zip.file('META-INF/container.xml', containerXml())
+  zip.file('OEBPS/content.opf', chapterizedOpf({ bookId, title: collectionTitle, lang, date, modified, hasCover, chapters }))
+  zip.file('OEBPS/toc.ncx',    chapterizedNcx({ bookId, title: collectionTitle, chapters }))
+  zip.file('OEBPS/nav.xhtml',  chapterizedNav({ title: collectionTitle, chapters }))
+  zip.file('OEBPS/style.css',  styleCss())
+
+  if (hasCover) {
+    zip.file('OEBPS/cover.jpg',   coverBlob)
+    zip.file('OEBPS/cover.xhtml', coverXhtml())
+  }
+
+  for (let i = 0; i < chapters.length; i++) {
+    const ch = chapters[i]
+    zip.file(`OEBPS/ch${i + 1}.xhtml`, contentXhtml({
+      title:    ch.title,
+      metadata: ch.metadata,
+      source:   null,
+      bodyHtml: mdToXhtml(ch.content),
+    }))
+  }
+
+  const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  a.download = slug + '.epub'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * Export multiple articles as a single chapterized Markdown file.
+ * @param {Array<{content: string, metadata: object, author: string}>} articles
+ * @param {string} collectionTitle
+ */
+export function exportChapterizedMd(articles, collectionTitle = 'Reading List') {
+  const count  = articles.length
+  const header = `# ${collectionTitle}\n\n*${count} article${count !== 1 ? 's' : ''} — exported from MyNostr*`
+
+  const chapters = articles.map(a => {
+    const title  = a.metadata?.title || 'Untitled'
+    const author = a.author  ? `*by ${a.author}*`              : ''
+    const date   = a.metadata?.publishedAtDate ? `*${a.metadata.publishedAtDate}*` : ''
+    const meta   = [author, date].filter(Boolean).join(' · ')
+    return `\n---\n\n# ${title}\n${meta ? `\n${meta}\n` : ''}\n${a.content || ''}`
+  })
+
+  const text = [header, ...chapters].join('\n')
+  const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' })
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
+  a.download = (titleToSlug(collectionTitle) || 'mynostr-collection') + '.md'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ─── Single-article export ────────────────────────────────────────────────────
+
+/**
+ * Build a single-article epub and return the Blob without triggering a download.
+ * Useful when bundling multiple individual epubs into a ZIP.
+ */
+export async function buildEpubBlob(content, metadata, source, author = '', naddr = '') {
+  const zip = new JSZip()
+
+  const bookId   = uuid4()
+  const title    = metadata.title || 'Untitled'
+  const lang     = 'en'
+  const date     = metadata.publishedAtDate || new Date().toISOString().split('T')[0]
+  const modified = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+
+  const bodyHtml = mdToXhtml(content)
+  const coverUrl = metadata.image && isSafeUrl(metadata.image) ? metadata.image : null
+  const coverBlob = await generateCoverBlob(title, author, coverUrl)
+  const hasCover  = !!coverBlob
+
   zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
   zip.file('META-INF/container.xml', containerXml())
   zip.file('OEBPS/content.opf', contentOpf({
     bookId, title, author,
     description: metadata.summary || '',
-    subjects: metadata.tags || [],
+    subjects:    metadata.tags    || [],
     lang, date, modified, hasCover, naddr,
   }))
-  zip.file('OEBPS/toc.ncx', tocNcx({ bookId, title }))
-  zip.file('OEBPS/nav.xhtml', navXhtml({ title }))
-  zip.file('OEBPS/style.css', styleCss())
+  zip.file('OEBPS/toc.ncx',      tocNcx({ bookId, title }))
+  zip.file('OEBPS/nav.xhtml',    navXhtml({ title }))
+  zip.file('OEBPS/style.css',    styleCss())
   zip.file('OEBPS/content.xhtml', contentXhtml({ title, metadata, source, bodyHtml }))
 
   if (hasCover) {
-    zip.file('OEBPS/cover.jpg', coverBlob)
+    zip.file('OEBPS/cover.jpg',   coverBlob)
     zip.file('OEBPS/cover.xhtml', coverXhtml())
   }
 
-  const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' })
+  return await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' })
+}
 
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
+export async function exportEpub(content, metadata, source, author = '', naddr = '') {
+  const blob = await buildEpubBlob(content, metadata, source, author, naddr)
+  const slug = titleToSlug(metadata.title || 'Untitled') || 'mynostr-export'
+  const url  = URL.createObjectURL(blob)
+  const a    = document.createElement('a')
+  a.href     = url
   a.download = slug + '.epub'
   a.click()
   URL.revokeObjectURL(url)

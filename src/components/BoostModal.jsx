@@ -11,6 +11,7 @@ import {
   publishDonationBoostagram,
   pollVerify,
 } from '../lib/boostagram.js'
+import { isSafeUrl } from '../lib/utils.js'
 
 const POLL_INTERVAL_MS = 2500
 const PRESETS = [21, 210, 2100, 21000]
@@ -227,7 +228,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
                           : !anonymous ? 'bg-neutral-700 text-neutral-100' : 'bg-neutral-800 text-neutral-500 hover:text-neutral-300'
                       }`}
                     >
-                      {profile?.image && (
+                      {profile?.image && isSafeUrl(profile.image) && (
                         <img src={profile.image} alt="" className="w-4 h-4 rounded-full object-cover" onError={e => { e.target.style.display = 'none' }} />
                       )}
                       <span className="truncate max-w-[140px]">

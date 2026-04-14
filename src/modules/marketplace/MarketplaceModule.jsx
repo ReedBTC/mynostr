@@ -1,11 +1,9 @@
 /**
- * MarketplaceModule — Module 5 (Week 8)
- * NIP-15 kind 30402 listing publisher.
- * Title, description, price, condition, category tags, up to 5 images,
- * shipping options, contact method, and available/sold status toggle.
+ * MarketplaceModule — Module 5 (Weeks 1–2)
+ * NIP-15 kind 30402 listing publisher and manager.
  */
 export default function MarketplaceModule() {
-  return <ComingSoon module="Marketplace" week="8" description="Publish NIP-15 kind 30402 listings. Price in sats, USD, or EUR. Up to 5 images. Mark items as available or sold." />
+  return <ComingSoon module="Marketplace" week="1–2" description="Publish and manage NIP-15 kind 30402 marketplace listings. Price in sats, USD, or EUR. Up to 5 images. Mark items as available or sold." />
 }
 
 function ComingSoon({ module, week, description }) {

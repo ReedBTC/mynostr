@@ -87,3 +87,54 @@ export async function publishArticle({ content, metadata, source }) {
 
   return { nevent, naddr, relays }
 }
+
+/**
+ * Constructs and publishes a NIP-23 Kind 31023 draft event.
+ * Same structure as publishArticle but uses kind 31023.
+ */
+export async function publishDraft({ content, metadata, source }) {
+  const ndk = getNDK()
+
+  let finalContent = content
+  if (source.name) {
+    const publishedAtUnix = metadata.publishedAtDate
+      ? toUnixTimestamp(parseDateString(metadata.publishedAtDate))
+      : null
+    const attribution = buildAttributionLine(source.name, source.url, publishedAtUnix)
+    finalContent = attribution + content
+  }
+
+  const createdAt = Math.floor(Date.now() / 1000)
+
+  const tags = [
+    ['d', titleToSlug(metadata.title)],
+    ['title', metadata.title],
+    ['client', 'mynostr'],
+  ]
+  if (metadata.publishedAtDate) {
+    tags.push(['published_at', String(toUnixTimestamp(parseDateString(metadata.publishedAtDate)))])
+  }
+  if (metadata.summary) tags.push(['summary', metadata.summary])
+  if (metadata.image) tags.push(['image', metadata.image])
+  metadata.tags?.forEach(t => { if (t) tags.push(['t', t]) })
+
+  const event = new NDKEvent(ndk)
+  event.kind = 31023
+  event.content = finalContent
+  event.created_at = createdAt
+  event.tags = tags
+
+  let relayUrls = FALLBACK_RELAYS
+  try {
+    const relayList = await ndk.activeUser?.relayList()
+    const writeRelays = relayList?.writeRelayUrls
+    if (writeRelays?.length) relayUrls = writeRelays
+  } catch {}
+
+  await event.sign()
+  const publishedTo = await event.publish()
+  const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
+  const relays = confirmedRelays.length ? confirmedRelays : relayUrls
+
+  return { relays }
+}

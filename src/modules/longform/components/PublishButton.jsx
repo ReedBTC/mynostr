@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { publishArticle } from '../../../lib/publish.js'
+import { publishArticle, publishDraft } from '../../../lib/publish.js'
 
 // Publish states
 const STATE = {
@@ -11,18 +11,24 @@ const STATE = {
 
 export default function PublishButton({ content, metadata, source, user, onPublishAnother, onPublishSuccess, readOnly }) {
   const [state, setState] = useState(STATE.IDLE)
+  const [draftState, setDraftState] = useState(STATE.IDLE)
   const [result, setResult] = useState(null) // { nevent, relays }
   const [error, setError] = useState('')
+  const [draftError, setDraftError] = useState('')
   const [copied, setCopied] = useState(false)
   const publishingRef = useRef(false)
+  const draftPublishingRef = useRef(false)
 
-  // Reset success/error state when the user changes content or metadata,
-  // so stale results from a previous publish don't linger
+  // Reset success/error state when the user changes content or metadata
   useEffect(() => {
     if (state === STATE.SUCCESS || state === STATE.ERROR) {
       setState(STATE.IDLE)
       setResult(null)
       setError('')
+    }
+    if (draftState === STATE.SUCCESS || draftState === STATE.ERROR) {
+      setDraftState(STATE.IDLE)
+      setDraftError('')
     }
   }, [content, metadata.title])
 
@@ -44,6 +50,23 @@ export default function PublishButton({ content, metadata, source, user, onPubli
       setState(STATE.ERROR)
     } finally {
       publishingRef.current = false
+    }
+  }
+
+  async function handlePublishAsDraft() {
+    if (!canPublish || draftPublishingRef.current) return
+    draftPublishingRef.current = true
+    setDraftState(STATE.PUBLISHING)
+    setDraftError('')
+    try {
+      await publishDraft({ content, metadata, source })
+      setDraftState(STATE.SUCCESS)
+      setTimeout(() => setDraftState(STATE.IDLE), 3000)
+    } catch (err) {
+      setDraftError(err.message || 'Draft publish failed.')
+      setDraftState(STATE.ERROR)
+    } finally {
+      draftPublishingRef.current = false
     }
   }
 
@@ -81,13 +104,14 @@ export default function PublishButton({ content, metadata, source, user, onPubli
 
   if (readOnly) {
     return (
-      <button
-        disabled
-        className="w-full py-3 px-4 rounded bg-neutral-800 opacity-40 cursor-not-allowed text-neutral-500 font-medium text-sm border border-neutral-700"
-        aria-label="Publishing unavailable in read-only mode"
-      >
-        Publish to Nostr
-      </button>
+      <div className="flex gap-2">
+        <button disabled className="flex-1 py-2 px-3 rounded bg-neutral-800 opacity-40 cursor-not-allowed text-neutral-500 font-medium text-xs border border-neutral-700">
+          Publish
+        </button>
+        <button disabled className="flex-1 py-2 px-3 rounded bg-neutral-800 opacity-40 cursor-not-allowed text-neutral-500 font-medium text-xs border border-neutral-700">
+          Publish Draft
+        </button>
+      </div>
     )
   }
 
@@ -152,14 +176,32 @@ export default function PublishButton({ content, metadata, source, user, onPubli
         <p className="text-xs text-red-400" role="alert">{error}</p>
       )}
 
-      <button
-        onClick={handlePublish}
-        disabled={!canPublish || state === STATE.PUBLISHING}
-        className="w-full py-3 px-4 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-sm transition-colors"
-        aria-label="Sign and publish article to Nostr"
-      >
-        {state === STATE.PUBLISHING ? 'Publishing...' : 'Publish to Nostr'}
-      </button>
+      {/* Draft status messages */}
+      {draftState === STATE.SUCCESS && (
+        <p className="text-xs text-green-400">Draft published to relays.</p>
+      )}
+      {draftState === STATE.ERROR && draftError && (
+        <p className="text-xs text-red-400" role="alert">{draftError}</p>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          onClick={handlePublish}
+          disabled={!canPublish || state === STATE.PUBLISHING}
+          className="flex-1 py-2 px-3 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-xs transition-colors"
+          aria-label="Sign and publish article to Nostr"
+        >
+          {state === STATE.PUBLISHING ? 'Publishing...' : 'Publish'}
+        </button>
+        <button
+          onClick={handlePublishAsDraft}
+          disabled={!canPublish || draftState === STATE.PUBLISHING}
+          className="flex-1 py-2 px-3 rounded border border-neutral-700 hover:border-neutral-500 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-400 hover:text-neutral-200 font-medium text-xs transition-colors"
+          aria-label="Publish as draft (kind 31023)"
+        >
+          {draftState === STATE.PUBLISHING ? 'Publishing...' : 'Publish Draft'}
+        </button>
+      </div>
     </div>
   )
 }
