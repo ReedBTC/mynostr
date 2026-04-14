@@ -4,7 +4,7 @@ import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { exportEpub } from '../../../../lib/epub.js'
-import { titleToSlug, isSafeUrl } from '../../../../lib/utils.js'
+import { titleToSlug, isSafeUrl, buildFrontmatter } from '../../../../lib/utils.js'
 import { getNDK } from '../../../../lib/ndk.js'
 import ZapModal from './ZapModal.jsx'
 
@@ -70,6 +70,7 @@ export default function ArticleReadPanel({
 
   // For bookmark articles that have empty content — fetch on mount
   const [displayContent,   setDisplayContent]   = useState(article.content || '')
+  const [resolvedTags,     setResolvedTags]     = useState(null)
   const [fetchingContent,  setFetchingContent]  = useState(false)
 
   // Close three-dots menu on outside click
@@ -119,15 +120,19 @@ export default function ArticleReadPanel({
         ])
         const event = Array.from(events)[0]
         if (event?.content) setDisplayContent(event.content)
+        if (event?.tags) setResolvedTags(event.tags)
       } catch { /* leave empty */ } finally {
         setFetchingContent(false)
       }
     })()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const title      = getTag(article, 'title') || 'Untitled'
-  const image      = getTag(article, 'image')
-  const summary    = getTag(article, 'summary')
+  // Use resolved tags from relay fetch when available (bookmark items have sparse synthetic tags)
+  const effectiveTags = resolvedTags || article.tags
+  const effectiveArticle = resolvedTags ? { ...article, tags: resolvedTags } : article
+  const title      = getTag(effectiveArticle, 'title') || getTag(article, 'title') || 'Untitled'
+  const image      = getTag(effectiveArticle, 'image') || getTag(article, 'image')
+  const summary    = getTag(effectiveArticle, 'summary')
   const dTag       = getTag(article, 'd')
   const aTag       = article._aTag || `30023:${article.pubkey}:${dTag}`
   const rawName = article._authorName
@@ -144,7 +149,7 @@ export default function ArticleReadPanel({
   async function handleAddToList(listId) {
     setAdding(true)
     try {
-      const tTags = article.tags?.filter(t => t[0] === 't').map(t => t[1]) || []
+      const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
       await onAddToList(listId, { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags })
       setSavedToList(listId)
     } finally {
@@ -210,13 +215,20 @@ export default function ArticleReadPanel({
   // ── Export .md ──────────────────────────────────────────────────────────────
   function handleExportMd() {
     const slug   = titleToSlug(title) || 'article'
-    const header = [
-      `# ${title}`,
-      authorName ? `\n*by ${authorName}*` : '',
-      date       ? `*${date}*`            : '',
-      '',
-    ].filter(Boolean).join('\n')
-    const blob = new Blob([header + '\n' + displayContent], { type: 'text/markdown;charset=utf-8' })
+    const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
+    const publishedAtUnix = getTag(effectiveArticle, 'published_at')
+    const publishedAtDate = publishedAtUnix
+      ? new Date(parseInt(publishedAtUnix) * 1000).toISOString().split('T')[0]
+      : ''
+    const metadata = {
+      title,
+      summary: summary || '',
+      publishedAtDate,
+      image: image || '',
+      tags: tTags,
+    }
+    const frontmatter = buildFrontmatter(metadata, null)
+    const blob = new Blob([frontmatter + displayContent], { type: 'text/markdown;charset=utf-8' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
     a.href = url; a.download = slug + '.md'; a.click()
@@ -320,7 +332,7 @@ export default function ArticleReadPanel({
           publishedAtDate: article.created_at
             ? new Date(article.created_at * 1000).toISOString().split('T')[0]
             : '',
-          tags: article.tags?.filter(t => t[0] === 't').map(t => t[1]) || [],
+          tags: effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || [],
         },
         null, authorName, ''
       )
@@ -526,12 +538,12 @@ export default function ArticleReadPanel({
                   <>
                     <MenuDivider />
                     <MenuItem onClick={() => {
-                      const tTags = article.tags?.filter(t => t[0] === 't').map(t => t[1]) || []
-                      const publishedAtUnix = getTag(article, 'published_at')
+                      const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
+                      const publishedAtUnix = getTag(effectiveArticle, 'published_at')
                       const publishedAtDate = publishedAtUnix
                         ? new Date(parseInt(publishedAtUnix) * 1000).toISOString().split('T')[0]
                         : ''
-                      const naddr = getNaddr(article) || ''
+                      const naddr = getNaddr(effectiveArticle) || ''
                       onLoadInEditor({
                         content: displayContent || article.content,
                         metadata: {

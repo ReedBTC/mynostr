@@ -3,7 +3,6 @@ import Editor from './components/Editor.jsx'
 import MetadataForm from './components/MetadataForm.jsx'
 import OriginalSourceField from './components/OriginalSourceField.jsx'
 import PublishButton from './components/PublishButton.jsx'
-import ArticleDrawer from './components/ArticleDrawer.jsx'
 import DraftDrawer from './components/DraftDrawer.jsx'
 import DiscoverView from './components/discover/DiscoverView.jsx'
 import { useDraft, formatDraftAge } from '../../lib/useDraft.js'
@@ -32,8 +31,8 @@ export default function LongformModule({ user }) {
   const [editorTab,  setEditorTab]  = useState('upload')
   const [metadata,   setMetadata]   = useState(defaultMetadata())
   const [source,     setSource]     = useState(defaultSource())
-  const [drawerOpen, setDrawerOpen]       = useState(false)
   const [draftDrawerOpen, setDraftDrawerOpen] = useState(false)
+  const [requestedAuthor, setRequestedAuthor] = useState(null)
   const [naddr,      setNaddr]      = useState('')
 
   // Draft restore chip (replaces the old disruptive banner)
@@ -96,6 +95,17 @@ export default function LongformModule({ user }) {
     setDraftSavedAt(null)
   }
 
+  // ── View my articles on Authors tab ────────────────────────────────────────
+  function handleViewMyArticles() {
+    const profile = user?.profile || {}
+    setRequestedAuthor({
+      pubkey: user.pubkey,
+      name: profile.displayName || profile.name || '',
+      picture: profile.picture || '',
+    })
+    setModuleTab('search')
+  }
+
   const isWriteActive = moduleTab === 'write'
 
   return (
@@ -131,13 +141,6 @@ export default function LongformModule({ user }) {
       </div>
 
       {/* ── Modals ── */}
-      {drawerOpen && (
-        <ArticleDrawer
-          user={user}
-          onLoad={handleLoadArticle}
-          onClose={() => setDrawerOpen(false)}
-        />
-      )}
       {draftDrawerOpen && (
         <DraftDrawer
           user={user}
@@ -153,26 +156,6 @@ export default function LongformModule({ user }) {
       >
         {/* Editor column */}
         <div className="flex-1 flex flex-col overflow-hidden border-r border-neutral-800">
-          {/* Toolbar */}
-          <div className="flex items-center gap-2 px-4 py-2 border-b border-neutral-800">
-
-            {/* Draft chip — only visible when content was auto-restored from storage */}
-            {draftLoaded && !readOnly && (
-              <div className="ml-auto flex items-center gap-1.5 text-xs text-neutral-600 border border-neutral-800 rounded px-2 py-1">
-                <span>
-                  Draft{draftSavedAt ? ` · ${formatDraftAge(draftSavedAt)}` : ''}
-                </span>
-                <button
-                  onClick={handleDiscardDraft}
-                  className="hover:text-red-500 transition-colors leading-none"
-                  aria-label="Discard draft"
-                >
-                  ×
-                </button>
-              </div>
-            )}
-          </div>
-
           <Editor
             content={content}
             onChange={setContent}
@@ -185,13 +168,25 @@ export default function LongformModule({ user }) {
             readOnly={readOnly}
             user={user}
             naddr={naddr}
-            onOpenDrawer={readOnly ? null : () => setDrawerOpen(true)}
+            onViewMyArticles={readOnly ? null : handleViewMyArticles}
             onOpenDraftDrawer={readOnly ? null : () => setDraftDrawerOpen(true)}
           />
         </div>
 
         {/* Sidebar */}
         <div className="w-80 flex flex-col overflow-y-auto bg-neutral-950">
+          {draftLoaded && !readOnly && (
+            <div className="flex items-center justify-between px-4 py-2 border-b border-neutral-800">
+              <span className="text-xs text-neutral-600">
+                Draft{draftSavedAt ? ` · ${formatDraftAge(draftSavedAt)}` : ''}
+              </span>
+              <button
+                onClick={handleDiscardDraft}
+                className="text-xs text-neutral-700 hover:text-red-500 transition-colors"
+                aria-label="Discard draft"
+              >discard</button>
+            </div>
+          )}
           <MetadataForm metadata={metadata} onChange={setMetadata} readOnly={readOnly} />
           <OriginalSourceField
             source={source}
@@ -233,6 +228,8 @@ export default function LongformModule({ user }) {
           feedMode={moduleTab === 'write' ? 'collection' : moduleTab}
           onFeedModeChange={setModuleTab}
           readOnly={readOnly}
+          requestedAuthor={requestedAuthor}
+          onRequestedAuthorConsumed={() => setRequestedAuthor(null)}
         />
       </div>
     </div>

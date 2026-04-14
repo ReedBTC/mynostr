@@ -3,8 +3,7 @@ import JSZip from 'jszip'
 import { nip19 } from 'nostr-tools'
 import { getNDK } from '../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../lib/epub.js'
-import { isSafeUrl } from '../../../lib/utils.js'
-import { titleToSlug } from '../../../lib/utils.js'
+import { isSafeUrl, titleToSlug, buildFrontmatter } from '../../../lib/utils.js'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -130,7 +129,7 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
         for (let i = 0; i < resolved.length; i++) {
           const a    = resolved[i]
           const name = titleToSlug(a.metadata.title) || `article-${i + 1}`
-          zip.file(name + '.md', `# ${a.metadata.title}\n\n${a.content}`)
+          zip.file(name + '.md', buildFrontmatter(a.metadata, null) + a.content)
         }
         triggerDownload(await zip.generateAsync({ type: 'blob' }), slug + '-md.zip')
       } else if (format === 'epub' && combined) {

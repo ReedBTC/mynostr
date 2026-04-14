@@ -39,7 +39,7 @@ function saveLastArticleId(pubkey, mode, articleId) {
   } catch {}
 }
 
-export default function DiscoverView({ user, lists, addArticle, createList, removeArticle, moveArticle, deleteList, renameList, reorderLists, onLoadInEditor, feedMode, onFeedModeChange, readOnly }) {
+export default function DiscoverView({ user, lists, addArticle, createList, removeArticle, moveArticle, deleteList, renameList, reorderLists, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
 
   // ── Selection / filter ────────────────────────────────────────────────────────
   const [selected,    setSelectedRaw]    = useState(null)
@@ -67,6 +67,13 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
 
   // ── Persist last author to localStorage ─────────────────────────────────────
   useEffect(() => { saveLastAuthor(pubkey, authorFilter) }, [authorFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Accept externally-requested author (e.g. "My Articles" from Write tab) ─
+  useEffect(() => {
+    if (!requestedAuthor) return
+    setAuthorFilter(requestedAuthor)
+    onRequestedAuthorConsumed?.()
+  }, [requestedAuthor]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Restore last collection article on mount / when lists change ───────────
   const collectionRestoredRef = useRef(false)
@@ -288,29 +295,28 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
       {/* ── Toolbar ── */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-neutral-800 flex-shrink-0">
         {feedMode === 'search' ? (
-          authorFilter ? (
-            <>
-              <div className="flex items-center gap-2 flex-1 min-w-0">
+          <>
+            {authorFilter && (
+              <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
                 {authorFilter.picture && isSafeUrl(authorFilter.picture) && (
                   <img src={authorFilter.picture} alt=""
                     className="w-5 h-5 rounded-full flex-shrink-0 object-cover"
                     onError={e => { e.target.style.display = 'none' }} />
                 )}
-                <span className="text-xs text-purple-300 truncate">{authorFilter.name}</span>
+                <span className="text-xs text-purple-300 truncate max-w-[120px]">{authorFilter.name}</span>
                 <span className="text-xs text-neutral-700">
                   · {searchLoading ? 'loading…' : `${searchResults.length} article${searchResults.length !== 1 ? 's' : ''}`}
                 </span>
+                <button onClick={handleClearAuthor}
+                  className="text-xs text-neutral-600 hover:text-neutral-400 flex-shrink-0 transition-colors">
+                  ✕
+                </button>
               </div>
-              <button onClick={handleClearAuthor}
-                className="text-xs text-neutral-600 hover:text-neutral-400 flex-shrink-0 transition-colors">
-                ✕ clear
-              </button>
-            </>
-          ) : (
+            )}
             <div className="flex-1">
               <AuthorSearch onSelectAuthor={setAuthorFilter} expanded />
             </div>
-          )
+          </>
         ) : (
           <>
             <input type="text" value={titleQuery}
@@ -345,6 +351,25 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                     onCreateList={createList}
                     onClearSelection={() => setSearchCheckedIds(new Set())}
                   />
+                )}
+                {displayArticles.length > 0 && (
+                  <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
+                    <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={displayArticles.length > 0 && displayArticles.every(a => searchCheckedIds.has(a.id))}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setSearchCheckedIds(new Set(displayArticles.map(a => a.id)))
+                          } else {
+                            setSearchCheckedIds(new Set())
+                          }
+                        }}
+                        className="accent-purple-600 opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity"
+                      />
+                      Select all
+                    </label>
+                  </div>
                 )}
                 <ArticleFeed
                   articles={displayArticles}
@@ -385,6 +410,25 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                 onRemoveArticle={removeArticle}
                 onClearSelection={() => setCheckedIds(new Set())}
               />
+            )}
+            {displayArticles.length > 0 && (
+              <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
+                <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={displayArticles.length > 0 && displayArticles.every(a => checkedIds.has(a.id))}
+                    onChange={e => {
+                      if (e.target.checked) {
+                        setCheckedIds(new Set(displayArticles.map(a => a.id)))
+                      } else {
+                        setCheckedIds(new Set())
+                      }
+                    }}
+                    className="accent-purple-600 opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity"
+                  />
+                  Select all
+                </label>
+              </div>
             )}
             <BookmarksPanel
               lists={lists}

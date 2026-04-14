@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { nip19 } from 'nostr-tools'
 import { exportEpub } from '../../../../lib/epub.js'
-import { titleToSlug, isSafeUrl } from '../../../../lib/utils.js'
+import { titleToSlug, isSafeUrl, buildFrontmatter } from '../../../../lib/utils.js'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -69,13 +69,20 @@ export default function ArticleFeedItem({
 
   function handleExportMd() {
     const slug   = titleToSlug(title) || 'article'
-    const header = [
-      `# ${title}`,
-      authorName ? `\n*by ${authorName}*` : '',
-      date       ? `*${date}*`            : '',
-      '',
-    ].filter(Boolean).join('\n')
-    const blob = new Blob([header + '\n' + (article.content || '')], { type: 'text/markdown;charset=utf-8' })
+    const tTags = article.tags?.filter(t => t[0] === 't').map(t => t[1]) || []
+    const publishedAtUnix = getTag(article, 'published_at')
+    const publishedAtDate = publishedAtUnix
+      ? new Date(parseInt(publishedAtUnix) * 1000).toISOString().split('T')[0]
+      : ''
+    const metadata = {
+      title,
+      summary: summary || '',
+      publishedAtDate,
+      image: image || '',
+      tags: tTags,
+    }
+    const frontmatter = buildFrontmatter(metadata, null)
+    const blob = new Blob([frontmatter + (article.content || '')], { type: 'text/markdown;charset=utf-8' })
     const url  = URL.createObjectURL(blob)
     const a    = document.createElement('a')
     a.href = url; a.download = slug + '.md'; a.click()

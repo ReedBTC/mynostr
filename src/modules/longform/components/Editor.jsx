@@ -5,7 +5,7 @@ import { isSafeUrl, parseDateString, parseFrontmatter, buildFrontmatter, titleTo
 import { uploadToBlossom } from '../../../lib/blossom.js'
 import { exportEpub } from '../../../lib/epub.js'
 
-export default function Editor({ content, onChange, activeTab, onTabChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr, onOpenDrawer, onOpenDraftDrawer }) {
+export default function Editor({ content, onChange, activeTab, onTabChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr, onViewMyArticles, onOpenDraftDrawer }) {
   const fileInputRef = useRef(null)
   const imageInputRef = useRef(null)
   const [clearPending, setClearPending] = useState(false)
@@ -153,8 +153,9 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
 
   return (
     <div className="flex flex-col h-full" data-color-mode="dark">
-      {/* Tab switcher */}
+      {/* Toolbar */}
       <div className="flex items-center gap-1 px-4 pt-4 pb-2 border-b border-neutral-800">
+        {/* Left group: Upload, Write/Paste, My Drafts */}
         <button
           onClick={() => { onTabChange('upload'); fileInputRef.current?.click() }}
           disabled={readOnly}
@@ -167,7 +168,7 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
           }`}
           aria-pressed={activeTab === 'upload'}
         >
-          Upload .md file
+          Upload .md
         </button>
         <button
           onClick={() => onTabChange('write')}
@@ -183,19 +184,6 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
         >
           Write / Paste
         </button>
-        {onOpenDrawer && (
-          <button
-            onClick={onOpenDrawer}
-            disabled={readOnly}
-            className={`px-4 py-1.5 rounded text-sm transition-colors ${
-              readOnly
-                ? 'text-neutral-700 cursor-not-allowed'
-                : 'text-neutral-500 hover:text-neutral-300'
-            }`}
-          >
-            My Articles
-          </button>
-        )}
         <button
           onClick={onOpenDraftDrawer}
           disabled={readOnly || !onOpenDraftDrawer}
@@ -216,42 +204,52 @@ export default function Editor({ content, onChange, activeTab, onTabChange, meta
           aria-hidden="true"
         />
 
-        {/* Export always shown in read-only when there's content; Clear hidden in read-only */}
-        {(content || metadata?.title) && (
-          <div className="ml-auto flex items-center gap-1">
+        {/* Right group: My Articles, exports, clear */}
+        <div className="ml-auto flex items-center gap-1">
+          {onViewMyArticles && (
             <button
-              onClick={handleExport}
+              onClick={onViewMyArticles}
               className="px-3 py-1.5 text-sm rounded border border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 transition-colors"
-              aria-label="Export as markdown file with frontmatter"
             >
-              Export .md
+              My Articles
             </button>
-            <button
-              onClick={handleEpubExport}
-              disabled={epubExporting}
-              className="px-3 py-1.5 text-sm rounded border border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              aria-label="Export as epub for ereaders"
-            >
-              {epubExporting ? 'Exporting…' : 'Export .epub'}
-            </button>
-            {epubError && (
-              <span className="text-xs text-red-400 ml-1">{epubError}</span>
-            )}
-            {!readOnly && (
+          )}
+          {(content || metadata?.title) && (
+            <>
               <button
-                onClick={handleClearClick}
-                className={`px-3 py-1.5 text-sm rounded border transition-colors ${
-                  clearPending
-                    ? 'border-red-800 text-red-400 hover:bg-red-950'
-                    : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                }`}
-                aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
+                onClick={handleExport}
+                className="px-3 py-1.5 text-sm rounded border border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 transition-colors"
+                aria-label="Export as markdown file with frontmatter"
               >
-                {clearPending ? 'Sure?' : 'Clear'}
+                Export .md
               </button>
-            )}
-          </div>
-        )}
+              <button
+                onClick={handleEpubExport}
+                disabled={epubExporting}
+                className="px-3 py-1.5 text-sm rounded border border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label="Export as epub for ereaders"
+              >
+                {epubExporting ? 'Exporting…' : 'Export .epub'}
+              </button>
+              {epubError && (
+                <span className="text-xs text-red-400 ml-1">{epubError}</span>
+              )}
+            </>
+          )}
+          {!readOnly && (content || metadata?.title) && (
+            <button
+              onClick={handleClearClick}
+              className={`px-3 py-1.5 text-sm rounded border transition-colors ${
+                clearPending
+                  ? 'border-red-800 text-red-400 hover:bg-red-950'
+                  : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
+              }`}
+              aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
+            >
+              {clearPending ? 'Sure?' : 'Clear'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Editor + preview split */}
