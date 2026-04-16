@@ -11,7 +11,7 @@ const StatsModule      = lazy(() => import('./modules/stats/StatsModule.jsx'))
 
 /** All modules in display order. id must match the lazy import above. */
 export const MODULES = [
-  { id: 'notes',        label: 'Notes',        icon: '📝',  status: 'soon',    description: 'Kind 1 short notes' },
+  { id: 'notes',        label: 'Notes',        icon: '📝',  status: 'live',    description: 'Kind 1 short notes' },
   { id: 'longform',     label: 'Long Form',    icon: '✍️',  status: 'live',    description: 'Kind 30023 articles' },
   { id: 'events',       label: 'Events',       icon: '📅',  status: 'soon',    description: 'Kind 31923 events' },
   { id: 'marketplace',  label: 'Marketplace',  icon: '🛒',  status: 'soon',    description: 'Kind 30402 listings' },
@@ -29,7 +29,7 @@ const MODULE_COMPONENTS = {
 
 export default function App() {
   const [user, setUser]           = useState(null)
-  const [activeModule, setActiveModule] = useState('longform')
+  const [activeModule, setActiveModule] = useState('notes')
 
   function handleLogout() {
     // Clear any persisted drafts before losing the pubkey reference
@@ -37,7 +37,7 @@ export default function App() {
       try { localStorage.removeItem(`mynostr_draft_${user.pubkey}`) } catch {}
     }
     setUser(null)
-    setActiveModule('longform')
+    setActiveModule('notes')
   }
 
   if (!user) {

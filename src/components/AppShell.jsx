@@ -70,9 +70,9 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
           <button
             onClick={() => setBoostOpen(true)}
             className="text-xs text-amber-600 hover:text-amber-400 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700"
-            aria-label="Donate to support MyNostr"
+            aria-label="Boost MyNostr"
           >
-            ⚡ Donate
+            ⚡ Boost
           </button>
 
           {activeModule === 'longform' && (

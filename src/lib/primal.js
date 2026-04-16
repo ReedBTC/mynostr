@@ -285,6 +285,25 @@ export async function searchArticles(queryStr, until = null, limit = 25) {
   }
 }
 
+/**
+ * Fetch profiles for a list of pubkeys (hex).
+ * Returns a Map<pubkey, { pubkey, name, display_name, picture, ... }>.
+ */
+export async function fetchProfiles(pubkeys) {
+  if (!pubkeys?.length) return new Map()
+  const unique = [...new Set(pubkeys)]
+  try {
+    const events = await query('user_infos', { pubkeys: unique }, 5000)
+    const profiles = new Map()
+    for (const ev of events) {
+      if (ev.kind === 0) profiles.set(ev.pubkey, parseProfile(ev))
+    }
+    return profiles
+  } catch {
+    return new Map()
+  }
+}
+
 /** Gracefully close the singleton WebSocket (e.g. on logout). */
 export function closePrimalSocket() {
   try { ws?.close() } catch {}
