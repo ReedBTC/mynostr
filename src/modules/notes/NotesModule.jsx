@@ -180,18 +180,35 @@ export default function NotesModule({ user }) {
 
     try {
       let eventId = null
+      let relayHints = []
       const bare = val.replace(/^nostr:/, '')
       const decoded = nip19.decode(bare)
       if (decoded.type === 'note') {
         eventId = decoded.data
       } else if (decoded.type === 'nevent') {
         eventId = decoded.data.id
+        relayHints = decoded.data.relays || []
       } else {
         throw new Error('Expected a note1 or nevent1 identifier')
       }
 
       const ndk = getNDK()
-      const event = await ndk.fetchEvent({ ids: [eventId] })
+      for (const r of relayHints) {
+        if (typeof r === 'string' && r.startsWith('wss://')) {
+          try { ndk.addExplicitRelay(r) } catch {}
+        }
+      }
+
+      const waitStart = Date.now()
+      while (!ndk.pool.connectedRelays().length && Date.now() - waitStart < 3000) {
+        await new Promise(r => setTimeout(r, 100))
+      }
+
+      let event = await ndk.fetchEvent({ ids: [eventId] })
+      if (!event) {
+        await new Promise(r => setTimeout(r, 2000))
+        event = await ndk.fetchEvent({ ids: [eventId] })
+      }
       if (!event) throw new Error('Note not found on connected relays')
       if (event.kind !== 1) throw new Error(`Expected kind 1, got kind ${event.kind}`)
 
