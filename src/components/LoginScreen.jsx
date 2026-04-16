@@ -3,17 +3,7 @@ import { NDKNip07Signer, NDKPrivateKeySigner, NDKNip46Signer } from '@nostr-dev-
 import { nip19 } from 'nostr-tools'
 import { QRCodeSVG } from 'qrcode.react'
 import { getNDK, resetNDK } from '../lib/ndk.js'
-
-function useIsMobile() {
-  const [mobile, setMobile] = useState(() => window.innerWidth < 768)
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 767px)')
-    const handler = (e) => setMobile(e.matches)
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
-  }, [])
-  return mobile
-}
+import { useIsMobile } from '../hooks/useIsMobile.js'
 
 export default function LoginScreen({ onLogin }) {
   const isMobile = useIsMobile()

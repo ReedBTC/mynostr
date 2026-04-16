@@ -14,6 +14,7 @@ import { extractTags, mergeTags, validateKind1Event } from '../../lib/noteParser
 import { publishNote } from '../../lib/publishNote.js'
 import { getNDK } from '../../lib/ndk.js'
 import { uploadToBlossom } from '../../lib/blossom.js'
+import { useIsMobile } from '../../hooks/useIsMobile.js'
 
 // Compact default heights — phone-like proportions
 const TEXTAREA_MIN_H = 100
@@ -21,7 +22,9 @@ const PREVIEW_COLLAPSED_H = 200
 
 export default function NotesModule({ user }) {
   const readOnly = !!user?.readOnly
+  const isMobile = useIsMobile()
   const fileRef = useRef(null)
+  const [idCopied, setIdCopied] = useState(false)
 
   // Core state
   const [content, setContent] = useState('')
@@ -352,40 +355,43 @@ export default function NotesModule({ user }) {
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => fileRef.current?.click()}
-              className="flex items-center gap-1.5 px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors text-xs text-neutral-400"
+              className="flex items-center gap-1.5 px-2.5 py-2 sm:py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors text-xs text-neutral-400"
               title="Load a kind 1 event from a JSON file"
+              aria-label="Load a kind 1 event from a JSON file"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 sm:w-3.5 sm:h-3.5">
                 <path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.636l2.955 3.129a.75.75 0 0 0 1.09-1.03l-4.25-4.5a.75.75 0 0 0-1.09 0l-4.25 4.5a.75.75 0 1 0 1.09 1.03L9.25 4.636v8.614Z" />
                 <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
               </svg>
-              JSON
+              <span className="hidden sm:inline">JSON</span>
             </button>
             <button
               onClick={handleExportJson}
               disabled={!content.trim()}
-              className="flex items-center gap-1.5 px-2.5 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors text-xs text-neutral-400 disabled:opacity-30 disabled:pointer-events-none"
+              className="flex items-center gap-1.5 px-2.5 py-2 sm:py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors text-xs text-neutral-400 disabled:opacity-30 disabled:pointer-events-none"
               title="Export note as JSON file"
+              aria-label="Export note as JSON file"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 sm:w-3.5 sm:h-3.5">
                 <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" />
                 <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
               </svg>
-              Export
+              <span className="hidden sm:inline">Export</span>
             </button>
             <button
               onClick={() => { setShowImportId(v => !v); setImportError('') }}
-              className={`flex items-center gap-1.5 px-2.5 py-1 border rounded-lg transition-colors text-xs ${
+              className={`flex items-center gap-1.5 px-2.5 py-2 sm:py-1 border rounded-lg transition-colors text-xs ${
                 showImportId
                   ? 'bg-purple-900/40 text-purple-300 border-purple-800'
                   : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-400 border-neutral-700'
               }`}
               title="Import note by ID (note1 or nevent1)"
+              aria-label="Import note by ID"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 sm:w-3.5 sm:h-3.5">
                 <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM2 9a7 7 0 1 1 12.452 4.391l3.328 3.329a.75.75 0 1 1-1.06 1.06l-3.329-3.328A7 7 0 0 1 2 9Z" clipRule="evenodd" />
               </svg>
-              ID
+              <span className="hidden sm:inline">ID</span>
             </button>
           </div>
         </div>
@@ -425,7 +431,22 @@ export default function NotesModule({ user }) {
             <p className="text-green-400 font-medium text-sm mb-2">Published!</p>
             <div className="space-y-1.5">
               <div>
-                <span className="text-[10px] text-neutral-500">note ID:</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-neutral-500">note ID:</span>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(publishResult.noteId)
+                        setIdCopied(true)
+                        setTimeout(() => setIdCopied(false), 2000)
+                      } catch {}
+                    }}
+                    className="text-[10px] text-neutral-400 hover:text-neutral-200 border border-neutral-700 hover:border-neutral-500 rounded px-2 py-1 sm:py-0.5 transition-colors"
+                    aria-label="Copy note ID"
+                  >
+                    {idCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
                 <code className="text-[10px] text-green-300 bg-neutral-900 px-1.5 py-0.5 rounded break-all block mt-0.5">
                   {publishResult.noteId}
                 </code>
@@ -473,7 +494,8 @@ export default function NotesModule({ user }) {
                 className="w-full bg-transparent border border-neutral-700 rounded-lg p-3 text-[15px] text-transparent caret-neutral-100 placeholder:text-neutral-600 leading-relaxed focus:border-purple-600 focus:outline-none overflow-hidden resize-none font-sans relative z-10"
                 style={{ minHeight: TEXTAREA_MIN_H, height: TEXTAREA_MIN_H }}
                 placeholder="What do you want to say?"
-                autoFocus
+                autoComplete="off"
+                autoFocus={!isMobile}
               />
               <MentionAutocomplete
                 textareaRef={textareaRef}
@@ -501,7 +523,7 @@ export default function NotesModule({ user }) {
               <button
                 onClick={() => imageInputRef.current?.click()}
                 disabled={imageUploading || readOnly}
-                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700 transition-colors disabled:opacity-50"
+                className="flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700 transition-colors disabled:opacity-50"
                 title="Upload image"
               >
                 {imageUploading ? (
@@ -517,7 +539,7 @@ export default function NotesModule({ user }) {
               {/* Zap splits */}
               <button
                 onClick={() => setShowAdvanced(v => !v)}
-                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors ${
+                className={`flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs transition-colors ${
                   showAdvanced
                     ? 'bg-yellow-900/40 text-yellow-300 border border-yellow-800'
                     : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700'
@@ -560,7 +582,7 @@ export default function NotesModule({ user }) {
                 <button
                   onClick={handlePublish}
                   disabled={publishing || !content.trim()}
-                  className="w-full py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors"
+                  className="w-full py-3 sm:py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors"
                 >
                   {publishing ? 'Publishing...' : 'PUBLISH'}
                 </button>
@@ -606,7 +628,7 @@ export default function NotesModule({ user }) {
                     <div className="w-full h-12 bg-gradient-to-t from-neutral-950/90 to-transparent" />
                     <button
                       onClick={() => setPreviewExpanded(true)}
-                      className="absolute bottom-2 px-3 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-full text-[10px] text-neutral-300 transition-colors"
+                      className="absolute bottom-2 px-4 py-1.5 sm:px-3 sm:py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-full text-xs sm:text-[10px] text-neutral-300 transition-colors"
                     >
                       Show more
                     </button>
