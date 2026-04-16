@@ -12,7 +12,7 @@
  * Env bindings required (set in wrangler.toml):
  *   SCHEDULED_NOTES   — KV namespace binding
  *   RELAYS            — JSON array string of relay URLs to publish to (var or secret)
- *   ALLOWED_ORIGINS   — comma-separated allowed CORS origins (var), e.g. "https://mynostr.net"
+ *   ALLOWED_ORIGINS   — comma-separated allowed CORS origins (var), e.g. "https://mynostr.app"
  *
  * TODO: implement relay publish logic in handleCron once nostr-tools is bundled
  * into the worker. Stub currently logs due events only.

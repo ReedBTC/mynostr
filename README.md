@@ -2,7 +2,7 @@
 
 A personal Nostr portal for publishing, managing, and analyzing your own content across every Nostr event kind. Unlike feed-first clients, MyNostr treats your data as the product.
 
-**Live at [mynostr.net](https://mynostr.net)**
+**Live at [mynostr.app](https://mynostr.app)**
 
 ## What it does
 
