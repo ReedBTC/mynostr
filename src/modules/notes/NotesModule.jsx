@@ -3,7 +3,7 @@
  * Kind 1 short note composer with live preview below.
  * Phone-width layout even on desktop — notes are mobile content.
  */
-import { useState, useCallback, useMemo, useRef, useLayoutEffect } from 'react'
+import { useState, useCallback, useMemo, useRef, useLayoutEffect, useEffect } from 'react'
 import ZapSplitsSection from './components/NoteEditor.jsx'
 import NotePreview from './components/NotePreview.jsx'
 import MentionAutocomplete from './components/MentionAutocomplete.jsx'
@@ -29,6 +29,8 @@ export default function NotesModule({ user }) {
   // Core state
   const [content, setContent] = useState('')
   const [zapSplits, setZapSplits] = useState([])
+  // undefined = auto (catch remainder); number = explicit user pct
+  const [userZapPct, setUserZapPct] = useState(undefined)
   const [manualTags, setManualTags] = useState([])
 
   // UI state
@@ -51,6 +53,24 @@ export default function NotesModule({ user }) {
   const [importLoading, setImportLoading] = useState(false)
   const [importError, setImportError] = useState('')
   const importInputRef = useRef(null)
+  const [clearPending, setClearPending] = useState(false)
+  const clearTimerRef = useRef(null)
+
+  // Auto-cancel the clear-confirm state after 3s if user doesn't follow through
+  useEffect(() => {
+    if (clearPending) {
+      clearTimerRef.current = setTimeout(() => setClearPending(false), 3000)
+    }
+    return () => clearTimeout(clearTimerRef.current)
+  }, [clearPending])
+
+  // Resize textarea to fit content whenever it changes (covers programmatic sets like JSON import)
+  useLayoutEffect(() => {
+    const ta = textareaRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = Math.max(ta.scrollHeight, TEXTAREA_MIN_H) + 'px'
+  }, [content])
 
   // Check if preview content overflows (also re-check when images/media load)
   const checkOverflow = useCallback(() => {
@@ -106,24 +126,50 @@ export default function NotesModule({ user }) {
     setContent(loadedContent)
     setPublishResult(null)
     setPublishError(null)
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current
-      if (ta) { ta.style.height = 'auto'; ta.style.height = Math.max(ta.scrollHeight, TEXTAREA_MIN_H) + 'px' }
-    })
 
     const tags = eventObj.tags || []
-    const rawZaps = tags.filter(t => t[0] === 'zap' && t[1] && t[1] !== user?.pubkey)
-    const totalWeight = rawZaps.reduce((sum, t) => sum + (Number(t[3]) || 1), 0)
-    setZapSplits(rawZaps.map(t => ({
-      pubkey: t[1],
-      relay: t[2] || '',
-      pct: totalWeight > 0 ? Math.round(((Number(t[3]) || 1) / totalWeight) * 100) : Math.round(100 / rawZaps.length),
-    })))
+    // Normalize all zap weights together (including user's own), then split user out.
+    // Preserves the original proportions from the JSON — if the author gave themselves 0,
+    // we respect that instead of auto-injecting a remainder.
+    const userHex = (user?.pubkey || '').toLowerCase()
+    // Accept hex (any case) or npub/nprofile in the tag's pubkey slot.
+    const toHex = (v) => {
+      if (typeof v !== 'string') return ''
+      const s = v.trim()
+      if (/^[0-9a-fA-F]{64}$/.test(s)) return s.toLowerCase()
+      try {
+        const d = nip19.decode(s)
+        if (d.type === 'npub') return d.data.toLowerCase()
+        if (d.type === 'nprofile') return (d.data.pubkey || '').toLowerCase()
+      } catch {}
+      return ''
+    }
+
+    const allZaps = tags
+      .filter(t => t[0] === 'zap' && t[1])
+      .map(t => ({ hex: toHex(t[1]), relay: t[2] || '', weight: Number(t[3]) || 1 }))
+      .filter(t => t.hex)
+    const totalWeight = allZaps.reduce((sum, t) => sum + t.weight, 0)
+
+    let importedUserPct
+    const others = []
+    for (const t of allZaps) {
+      const pct = totalWeight > 0 ? Math.round((t.weight / totalWeight) * 100) : 0
+      if (userHex && t.hex === userHex) {
+        importedUserPct = pct
+      } else {
+        others.push({ pubkey: t.hex, relay: t.relay, pct })
+      }
+    }
+    setZapSplits(others)
+    // If the original had any zap tags but didn't include the user, explicitly set user to 0
+    // so we don't auto-inject them as the remainder.
+    setUserZapPct(importedUserPct != null ? importedUserPct : (allZaps.length > 0 ? 0 : undefined))
 
     const autoTagTypes = new Set(['p', 't', 'e', 'a', 'zap', 'client'])
     setManualTags(tags.filter(t => !autoTagTypes.has(t[0])))
 
-    if (rawZaps.length > 0) setShowAdvanced(true)
+    if (allZaps.length > 0) setShowAdvanced(true)
   }, [user?.pubkey])
 
   // Load event from JSON file
@@ -164,14 +210,26 @@ export default function NotesModule({ user }) {
   const handleClear = useCallback(() => {
     setContent('')
     setZapSplits([])
+    setUserZapPct(undefined)
     setManualTags([])
     setPublishResult(null)
     setPublishError(null)
     setUploadError(null)
     setShowAdvanced(false)
     setPreviewExpanded(false)
+    setShowImportId(false)
+    setImportError('')
+    setClearPending(false)
     mentionsMap.current.clear()
   }, [])
+
+  const handleClearClick = useCallback(() => {
+    if (!clearPending) { setClearPending(true); return }
+    handleClear()
+  }, [clearPending, handleClear])
+
+  // Show the Clear button only when there's something worth clearing
+  const hasEditorState = !!(content.trim() || zapSplits.length || userZapPct != null || manualTags.length)
 
   // Import note by ID (note1... or nevent1...)
   const handleImportById = useCallback(async (input) => {
@@ -247,13 +305,6 @@ export default function NotesModule({ user }) {
       const needsAfter = after.length > 0 && !after.startsWith('\n') && !after.startsWith(' ')
       const newContent = before + (needsBefore ? '\n' : '') + url + (needsAfter ? '\n' : '') + after
       setContent(newContent)
-      // Auto-grow textarea
-      if (ta) {
-        requestAnimationFrame(() => {
-          ta.style.height = 'auto'
-          ta.style.height = Math.max(ta.scrollHeight, TEXTAREA_MIN_H) + 'px'
-        })
-      }
     } catch (err) {
       setImageError(err.message || 'Image upload failed')
       setTimeout(() => setImageError(''), 5000)
@@ -301,8 +352,37 @@ export default function NotesModule({ user }) {
 
   const finalTags = useMemo(() => {
     const autoTags = extractTags(expandedContent)
-    return mergeTags({ autoTags, zapSplits, userPubkey: user?.pubkey, manualTags })
-  }, [expandedContent, zapSplits, user?.pubkey, manualTags])
+    return mergeTags({ autoTags, zapSplits, userPubkey: user?.pubkey, userPct: userZapPct, manualTags })
+  }, [expandedContent, zapSplits, user?.pubkey, userZapPct, manualTags])
+
+  // Combined splits for preview display (includes user if their effective pct > 0)
+  const previewZapSplits = useMemo(() => {
+    const othersTotal = zapSplits.reduce((sum, z) => sum + (z.pct || 0), 0)
+    const effectiveUserPct = userZapPct == null ? Math.max(0, 100 - othersTotal) : userZapPct
+    if (user?.pubkey && effectiveUserPct > 0) {
+      return [{ pubkey: user.pubkey, relay: '', pct: effectiveUserPct }, ...zapSplits]
+    }
+    return zapSplits
+  }, [zapSplits, userZapPct, user?.pubkey])
+
+  // Total number of recipients — matches what actually gets emitted as zap tags
+  const zapSplitsCount = useMemo(() => {
+    const hasAnySplit = zapSplits.length > 0 || userZapPct != null
+    if (!hasAnySplit) return 0
+    const othersCount = zapSplits.filter(z => z.pct > 0).length
+    const othersTotal = zapSplits.reduce((sum, z) => sum + (z.pct || 0), 0)
+    const effectiveUserPct = userZapPct == null ? Math.max(0, 100 - othersTotal) : userZapPct
+    return othersCount + (effectiveUserPct > 0 ? 1 : 0)
+  }, [zapSplits, userZapPct])
+
+  // Prevent publishing when the configured splits total more than 100% —
+  // zap wallets treat weights as a whole pie, so an over-100 sum leaves the
+  // author with an ambiguous/invalid intent.
+  const zapSplitOver100 = useMemo(() => {
+    const othersTotal = zapSplits.reduce((sum, z) => sum + (z.pct || 0), 0)
+    const effectiveUserPct = userZapPct == null ? Math.max(0, 100 - othersTotal) : userZapPct
+    return othersTotal + effectiveUserPct > 100
+  }, [zapSplits, userZapPct])
 
   // Export current note as a kind 1 JSON file
   const handleExportJson = useCallback(() => {
@@ -546,7 +626,7 @@ export default function NotesModule({ user }) {
                 }`}
               >
                 <span>⚡</span>
-                <span>Zap Splits{zapSplits.length > 0 ? ` (${zapSplits.length})` : ''}</span>
+                <span>Zap Splits{zapSplitsCount > 0 ? ` (${zapSplitsCount})` : ''}</span>
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 16 16"
@@ -556,6 +636,26 @@ export default function NotesModule({ user }) {
                   <path fillRule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
                 </svg>
               </button>
+
+              {/* Clear — pushed right; always visible alongside Image/Zap toolbar buttons */}
+              {!readOnly && (
+                <button
+                  onClick={handleClearClick}
+                  disabled={!hasEditorState}
+                  className={`ml-auto flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs border transition-colors disabled:opacity-40 disabled:pointer-events-none ${
+                    clearPending
+                      ? 'bg-red-950/60 border-red-800 text-red-400'
+                      : 'bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
+                  }`}
+                  title={clearPending ? 'Click again to confirm' : 'Clear editor and reset zap splits'}
+                  aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset zap splits'}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                    <path fillRule="evenodd" d="M5 3.25V4H2.75a.75.75 0 0 0 0 1.5h.3l.815 8.15A1.5 1.5 0 0 0 5.357 15h5.285a1.5 1.5 0 0 0 1.493-1.35l.815-8.15h.3a.75.75 0 0 0 0-1.5H11v-.75A2.25 2.25 0 0 0 8.75 1h-1.5A2.25 2.25 0 0 0 5 3.25Zm2.25-.75a.75.75 0 0 0-.75.75V4h3v-.75a.75.75 0 0 0-.75-.75h-1.5ZM6.05 6a.75.75 0 0 1 .787.713l.275 5.5a.75.75 0 0 1-1.498.075l-.275-5.5A.75.75 0 0 1 6.05 6Zm3.9 0a.75.75 0 0 1 .712.787l-.275 5.5a.75.75 0 0 1-1.498-.075l.275-5.5A.75.75 0 0 1 9.95 6Z" clipRule="evenodd" />
+                  </svg>
+                  <span>{clearPending ? 'Sure?' : 'Clear'}</span>
+                </button>
+              )}
             </div>
 
             {/* Image upload error */}
@@ -579,13 +679,20 @@ export default function NotesModule({ user }) {
             {/* Publish button */}
             <div className="mt-3">
               {!readOnly ? (
-                <button
-                  onClick={handlePublish}
-                  disabled={publishing || !content.trim()}
-                  className="w-full py-3 sm:py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors"
-                >
-                  {publishing ? 'Publishing...' : 'PUBLISH'}
-                </button>
+                <>
+                  {zapSplitOver100 && (
+                    <p className="mb-2 text-[11px] text-red-400">
+                      Zap splits total more than 100%. Adjust the splits before publishing.
+                    </p>
+                  )}
+                  <button
+                    onClick={handlePublish}
+                    disabled={publishing || !content.trim() || zapSplitOver100}
+                    className="w-full py-3 sm:py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors"
+                  >
+                    {publishing ? 'Publishing...' : 'PUBLISH'}
+                  </button>
+                </>
               ) : (
                 <div className="w-full py-2 bg-neutral-800 rounded-lg text-xs text-amber-500 font-medium text-center">
                   Read-only mode
@@ -599,6 +706,8 @@ export default function NotesModule({ user }) {
                 zapSplits={zapSplits}
                 onZapSplitsChange={setZapSplits}
                 userPubkey={user?.pubkey}
+                userZapPct={userZapPct}
+                onUserZapPctChange={setUserZapPct}
               />
             )}
 
@@ -615,7 +724,7 @@ export default function NotesModule({ user }) {
                   {content.trim() ? (
                     <NotePreview
                       content={expandedContent}
-                      zapSplits={zapSplits}
+                      zapSplits={previewZapSplits}
                       authorPubkey={user?.pubkey}
                     />
                   ) : (

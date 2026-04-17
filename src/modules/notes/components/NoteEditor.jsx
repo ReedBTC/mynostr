@@ -7,6 +7,20 @@ import { isSafeUrl } from '../../../lib/utils.js'
 
 const DEBOUNCE_MS = 350
 
+// Module-level LRU profile cache shared across ZapSplitsSection mounts.
+const CACHE_MAX = 500
+const profileCache = new Map()
+function cacheSet(key, value) {
+  if (profileCache.has(key)) profileCache.delete(key)
+  else if (profileCache.size >= CACHE_MAX) profileCache.delete(profileCache.keys().next().value)
+  profileCache.set(key, value)
+}
+
+function safeNpubShort(pubkey) {
+  try { return nip19.npubEncode(pubkey).slice(0, 14) + '...' }
+  catch { return (pubkey || '').slice(0, 12) + '...' }
+}
+
 function formatFollowers(n) {
   if (n == null) return null
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -14,10 +28,10 @@ function formatFollowers(n) {
   return String(n)
 }
 
-// ─── Owner Row (always visible, gets remainder) ──────────────────────────────
+// ─── Owner Row (always visible, editable, non-removable) ─────────────────────
 
-function OwnerRow({ profile, pubkey, pct }) {
-  const name = profile?.display_name || profile?.name || 'You'
+function OwnerRow({ profile, pubkey, displayPct, isAuto, onPctChange, onReset }) {
+  const name = profile?.display_name || profile?.name || (pubkey ? safeNpubShort(pubkey) : '')
   const pic = profile?.picture
 
   return (
@@ -28,9 +42,35 @@ function OwnerRow({ profile, pubkey, pct }) {
         <div className="w-9 h-9 rounded-full bg-neutral-700 flex items-center justify-center text-sm text-neutral-400 flex-shrink-0">?</div>
       )}
       <div className="flex-1 min-w-0">
-        <p className="text-sm text-neutral-200 truncate">{name} <span className="text-neutral-500 text-xs">(you)</span></p>
+        <p className="text-sm text-neutral-200 truncate">{name}</p>
       </div>
-      <span className="text-sm font-medium text-yellow-400 tabular-nums">{pct}%</span>
+      <div className="flex items-center gap-1">
+        <input
+          type="text"
+          inputMode="numeric"
+          value={displayPct || ''}
+          onChange={(e) => {
+            const raw = e.target.value.replace(/\D/g, '')
+            onPctChange(raw === '' ? 0 : Math.min(100, Number(raw)))
+          }}
+          placeholder="%"
+          className="w-14 bg-neutral-900 border border-neutral-700 rounded-lg px-2 py-1 text-sm text-neutral-200 text-center tabular-nums focus:outline-none focus:border-purple-600 [appearance:textfield]"
+        />
+        <span className="text-sm text-neutral-500">%</span>
+      </div>
+      {!isAuto ? (
+        <button
+          onClick={onReset}
+          className="text-neutral-600 hover:text-neutral-300 transition-colors p-1 -mr-1"
+          title="Reset to auto (catch remainder)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4">
+            <path fillRule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.75.75 0 0 1 1.364-.623A6.5 6.5 0 1 1 8 1.5v-.75a.75.75 0 0 1 1.28-.53l1.75 1.75a.75.75 0 0 1 0 1.06l-1.75 1.75A.75.75 0 0 1 8 4.25V3Z" clipRule="evenodd" />
+          </svg>
+        </button>
+      ) : (
+        <span className="p-1 -mr-1 w-6" aria-hidden="true" />
+      )}
     </div>
   )
 }
@@ -38,7 +78,7 @@ function OwnerRow({ profile, pubkey, pct }) {
 // ─── Recipient Row (editable percentage, removable) ──────────────────────────
 
 function RecipientRow({ split, profile, onRemove, onPctChange }) {
-  const name = profile?.display_name || profile?.name || nip19.npubEncode(split.pubkey).slice(0, 14) + '...'
+  const name = profile?.display_name || profile?.name || safeNpubShort(split.pubkey)
   const pic = profile?.picture
 
   return (
@@ -217,59 +257,59 @@ function UserSearch({ onSelect, excludePubkeys }) {
 
 // ─── Zap Splits Section ──────────────────────────────────────────────────────
 
-export default function ZapSplitsSection({ zapSplits, onZapSplitsChange, userPubkey }) {
-  const [profiles, setProfiles] = useState(new Map())
-  const profileCacheRef = useRef(new Map())
+export default function ZapSplitsSection({ zapSplits, onZapSplitsChange, userPubkey, userZapPct, onUserZapPctChange }) {
+  const [profiles, setProfiles] = useState(() => new Map(profileCache))
 
   // Resolve profiles for all participants (including the user)
   useEffect(() => {
     const allPubkeys = [userPubkey, ...zapSplits.map(z => z.pubkey)].filter(Boolean)
-    const needed = allPubkeys.filter(pk => !profileCacheRef.current.has(pk))
-    if (needed.length === 0) return
+    const needed = allPubkeys.filter(pk => !profileCache.has(pk))
+    if (needed.length === 0) {
+      setProfiles(new Map(profileCache))
+      return
+    }
 
     fetchProfiles(needed).then(fetched => {
-      for (const [pk, p] of fetched) profileCacheRef.current.set(pk, p)
-      setProfiles(new Map(profileCacheRef.current))
+      for (const [pk, p] of fetched) cacheSet(pk, p)
+      setProfiles(new Map(profileCache))
     })
   }, [zapSplits, userPubkey])
 
   const othersTotal = zapSplits.reduce((sum, z) => sum + (z.pct || 0), 0)
-  const userPct = Math.max(0, 100 - othersTotal)
+  const isUserAuto = userZapPct == null
+  const userDisplayPct = isUserAuto ? Math.max(0, 100 - othersTotal) : userZapPct
+  const totalPct = othersTotal + userDisplayPct
 
   // Set of pubkeys already in splits (including self) for search exclusion
   const excludePubkeys = new Set([userPubkey, ...zapSplits.map(z => z.pubkey)].filter(Boolean))
 
+  // Any add/remove via the UI resets user pct to auto (= even-split remainder).
   const handleAdd = useCallback((pubkey) => {
     if (excludePubkeys.has(pubkey)) return
-    // Even split: total people = existing recipients + new one + the user
     const totalPeople = zapSplits.length + 1 + 1
     const evenPct = Math.floor(100 / totalPeople)
     const updated = zapSplits.map(z => ({ ...z, pct: evenPct }))
     updated.push({ pubkey, relay: '', pct: evenPct })
     onZapSplitsChange(updated)
-  }, [zapSplits, onZapSplitsChange, excludePubkeys])
+    onUserZapPctChange(undefined)
+  }, [zapSplits, onZapSplitsChange, excludePubkeys, onUserZapPctChange])
 
   const handleRemove = useCallback((idx) => {
     const remaining = zapSplits.filter((_, i) => i !== idx)
     if (remaining.length === 0) {
       onZapSplitsChange([])
+      onUserZapPctChange(undefined)
       return
     }
-    // Re-split evenly: remaining recipients + the user
     const totalPeople = remaining.length + 1
     const evenPct = Math.floor(100 / totalPeople)
     onZapSplitsChange(remaining.map(z => ({ ...z, pct: evenPct })))
-  }, [zapSplits, onZapSplitsChange])
+    onUserZapPctChange(undefined)
+  }, [zapSplits, onZapSplitsChange, onUserZapPctChange])
 
   const handlePctChange = useCallback((idx, pct) => {
     const updated = [...zapSplits]
     updated[idx] = { ...updated[idx], pct }
-    // Cap total others at 99% so user always gets at least 1%
-    const total = updated.reduce((sum, z) => sum + z.pct, 0)
-    if (total > 99) {
-      const over = total - 99
-      updated[idx] = { ...updated[idx], pct: Math.max(1, pct - over) }
-    }
     onZapSplitsChange(updated)
   }, [zapSplits, onZapSplitsChange])
 
@@ -287,7 +327,10 @@ export default function ZapSplitsSection({ zapSplits, onZapSplitsChange, userPub
         <OwnerRow
           pubkey={userPubkey}
           profile={profiles.get(userPubkey)}
-          pct={userPct}
+          displayPct={userDisplayPct}
+          isAuto={isUserAuto}
+          onPctChange={(pct) => onUserZapPctChange(pct)}
+          onReset={() => onUserZapPctChange(undefined)}
         />
 
         {/* Other recipients */}
@@ -304,11 +347,18 @@ export default function ZapSplitsSection({ zapSplits, onZapSplitsChange, userPub
         {/* Split bar */}
         {zapSplits.length > 0 && (
           <div className="flex h-1.5 rounded-full overflow-hidden bg-neutral-800 mt-1">
-            <div className="bg-yellow-500" style={{ width: `${userPct}%` }} />
+            <div className="bg-yellow-500" style={{ width: `${userDisplayPct}%` }} />
             {zapSplits.map((z, i) => (
               <div key={z.pubkey} className={barColors[i % barColors.length]} style={{ width: `${z.pct}%` }} />
             ))}
           </div>
+        )}
+
+        {/* Total — flag if not 100% so user knows the split is incomplete or over */}
+        {zapSplits.length > 0 && totalPct !== 100 && (
+          <p className={`text-[10px] text-right tabular-nums ${totalPct > 100 ? 'text-red-400' : 'text-neutral-500'}`}>
+            Total: {totalPct}%
+          </p>
         )}
       </div>
     </div>

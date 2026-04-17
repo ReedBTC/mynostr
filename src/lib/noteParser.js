@@ -240,29 +240,38 @@ export function validateKind1Event(json) {
  * into a final deduplicated tag array.
  *
  * Zap splits use percentages. Each entry has { pubkey, relay, pct }.
- * userPubkey gets the remainder (100 - sum of others).
- * Percentages are converted to integer weights for the zap tag.
+ * If userPct is a number, the user gets that explicit pct. If it's null/undefined,
+ * the user catches the remainder (100 - sum of others).
  *
  * @param {object} params
  * @param {Array<string[]>} params.autoTags — from extractTags()
  * @param {Array<{pubkey: string, relay: string, pct: number}>} params.zapSplits — other recipients (not the user)
- * @param {string} [params.userPubkey] — logged-in user's pubkey (gets remainder)
+ * @param {string} [params.userPubkey] — logged-in user's pubkey
+ * @param {number} [params.userPct] — explicit user pct; if omitted, defaults to remainder
  * @param {Array<string[]>} params.manualTags — non-auto tags preserved from upload
  * @returns {Array<string[]>}
  */
-export function mergeTags({ autoTags = [], zapSplits = [], userPubkey, manualTags = [] }) {
+export function mergeTags({ autoTags = [], zapSplits = [], userPubkey, userPct, manualTags = [] }) {
   const tags = [...autoTags]
 
-  // Zap splits — convert percentages to weights
-  const otherTotal = zapSplits.reduce((sum, z) => sum + (z.pct || 0), 0)
-  const userPct = Math.max(0, 100 - otherTotal)
+  // Only emit zap tags when the author actually configured a split —
+  // either by adding other recipients or explicitly setting their own share.
+  // Otherwise a plain note gets no zap tags and zaps default to the author as usual.
+  const hasAnySplit = zapSplits.length > 0 || userPct != null
 
-  if (userPubkey && userPct > 0) {
-    tags.push(['zap', userPubkey, '', String(userPct)])
-  }
-  for (const zap of zapSplits) {
-    if (zap.pct > 0) {
-      tags.push(['zap', zap.pubkey, zap.relay || '', String(zap.pct)])
+  if (hasAnySplit) {
+    const otherTotal = zapSplits.reduce((sum, z) => sum + (z.pct || 0), 0)
+    const effectiveUserPct = userPct == null
+      ? Math.max(0, 100 - otherTotal)
+      : Math.max(0, Math.min(100, userPct))
+
+    if (userPubkey && effectiveUserPct > 0) {
+      tags.push(['zap', userPubkey, '', String(effectiveUserPct)])
+    }
+    for (const zap of zapSplits) {
+      if (zap.pct > 0) {
+        tags.push(['zap', zap.pubkey, zap.relay || '', String(zap.pct)])
+      }
     }
   }
 

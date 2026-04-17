@@ -24,6 +24,12 @@ export default function LoginScreen({ onLogin }) {
   const [qrWaiting, setQrWaiting] = useState(false)
   const [copied, setCopied] = useState(false)
   const qrSignerRef = useRef(null)
+  // Token for the extension-detection poll so a competing login flow can abort it.
+  const extPollTokenRef = useRef({ aborted: true })
+
+  function abortExtensionPoll() {
+    extPollTokenRef.current.aborted = true
+  }
 
   useEffect(() => {
     if (window.nostr) { setHasExtension(true); return }
@@ -69,16 +75,38 @@ export default function LoginScreen({ onLogin }) {
       qrSignerRef.current = null
     }
     setQrWaiting(false)
+    abortExtensionPoll()
   }
 
   async function loginWithExtension() {
     setError('')
     cancelActiveQrFlow()
+    setLoading(true)
+    // Some extensions inject window.nostr asynchronously — poll briefly, but
+    // allow a competing login flow to abort via extPollTokenRef.
+    const token = { aborted: false }
+    extPollTokenRef.current = token
     if (!window.nostr) {
-      setError('No Nostr extension detected. Install Alby, nos2x, keys.band, or Nostore.')
+      const start = Date.now()
+      while (!window.nostr && !token.aborted && Date.now() - start < 1500) {
+        await new Promise(r => setTimeout(r, 100))
+      }
+    }
+    if (token.aborted) { setLoading(false); return }
+    if (!window.nostr) {
+      // Only suggest localhost when on a non-secure origin — on HTTPS that hint is nonsense.
+      const insecureOrigin = typeof window !== 'undefined'
+        && window.location?.protocol === 'http:'
+        && window.location?.hostname !== 'localhost'
+        && window.location?.hostname !== '127.0.0.1'
+      const base = 'No Nostr extension detected. Supported: Alby, nos2x, keys.band, Nostore.'
+      const originHint = insecureOrigin
+        ? ' If you have one installed, this page origin may not be permitted — try http://localhost instead of a LAN IP, or use HTTPS.'
+        : ''
+      setError(base + originHint)
+      setLoading(false)
       return
     }
-    setLoading(true)
     try {
       resetNDK()
       const signer = new NDKNip07Signer()
@@ -174,7 +202,6 @@ export default function LoginScreen({ onLogin }) {
           signer.rpc.off('response', onResponse)
           try {
             signer.userPubkey = pubkeyHex
-            signer.bunkerPubkey = pubkeyHex
             signer._user = ndk.getUser({ pubkey: pubkeyHex })
             resolve()
           } catch (e) {
@@ -182,16 +209,25 @@ export default function LoginScreen({ onLogin }) {
           }
         }
 
+        // The inbound event's pubkey is the BUNKER's signing key, which for
+        // nsec.app / some Amber setups is NOT the user's pubkey. Always ask
+        // the bunker explicitly via getPublicKey to learn the real user key.
+        async function resolveUserPubkey(bunkerSigningPubkey) {
+          signer.bunkerPubkey = bunkerSigningPubkey
+          signer.userPubkey = null
+          return signer.getPublicKey().catch(() => bunkerSigningPubkey)
+        }
+
         async function onRequest(req) {
           if (req.method !== 'connect') return
           if (req.params?.[0] !== secret) return
-          await finish(req.event.pubkey)
+          const actualPubkey = await resolveUserPubkey(req.event.pubkey)
+          await finish(actualPubkey)
         }
 
         async function onResponse(res) {
           if (res.result !== secret) return
-          signer.userPubkey = null
-          const actualPubkey = await signer.getPublicKey().catch(() => res.event.pubkey)
+          const actualPubkey = await resolveUserPubkey(res.event.pubkey)
           await finish(actualPubkey)
         }
 
