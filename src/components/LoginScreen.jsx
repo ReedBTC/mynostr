@@ -32,16 +32,18 @@ export default function LoginScreen({ onLogin }) {
     setNcTab(isMobile ? 'paste' : 'qr')
   }, [isMobile])
 
-  // Start QR flow when QR tab is active (desktop)
+  // Start QR flow when QR tab is active (desktop) or always on mobile —
+  // pre-generating the nostrconnect:// URI so the first tap of "Open in
+  // Signer App" navigates immediately instead of just generating the link.
   useEffect(() => {
-    if (ncTab === 'qr') startQrFlow()
+    if (isMobile || ncTab === 'qr') startQrFlow()
     return () => {
       if (qrSignerRef.current) {
         qrSignerRef.current.stop()
         qrSignerRef.current = null
       }
     }
-  }, [ncTab]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ncTab, isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchUserProfile(ndk, pubkey) {
     const user = ndk.getUser({ pubkey })
@@ -384,8 +386,8 @@ export default function LoginScreen({ onLogin }) {
         <div className="space-y-3">
           {/* Open in signer app — triggers nostrconnect:// deep link */}
           <button
-            onClick={() => { if (!qrUri) startQrFlow(); else openInSignerApp() }}
-            disabled={loading}
+            onClick={openInSignerApp}
+            disabled={loading || !qrUri}
             className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
           >
             {qrWaiting && !qrUri ? (
@@ -397,6 +399,15 @@ export default function LoginScreen({ onLogin }) {
               'Open in Signer App'
             )}
           </button>
+          {qrUri && (
+            <button
+              onClick={copyQrUri}
+              disabled={loading}
+              className="w-full py-2 px-4 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-300 text-xs border border-neutral-700 transition-colors"
+            >
+              {copied ? 'Copied!' : 'Copy connection link'}
+            </button>
+          )}
           {qrWaiting && qrUri && (
             <div className="flex items-center justify-center gap-2 text-xs text-neutral-500">
               <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
