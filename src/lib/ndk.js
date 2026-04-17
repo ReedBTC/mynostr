@@ -21,6 +21,18 @@ export function getNDK() {
   return ndkInstance
 }
 
+// Kick off NDK's relay connections and wait for at least one to be ready.
+// Prevents races where login completes before any relay handshake finishes —
+// the next fetchEvent/publish would otherwise fail silently on mobile where
+// WSS handshakes can take 1–3s each.
+export async function connectAndWait(ndk, timeoutMs = 5000) {
+  ndk.connect().catch(() => {})
+  const start = Date.now()
+  while (!ndk.pool.connectedRelays().length && Date.now() - start < timeoutMs) {
+    await new Promise(r => setTimeout(r, 100))
+  }
+}
+
 // Call on logout to close relay connections, detach the signer,
 // and force a fresh NDK instance on next login.
 export function resetNDK() {

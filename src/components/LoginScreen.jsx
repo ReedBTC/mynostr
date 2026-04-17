@@ -2,8 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import { NDKNip07Signer, NDKPrivateKeySigner, NDKNip46Signer } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { QRCodeSVG } from 'qrcode.react'
-import { getNDK, resetNDK } from '../lib/ndk.js'
+import { getNDK, resetNDK, connectAndWait } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
+
+// Mobile platform detection — userAgent is stable for the page lifetime,
+// so we compute these once at module load. Used to show platform-appropriate
+// signer tiles (Amber is Android-only; on iOS we hide it to avoid a dead tile).
+const UA = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+const IS_IOS = /iPad|iPhone|iPod/.test(UA) && !(typeof window !== 'undefined' && window.MSStream)
+const IS_ANDROID = /Android/.test(UA)
 
 export default function LoginScreen({ onLogin }) {
   const isMobile = useIsMobile()
@@ -81,7 +88,7 @@ export default function LoginScreen({ onLogin }) {
         signer.blockUntilReady(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('__timeout__')), 15000)),
       ])
-      ndk.connect().catch(() => {})
+      await connectAndWait(ndk)
       const pubkey = await signer.user()
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
       onLogin(user)
@@ -111,14 +118,14 @@ export default function LoginScreen({ onLogin }) {
       const ndk = getNDK()
 
       if (decoded.type === 'npub') {
-        ndk.connect().catch(() => {})
+        await connectAndWait(ndk)
         const user = await fetchUserProfile(ndk, decoded.data)
         user.readOnly = true
         onLogin(user)
       } else if (decoded.type === 'nsec') {
         const signer = new NDKPrivateKeySigner(decoded.data)
         ndk.signer = signer
-        ndk.connect().catch(() => {})
+        await connectAndWait(ndk)
         const ndkUser = await signer.user()
         const user = await fetchUserProfile(ndk, ndkUser.pubkey)
         onLogin(user)
@@ -206,7 +213,7 @@ export default function LoginScreen({ onLogin }) {
       setQrWaiting(false)
       setLoading(true)
       ndk.signer = signer
-      ndk.connect().catch(() => {})
+      await connectAndWait(ndk)
       const user = await fetchUserProfile(ndk, signer.userPubkey)
       onLogin(user)
     } catch (err) {
@@ -271,7 +278,7 @@ export default function LoginScreen({ onLogin }) {
         signer.blockUntilReady(),
         new Promise((_, reject) => setTimeout(() => reject(new Error('__timeout__')), 30000)),
       ])
-      ndk.connect().catch(() => {})
+      await connectAndWait(ndk)
       const ndkUser = await signer.user()
       const user = await fetchUserProfile(ndk, ndkUser.pubkey)
       onLogin(user)
@@ -384,28 +391,42 @@ export default function LoginScreen({ onLogin }) {
       {/* Mobile: signer app button + paste input */}
       {isMobile && (
         <div className="space-y-3">
-          {/* Open in signer app — triggers nostrconnect:// deep link */}
-          <button
-            onClick={openInSignerApp}
-            disabled={loading || !qrUri}
-            className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
-          >
-            {qrWaiting && !qrUri ? (
-              <>
+          {/* Signer tiles — both tiles open the pre-generated nostrconnect://
+              URI via the system handler. Primal is shown on all mobile
+              platforms; Amber is Android-only (no iOS build exists). */}
+          <div className={`grid gap-2 ${IS_ANDROID ? 'grid-cols-2' : 'grid-cols-1'}`}>
+            <button
+              onClick={openInSignerApp}
+              disabled={loading || !qrUri}
+              className="py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {qrWaiting && !qrUri ? (
                 <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Preparing...
-              </>
-            ) : (
-              'Open in Signer App'
+              ) : (
+                'Primal'
+              )}
+            </button>
+            {IS_ANDROID && (
+              <button
+                onClick={openInSignerApp}
+                disabled={loading || !qrUri}
+                className="py-3 px-4 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
+              >
+                {qrWaiting && !qrUri ? (
+                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  'Amber'
+                )}
+              </button>
             )}
-          </button>
+          </div>
           {qrUri && (
             <button
               onClick={copyQrUri}
               disabled={loading}
               className="w-full py-2 px-4 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-300 text-xs border border-neutral-700 transition-colors"
             >
-              {copied ? 'Copied!' : 'Copy connection link'}
+              {copied ? 'Copied!' : 'Copy connection link for another signer'}
             </button>
           )}
           {qrWaiting && qrUri && (
@@ -416,7 +437,9 @@ export default function LoginScreen({ onLogin }) {
           )}
 
           <p className="text-xs text-neutral-500 text-center">
-            Opens Amber, Keystache, or your default Nostr signer
+            {IS_ANDROID
+              ? 'Tap to open Primal or Amber. Using a different signer? Copy the link above.'
+              : 'Tap to open Primal. Using a different signer? Copy the link above.'}
           </p>
 
           <div className="flex items-center gap-3">
