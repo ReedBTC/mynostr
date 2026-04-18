@@ -304,14 +304,14 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
             </button>
           ) : (
             <>
-              {/* Order: Upload → naddr → Drafts → Clear → Export → Write/Preview → Metadata */}
+              {/* Order: Upload → naddr → Drafts → Clear → Export → Write/Preview → Publishing Details */}
               <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={readOnly}
-                className={`px-2.5 py-1 rounded text-xs transition-colors ${
+                className={`px-2.5 py-1 text-xs rounded border transition-colors ${
                   readOnly
-                    ? 'text-neutral-700 cursor-not-allowed'
-                    : 'text-neutral-500 hover:text-neutral-300'
+                    ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
+                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
                 }`}
               >
                 Upload .md
@@ -345,10 +345,10 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
               <button
                 onClick={onOpenDraftDrawer}
                 disabled={readOnly || !onOpenDraftDrawer}
-                className={`px-2.5 py-1 rounded text-xs transition-colors ${
+                className={`px-2.5 py-1 text-xs rounded border transition-colors ${
                   readOnly || !onOpenDraftDrawer
-                    ? 'text-neutral-700 cursor-not-allowed'
-                    : 'text-neutral-500 hover:text-neutral-300'
+                    ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
+                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
                 }`}
               >
                 My Drafts
@@ -447,11 +447,11 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
                 readOnly || !onToggleMetadata
                   ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
                   : metadataOpen
-                    ? 'bg-neutral-800 border-neutral-600 text-neutral-100'
-                    : 'border-neutral-700 text-neutral-400 hover:text-neutral-100 hover:border-neutral-500'
+                    ? 'bg-purple-900/40 border-purple-700 text-purple-200'
+                    : 'border-purple-800 text-purple-300 hover:text-purple-100 hover:border-purple-600'
               }`}
             >
-              Metadata
+              Publishing Details
             </button>
           </div>
         </div>

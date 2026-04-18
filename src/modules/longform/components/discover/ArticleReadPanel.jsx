@@ -60,6 +60,9 @@ export default function ArticleReadPanel({
   const [displayContent,   setDisplayContent]   = useState(article.content || '')
   const [resolvedTags,     setResolvedTags]     = useState(null)
   const [fetchingContent,  setFetchingContent]  = useState(false)
+  // Parent passes key={selected.id} so this component remounts per article;
+  // no explicit reset needed, fresh useState(false) gives us a clean flag.
+  const [coverBroken,      setCoverBroken]      = useState(false)
 
   // Close three-dots menu on outside click
   useEffect(() => {
@@ -544,33 +547,41 @@ export default function ArticleReadPanel({
 
       </div>
 
-      {/* ── Content ── */}
-      <div className="flex-1 overflow-y-auto" data-color-mode="dark">
-        {image && isSafeUrl(image) && (
-          <div className="flex justify-center bg-neutral-900 border-b border-neutral-800" style={{ maxHeight: '300px' }}>
-            <img src={image} alt="" style={{ maxHeight: '300px', maxWidth: '100%' }}
-              className="object-contain"
-              onError={e => { e.target.parentElement.style.display = 'none' }} />
+      {/* ── Content — matches the Write module's preview rendering ── */}
+      <div className="flex-1 overflow-y-auto bg-neutral-950 px-4 sm:px-8 py-6" data-color-mode="dark">
+        {image && isSafeUrl(image) && !coverBroken && (
+          <div className="w-full aspect-video mb-6 rounded-lg overflow-hidden border border-neutral-800">
+            <img
+              src={image}
+              alt="Cover"
+              className="w-full h-full object-cover"
+              onError={() => setCoverBroken(true)}
+            />
           </div>
         )}
-        <div className="px-6 py-4">
-          <h1 className="text-lg font-bold text-neutral-100 leading-snug mb-1">{title}</h1>
-          {summary && <p className="text-sm text-neutral-400 italic mb-4">{summary}</p>}
-          {fetchingContent ? (
-            <div className="flex items-center gap-2 py-8 text-neutral-600 text-sm">
-              <span className="w-4 h-4 border-2 border-neutral-600 border-t-transparent rounded-full animate-spin inline-block" />
-              Loading article…
-            </div>
-          ) : (
-            <div className="[&_img]:max-h-64 [&_img]:w-auto [&_img]:object-contain [&_img]:block [&_img]:mx-auto">
-              <MDEditor.Markdown
-                source={displayContent}
-                rehypePlugins={[rehypeSanitize]}
-                style={{ background: 'transparent', color: '#d4d4d8', fontSize: '0.875rem', lineHeight: '1.75' }}
-              />
-            </div>
-          )}
-        </div>
+
+        <h1 className="text-2xl font-bold text-neutral-100 leading-tight mb-2 font-sans">{title}</h1>
+
+        {summary && (
+          <p className="text-base text-neutral-400 leading-relaxed mb-3 font-sans">{summary}</p>
+        )}
+
+        <hr className="border-neutral-800 mb-6" />
+
+        {fetchingContent ? (
+          <div className="flex items-center gap-2 py-8 text-neutral-600 text-sm">
+            <span className="w-4 h-4 border-2 border-neutral-600 border-t-transparent rounded-full animate-spin inline-block" />
+            Loading article…
+          </div>
+        ) : (
+          <div className="prose prose-invert prose-sm max-w-none font-sans prose-img:block prose-img:mx-auto prose-img:max-h-[70vh]">
+            <MDEditor.Markdown
+              source={displayContent}
+              rehypePlugins={[rehypeSanitize]}
+              style={{ backgroundColor: 'transparent', color: 'inherit' }}
+            />
+          </div>
+        )}
       </div>
     </div>
     </>

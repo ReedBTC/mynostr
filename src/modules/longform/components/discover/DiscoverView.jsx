@@ -549,17 +549,17 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
           {isAuthorFeed ? (
             authorFilter ? (
               <>
-                {!readOnly && searchCheckedIds.size > 0 && (
+                {searchCheckedIds.size > 0 && (
                   <BulkActionBar
                     articles={displayArticles.filter(a => searchCheckedIds.has(a.id))}
                     profiles={displayProfiles}
-                    lists={lists}
-                    onAddToList={addArticle}
-                    onCreateList={createList}
+                    lists={readOnly ? [] : lists}
+                    onAddToList={readOnly ? null : addArticle}
+                    onCreateList={readOnly ? null : createList}
                     onClearSelection={() => setSearchCheckedIds(new Set())}
                   />
                 )}
-                {!readOnly && displayArticles.length > 0 && (
+                {displayArticles.length > 0 && (
                   <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
                     <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
                       <input
@@ -587,7 +587,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                   selectedId={selected?.id}
                   checkedIds={searchCheckedIds}
                   onSelect={setSelected}
-                  onToggleSelect={readOnly ? null : (id, checked) => {
+                  onToggleSelect={(id, checked) => {
                     setSearchCheckedIds(prev => {
                       const next = new Set(prev)
                       checked ? next.add(id) : next.delete(id)
@@ -606,19 +606,19 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
             )
           ) : (
             <>
-            {!readOnly && checkedIds.size > 0 && (
+            {checkedIds.size > 0 && (
               <BulkActionBar
                 articles={displayArticles.filter(a => checkedIds.has(a.id))}
                 profiles={new Map()}
-                lists={lists}
-                onAddToList={addArticle}
-                onCreateList={createList}
-                onMoveArticle={moveArticle}
-                onRemoveArticle={removeArticle}
+                lists={readOnly ? [] : lists}
+                onAddToList={readOnly ? null : addArticle}
+                onCreateList={readOnly ? null : createList}
+                onMoveArticle={readOnly ? null : moveArticle}
+                onRemoveArticle={readOnly ? null : removeArticle}
                 onClearSelection={() => setCheckedIds(new Set())}
               />
             )}
-            {!readOnly && displayArticles.length > 0 && (
+            {displayArticles.length > 0 && (
               <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
                 <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
                   <input
@@ -646,7 +646,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               onSelect={setSelected}
               displayArticles={displayArticles}
               checkedIds={checkedIds}
-              onToggleCheck={readOnly ? null : (id, checked) => {
+              onToggleCheck={(id, checked) => {
                 setCheckedIds(prev => {
                   const next = new Set(prev)
                   checked ? next.add(id) : next.delete(id)
@@ -954,14 +954,14 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                 <div key={item.aTag}
                   className={`relative flex items-center border-b border-neutral-800/60 transition-colors ${isSelected ? 'bg-purple-950/30' : 'hover:bg-neutral-800/40'}`}
                   style={{ height: '88px' }}>
-                  {/* Checkbox */}
-                  {!readOnly && (
-                    <div className="pl-2 pr-0 flex items-center flex-shrink-0" onClick={e => e.stopPropagation()}>
-                      <input type="checkbox" checked={checkedIds.has(item.aTag)}
-                        onChange={e => onToggleCheck(item.aTag, e.target.checked)}
-                        className="accent-purple-600 cursor-pointer opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity" />
-                    </div>
-                  )}
+                  {/* Checkbox — shown for both owner and readOnly viewers.
+                      Parent gates bookmarking props so readOnly selection can
+                      only drive export, not bookmark/move/remove. */}
+                  <div className="pl-2 pr-0 flex items-center flex-shrink-0" onClick={e => e.stopPropagation()}>
+                    <input type="checkbox" checked={checkedIds.has(item.aTag)}
+                      onChange={e => onToggleCheck(item.aTag, e.target.checked)}
+                      className="accent-purple-600 cursor-pointer opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity" />
+                  </div>
                   <button onClick={() => onSelect(fakeArticle)}
                     className="flex items-center gap-3 px-2 text-left flex-1 min-w-0 h-full">
                     <div className="w-14 h-14 rounded flex-shrink-0 bg-neutral-800 overflow-hidden">

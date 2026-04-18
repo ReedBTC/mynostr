@@ -54,10 +54,10 @@ export default function MetadataDrawer({
     >
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 flex-shrink-0">
-        <span className="text-sm font-medium text-neutral-200">Article details</span>
+        <span className="text-sm font-medium text-neutral-200">Publishing Details</span>
         <button
           onClick={onClose}
-          aria-label="Close metadata drawer"
+          aria-label="Close publishing details drawer"
           className="w-7 h-7 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">

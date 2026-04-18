@@ -212,52 +212,56 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
         </>
       )}
 
-      {/* Divider */}
-      <span className="text-neutral-700 mx-0.5 flex-shrink-0">|</span>
-
-      {/* Bookmark dropdown */}
-      <div className="relative flex-shrink-0" ref={bookmarkRef}>
-        <button
-          onClick={() => { setBookmarkOpen(o => !o); setNewListInput(false) }}
-          disabled={busy}
-          className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${
-            bookmarkStatus === 'done'
-              ? 'border-amber-800 text-amber-400'
-              : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
-          }`}
-        >
-          {bookmarkStatus === 'done' ? '🔖 Bookmarked' : bookmarkStatus === 'saving' ? '…' : '🔖 Bookmark'}
-        </button>
-        {bookmarkOpen && (
-          <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
-            {lists.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-neutral-500">No lists yet.</p>
-            ) : (
-              lists.map(list => (
-                <button key={list.id} onClick={() => handleAddAllToList(list.id)}
-                  className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors">
-                  {list.title}
-                </button>
-              ))
-            )}
-            {newListInput ? (
-              <div className="px-2 py-2 border-t border-neutral-700 flex gap-1">
-                <input autoFocus type="text" value={newListName} onChange={e => setNewListName(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleCreateAndAddAll()}
-                  placeholder="List name…" maxLength={60}
-                  className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none" />
-                <button onClick={handleCreateAndAddAll} disabled={!newListName.trim()}
-                  className="text-xs px-2 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors">✓</button>
+      {/* Bookmark dropdown — only when a session user can actually save lists.
+          In readOnly (not-logged-in) mode the parent passes onAddToList=null,
+          so the bookmark controls collapse out and the bar becomes export-only. */}
+      {onAddToList && (
+        <>
+          <span className="text-neutral-700 mx-0.5 flex-shrink-0">|</span>
+          <div className="relative flex-shrink-0" ref={bookmarkRef}>
+            <button
+              onClick={() => { setBookmarkOpen(o => !o); setNewListInput(false) }}
+              disabled={busy}
+              className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${
+                bookmarkStatus === 'done'
+                  ? 'border-amber-800 text-amber-400'
+                  : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
+              }`}
+            >
+              {bookmarkStatus === 'done' ? '🔖 Bookmarked' : bookmarkStatus === 'saving' ? '…' : '🔖 Bookmark'}
+            </button>
+            {bookmarkOpen && (
+              <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
+                {lists.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-neutral-500">No lists yet.</p>
+                ) : (
+                  lists.map(list => (
+                    <button key={list.id} onClick={() => handleAddAllToList(list.id)}
+                      className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors">
+                      {list.title}
+                    </button>
+                  ))
+                )}
+                {newListInput ? (
+                  <div className="px-2 py-2 border-t border-neutral-700 flex gap-1">
+                    <input autoFocus type="text" value={newListName} onChange={e => setNewListName(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleCreateAndAddAll()}
+                      placeholder="List name…" maxLength={60}
+                      className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none" />
+                    <button onClick={handleCreateAndAddAll} disabled={!newListName.trim()}
+                      className="text-xs px-2 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors">✓</button>
+                  </div>
+                ) : (
+                  <button onClick={() => setNewListInput(true)}
+                    className="w-full text-left px-3 py-2 text-xs text-neutral-500 hover:text-neutral-300 border-t border-neutral-700 hover:bg-neutral-700 transition-colors">
+                    + New list
+                  </button>
+                )}
               </div>
-            ) : (
-              <button onClick={() => setNewListInput(true)}
-                className="w-full text-left px-3 py-2 text-xs text-neutral-500 hover:text-neutral-300 border-t border-neutral-700 hover:bg-neutral-700 transition-colors">
-                + New list
-              </button>
             )}
           </div>
-        )}
-      </div>
+        </>
+      )}
 
       {/* Move to — only for bookmark items that have a _listId */}
       {onMoveArticle && articles.some(a => a._listId) && (
