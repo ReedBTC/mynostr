@@ -238,6 +238,12 @@ export default function LoginScreen({ onLogin }) {
     setQrWaiting(true)
     try {
       const ndk = getNDK()
+      // Make sure the relay is connected BEFORE we construct the signer —
+      // the factory subscribes immediately, and a subscription created
+      // against a dead socket will never receive the historical response
+      // event we're trying to pick up. Especially important after a mobile
+      // tab wakeup where the WebSocket was likely suspended.
+      await connectAndWait(ndk)
       // Resume a pending nostrconnect signer if one is persisted. This is
       // what makes mobile login work across a tab reload / WebSocket
       // suspension: the new subscription uses the same localSigner pubkey
@@ -363,23 +369,42 @@ export default function LoginScreen({ onLogin }) {
     startQrFlow()
   }
 
-  // When the tab becomes visible again (user returns from signer app), the
-  // existing WebSocket may have been suspended or the relay connection
-  // re-established without replaying our subscription. Restart the flow so
-  // fromPayload re-queries the relay for the already-published response.
+  // When the user comes back from a signer app, re-subscribe to the relay so
+  // the response event (already published by the signer) gets delivered.
+  // Mobile browsers are inconsistent about which event fires on return:
+  //   - visibilitychange: the main one, but unreliable on iOS when coming
+  //     back from a custom-scheme handoff
+  //   - pageshow: fires on bfcache restore, used on some iOS Safari paths
+  //     in place of a normal visibility transition
+  //   - focus: backup for the rare case both of the above miss
+  // A 15s interval acts as a last-resort retry — covers browsers where none
+  // of the wakeup events fire, and cases where the relay took longer than
+  // our first subscription attempt to replay the historical response event.
   useEffect(() => {
-    function onVisible() {
-      if (document.visibilityState !== 'visible') return
+    if (!qrWaiting) return
+    let lastRestart = Date.now()
+    function restart() {
       if (!qrSignerRef.current) return
-      if (!qrWaiting) return
-      if (qrSignerRef.current) {
-        qrSignerRef.current.stop()
-        qrSignerRef.current = null
-      }
+      const now = Date.now()
+      if (now - lastRestart < 1000) return
+      lastRestart = now
+      qrSignerRef.current.stop()
+      qrSignerRef.current = null
       startQrFlow()
     }
+    function onVisible() {
+      if (document.visibilityState === 'visible') restart()
+    }
     document.addEventListener('visibilitychange', onVisible)
-    return () => document.removeEventListener('visibilitychange', onVisible)
+    window.addEventListener('pageshow', restart)
+    window.addEventListener('focus', restart)
+    const interval = setInterval(restart, 15000)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('pageshow', restart)
+      window.removeEventListener('focus', restart)
+      clearInterval(interval)
+    }
   }, [qrWaiting]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function copyQrUri() {
