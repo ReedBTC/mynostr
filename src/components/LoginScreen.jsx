@@ -12,6 +12,42 @@ const UA = typeof navigator !== 'undefined' ? navigator.userAgent : ''
 const IS_IOS = /iPad|iPhone|iPod/.test(UA) && !(typeof window !== 'undefined' && window.MSStream)
 const IS_ANDROID = /Android/.test(UA)
 
+// Mobile NIP-46 flows need to survive a tab reload or WebSocket suspension
+// (the user taps a signer app, approves, comes back — the original subscription
+// may be dead). We persist the signer payload and restore it on mount / when
+// the tab becomes visible again, then re-query the relay for the response.
+const PENDING_NIP46_KEY = 'mynostr_pending_nip46'
+const PENDING_NIP46_MAX_AGE_MS = 10 * 60 * 1000
+
+function savePendingNip46(payload) {
+  try {
+    localStorage.setItem(PENDING_NIP46_KEY, JSON.stringify({
+      payload,
+      createdAt: Date.now(),
+    }))
+  } catch {}
+}
+
+function loadPendingNip46() {
+  try {
+    const raw = localStorage.getItem(PENDING_NIP46_KEY)
+    if (!raw) return null
+    const { payload, createdAt } = JSON.parse(raw)
+    if (!payload || typeof payload !== 'string') return null
+    if (Date.now() - Number(createdAt) > PENDING_NIP46_MAX_AGE_MS) {
+      localStorage.removeItem(PENDING_NIP46_KEY)
+      return null
+    }
+    return payload
+  } catch {
+    return null
+  }
+}
+
+function clearPendingNip46() {
+  try { localStorage.removeItem(PENDING_NIP46_KEY) } catch {}
+}
+
 export default function LoginScreen({ onLogin }) {
   const isMobile = useIsMobile()
   const [nsecValue, setNsecValue] = useState('')
@@ -80,6 +116,7 @@ export default function LoginScreen({ onLogin }) {
       qrSignerRef.current = null
     }
     setQrWaiting(false)
+    clearPendingNip46()
     abortExtensionPoll()
   }
 
@@ -181,6 +218,7 @@ export default function LoginScreen({ onLogin }) {
     setQrUri(null)
     setQrWaiting(false)
     setError('')
+    clearPendingNip46()
     setNcTab(tab)
   }
 
@@ -189,13 +227,32 @@ export default function LoginScreen({ onLogin }) {
     setQrWaiting(true)
     try {
       const ndk = getNDK()
-      const signer = NDKNip46Signer.nostrconnect(ndk, 'wss://relay.primal.net', undefined, {
-        name: 'MyNostr',
-        url: 'https://mynostr.app',
-      })
+      // Resume a pending nostrconnect signer if one is persisted — this lets
+      // the flow pick up the response event on mobile if the tab was reloaded
+      // or the WebSocket was suspended while the user approved in the signer
+      // app. Falls through to a fresh signer if nothing valid is saved.
+      const pendingPayload = loadPendingNip46()
+      let signer = null
+      if (pendingPayload) {
+        try {
+          signer = await NDKNip46Signer.fromPayload(pendingPayload, ndk)
+        } catch {
+          clearPendingNip46()
+          signer = null
+        }
+      }
+      if (!signer) {
+        signer = NDKNip46Signer.nostrconnect(ndk, 'wss://relay.primal.net', undefined, {
+          name: 'MyNostr',
+          url: 'https://mynostr.app',
+        })
+        try { savePendingNip46(signer.toPayload()) } catch {}
+      }
       qrSignerRef.current = signer
-      const secret = new URL(signer.nostrConnectUri).searchParams.get('secret')
-      setQrUri(signer.nostrConnectUri)
+      const secret = signer.nostrConnectUri
+        ? new URL(signer.nostrConnectUri).searchParams.get('secret')
+        : null
+      setQrUri(signer.nostrConnectUri || null)
 
       await new Promise((resolve, reject) => {
         let done = false
@@ -256,6 +313,7 @@ export default function LoginScreen({ onLogin }) {
       ndk.signer = signer
       await connectAndWait(ndk)
       const user = await fetchUserProfile(ndk, signer.userPubkey)
+      clearPendingNip46()
       onLogin(user)
     } catch (err) {
       if (qrSignerRef.current === null) return
@@ -274,8 +332,28 @@ export default function LoginScreen({ onLogin }) {
     setQrUri(null)
     setQrWaiting(false)
     setError('')
+    clearPendingNip46()
     startQrFlow()
   }
+
+  // When the tab becomes visible again (user returns from signer app), the
+  // existing WebSocket may have been suspended or the relay connection
+  // re-established without replaying our subscription. Restart the flow so
+  // fromPayload re-queries the relay for the already-published response.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState !== 'visible') return
+      if (!qrSignerRef.current) return
+      if (!qrWaiting) return
+      if (qrSignerRef.current) {
+        qrSignerRef.current.stop()
+        qrSignerRef.current = null
+      }
+      startQrFlow()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [qrWaiting]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function copyQrUri() {
     if (!qrUri) return
