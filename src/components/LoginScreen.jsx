@@ -563,11 +563,7 @@ export default function LoginScreen({ onLogin }) {
       <button
         onClick={loginWithExtension}
         disabled={loading}
-        className={`w-full py-3 px-4 rounded-lg font-medium transition-colors ${
-          isMobile
-            ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-300 border border-neutral-700'
-            : 'bg-purple-700 hover:bg-purple-600 text-white'
-        } disabled:opacity-40 disabled:cursor-not-allowed`}
+        className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors"
       >
         {loading ? 'Connecting...' : 'Login with Extension'}
       </button>
@@ -757,16 +753,18 @@ export default function LoginScreen({ onLogin }) {
 
         {isMobile ? (
           <>
-            {/* Mobile order: Key first, then Nostr Connect, then Extension at bottom */}
+            {/* Mobile order: Extension first (matches desktop — mobile extensions
+                have improved enough that this can be a preferred flow when present),
+                then Key, then Nostr Connect */}
+            {hasExtension && (
+              <>
+                <ExtensionSection />
+                <Divider />
+              </>
+            )}
             <KeySection />
             <Divider />
             <NostrConnectSection />
-            {hasExtension && (
-              <>
-                <Divider />
-                <ExtensionSection />
-              </>
-            )}
           </>
         ) : (
           <>
