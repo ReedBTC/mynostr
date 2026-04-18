@@ -2,20 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import MDEditor from '@uiw/react-md-editor'
 import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { nip19 } from 'nostr-tools'
-import { exportEpub } from '../../../../lib/epub.js'
-import { titleToSlug, isSafeUrl, buildFrontmatter } from '../../../../lib/utils.js'
+import { isSafeUrl, getPublishedAt } from '../../../../lib/utils.js'
 import { getNDK } from '../../../../lib/ndk.js'
 import ZapModal from './ZapModal.jsx'
-
-function getNaddr(article) {
-  try {
-    const identifier = article.tags?.find(t => t[0] === 'd')?.[1] ?? ''
-    return nip19.naddrEncode({ kind: 30023, pubkey: article.pubkey, identifier })
-  } catch {
-    return null
-  }
-}
+import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -50,11 +40,9 @@ export default function ArticleReadPanel({
   const [listMenuOpen, setListMenuOpen] = useState(false)
   const [adding,       setAdding]       = useState(false)
   const [savedToList,  setSavedToList]  = useState(null)
-  const [epubBusy,     setEpubBusy]     = useState(false)
   const [newListInput, setNewListInput] = useState(false)
   const [newListName,  setNewListName]  = useState('')
   const [menuOpen,     setMenuOpen]     = useState(false)
-  const [copied,       setCopied]       = useState(false)
   const menuRef = useRef(null)
   const listMenuRef = useRef(null)
 
@@ -143,14 +131,14 @@ export default function ArticleReadPanel({
   const authorPic  = article._authorPic
     || profile?.picture
     || ''
-  const date = formatDate(article.created_at)
+  const date = formatDate(getPublishedAt(effectiveArticle))
 
   // ── Bookmark ────────────────────────────────────────────────────────────────
   async function handleAddToList(listId) {
     setAdding(true)
     try {
       const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
-      await onAddToList(listId, { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags })
+      await onAddToList(listId, { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags, publishedAt: getPublishedAt(effectiveArticle) })
       setSavedToList(listId)
     } finally {
       setAdding(false)
@@ -177,62 +165,10 @@ export default function ArticleReadPanel({
     }
   }
 
-  // ── Three-dots menu actions ────────────────────────────────────────────────────
-
-  function handleCopyNaddr() {
-    const naddr = getNaddr(article)
-    if (!naddr) return
-    navigator.clipboard.writeText(naddr).then(() => {
-      setCopied('naddr')
-      setTimeout(() => setCopied(false), 2000)
-    })
-    setMenuOpen(false)
-  }
-
   async function handleRemoveFromBookmark() {
     if (!article._listId || !article._aTag) return
     await onRemoveFromList(article._listId, article._aTag)
     onClose()
-  }
-
-  function handleCopyUrl() {
-    const naddr = getNaddr(article)
-    if (!naddr) return
-    navigator.clipboard.writeText(`https://njump.me/${naddr}`).then(() => {
-      setCopied('url')
-      setTimeout(() => setCopied(false), 2000)
-    })
-    setMenuOpen(false)
-  }
-
-  function handleViewPrimal() {
-    const naddr = getNaddr(article)
-    if (!naddr) return
-    window.open(`https://primal.net/a/${naddr}`, '_blank', 'noopener')
-    setMenuOpen(false)
-  }
-
-  // ── Export .md ──────────────────────────────────────────────────────────────
-  function handleExportMd() {
-    const slug   = titleToSlug(title) || 'article'
-    const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
-    const publishedAtUnix = getTag(effectiveArticle, 'published_at')
-    const publishedAtDate = publishedAtUnix
-      ? new Date(parseInt(publishedAtUnix) * 1000).toISOString().split('T')[0]
-      : ''
-    const metadata = {
-      title,
-      summary: summary || '',
-      publishedAtDate,
-      image: image || '',
-      tags: tTags,
-    }
-    const frontmatter = buildFrontmatter(metadata, null)
-    const blob = new Blob([frontmatter + displayContent], { type: 'text/markdown;charset=utf-8' })
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href = url; a.download = slug + '.md'; a.click()
-    URL.revokeObjectURL(url)
   }
 
   // ── Social actions ───────────────────────────────────────────────────────────
@@ -319,24 +255,6 @@ export default function ArticleReadPanel({
     } catch { /* silently fail */ } finally {
       setZapFetching(false)
     }
-  }
-
-  // ── Export .epub ────────────────────────────────────────────────────────────
-  async function handleExportEpub() {
-    setEpubBusy(true)
-    try {
-      await exportEpub(
-        displayContent,
-        {
-          title, summary, image,
-          publishedAtDate: article.created_at
-            ? new Date(article.created_at * 1000).toISOString().split('T')[0]
-            : '',
-          tags: effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || [],
-        },
-        null, authorName, ''
-      )
-    } finally { setEpubBusy(false) }
   }
 
   return (
@@ -523,54 +441,19 @@ export default function ArticleReadPanel({
             >
               ···
             </button>
-            {menuOpen && (
-              <div className="absolute right-0 top-full mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-xl z-30 min-w-[190px] py-1">
-                <MenuItem onClick={handleCopyNaddr}>
-                  {copied === 'naddr' ? '✓ Copied!' : 'Copy naddr'}
-                </MenuItem>
-                <MenuItem onClick={handleCopyUrl}>
-                  {copied === 'url' ? '✓ Copied!' : 'Copy URL'}
-                </MenuItem>
-                <MenuItem onClick={handleViewPrimal}>
-                  View on Primal ↗
-                </MenuItem>
-                {onLoadInEditor && (
-                  <>
-                    <MenuDivider />
-                    <MenuItem onClick={() => {
-                      const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
-                      const publishedAtUnix = getTag(effectiveArticle, 'published_at')
-                      const publishedAtDate = publishedAtUnix
-                        ? new Date(parseInt(publishedAtUnix) * 1000).toISOString().split('T')[0]
-                        : ''
-                      const naddr = getNaddr(effectiveArticle) || ''
-                      onLoadInEditor({
-                        content: displayContent || article.content,
-                        metadata: {
-                          title,
-                          summary: summary || '',
-                          publishedAtDate,
-                          image: image || '',
-                          tagsRaw: tTags.join(', '),
-                          tags: tTags,
-                        },
-                        naddr,
-                      })
-                      setMenuOpen(false)
-                    }}>
-                      Load in editor
-                    </MenuItem>
-                  </>
-                )}
-                <MenuDivider />
-                <MenuItem onClick={() => { handleExportMd(); setMenuOpen(false) }}>
-                  Export .md
-                </MenuItem>
-                <MenuItem onClick={() => { handleExportEpub(); setMenuOpen(false) }} disabled={epubBusy}>
-                  {epubBusy ? 'Exporting…' : 'Export .epub'}
-                </MenuItem>
-              </div>
-            )}
+            <ArticleActionsMenu
+              open={menuOpen}
+              onClose={() => setMenuOpen(false)}
+              article={effectiveArticle}
+              title={title}
+              summary={summary}
+              image={image}
+              tTags={effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []}
+              content={displayContent || article.content || ''}
+              authorName={authorName}
+              authorPic={authorPic}
+              onLoadInEditor={onLoadInEditor}
+            />
           </div>
 
           {/* Close */}
@@ -694,18 +577,3 @@ export default function ArticleReadPanel({
   )
 }
 
-function MenuItem({ onClick, disabled, children }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
-    >
-      {children}
-    </button>
-  )
-}
-
-function MenuDivider() {
-  return <div className="my-1 border-t border-neutral-800" />
-}

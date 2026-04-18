@@ -10,11 +10,13 @@ export default function MobileNavDrawer({
   open,
   onClose,
   user,
+  sessionUser,
   activeModule,
   onModuleChange,
   onBoost,
   onHelp,
   onLogout,
+  onLogin,
   showHelp,
 }) {
   const profile = user?.profile
@@ -63,7 +65,12 @@ export default function MobileNavDrawer({
               <p className="text-xs text-neutral-600 font-mono truncate">
                 {truncateNpub(user?.npub || '')}
               </p>
-              {user?.readOnly && (
+              {sessionUser && sessionUser.pubkey !== user?.pubkey && (
+                <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
+                  Viewing
+                </span>
+              )}
+              {sessionUser && sessionUser.pubkey === user?.pubkey && sessionUser.readOnly && (
                 <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
                   Read-only
                 </span>
@@ -122,13 +129,23 @@ export default function MobileNavDrawer({
               <span>Help</span>
             </button>
           )}
-          <button
-            onClick={() => { onLogout(); onClose() }}
-            className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-neutral-400 hover:bg-neutral-900 rounded transition-colors"
-          >
-            <span>↩</span>
-            <span>Logout</span>
-          </button>
+          {sessionUser ? (
+            <button
+              onClick={() => { onLogout(); onClose() }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-neutral-400 hover:bg-neutral-900 rounded transition-colors"
+            >
+              <span>↩</span>
+              <span>Logout</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => { onLogin?.(); onClose() }}
+              className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-purple-300 hover:bg-neutral-900 rounded transition-colors"
+            >
+              <span>→</span>
+              <span>Login</span>
+            </button>
+          )}
         </div>
       </aside>
     </div>

@@ -1,11 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { getNDK } from '../../../../lib/ndk.js'
-import { isSafeUrl } from '../../../../lib/utils.js'
+import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
+// Trust note: events returned by Primal are rendered without local signature
+// verification (same model as Primal's own clients). A compromised Primal
+// could display fabricated articles, but we never sign or publish based on
+// them — the blast radius is display-layer disinformation only.
+import { fetchAuthorLongformFeed } from '../../../../lib/primal.js'
+import { isSafeUrl, getPublishedAt, withTimeout } from '../../../../lib/utils.js'
 import ArticleFeed from './ArticleFeed.jsx'
 import ArticleReadPanel from './ArticleReadPanel.jsx'
 import AuthorSearch from './AuthorSearch.jsx'
 import BulkActionBar from './BulkActionBar.jsx'
 import AuthorProfilePanel from './AuthorProfilePanel.jsx'
+import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
 const MIN_FEED_W = 220
 function defaultFeedWidth() {
@@ -39,6 +45,57 @@ function saveLastArticleId(pubkey, mode, articleId) {
   } catch {}
 }
 
+// Keep an NDK subscription open for a fixed window so slow relays have time
+// to reply after the fast ones EOSE. NDK's fetchEvents closes the sub on
+// first EOSE-from-all-connected, which drops events that only live on a
+// slower relay. Returns a { promise, stop } pair so the caller can cancel
+// on unmount / supersession instead of letting it run to the timeout.
+function collectFromRelays(ndk, filter, windowMs) {
+  let sub = null
+  let timer = null
+  let resolveFn = null
+  const byId = new Map()
+
+  const promise = new Promise(resolve => {
+    resolveFn = resolve
+    try {
+      sub = ndk.subscribe(filter, { closeOnEose: false, groupable: false })
+      sub.on('event', ev => { if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev) })
+    } catch {
+      resolve([])
+      return
+    }
+    timer = setTimeout(() => {
+      try { sub?.stop() } catch {}
+      resolve(Array.from(byId.values()))
+      // Clear the reference so a later stop() doesn't try to resolve
+      // an already-settled promise.
+      resolveFn = null
+      timer = null
+    }, windowMs)
+  })
+
+  function stop() {
+    if (timer) { clearTimeout(timer); timer = null }
+    try { sub?.stop() } catch {}
+    if (resolveFn) { resolveFn(Array.from(byId.values())); resolveFn = null }
+  }
+
+  return { promise, stop }
+}
+
+// For replaceable events (NIP-33), keep only the newest per (pubkey, d-tag).
+function dedupeReplaceable(events) {
+  const best = new Map()
+  for (const ev of events) {
+    const dTag = ev.tags?.find(t => t[0] === 'd')?.[1] || ''
+    const key = `${ev.pubkey}:${dTag}`
+    const prev = best.get(key)
+    if (!prev || (ev.created_at || 0) > (prev.created_at || 0)) best.set(key, ev)
+  }
+  return Array.from(best.values())
+}
+
 export default function DiscoverView({ user, lists, addArticle, createList, removeArticle, moveArticle, deleteList, renameList, reorderLists, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
 
   // ── Selection / filter ────────────────────────────────────────────────────────
@@ -49,14 +106,20 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
 
   function setSelected(article) {
     setSelectedRaw(article)
-    saveLastArticleId(pubkey, feedMode, article?.id || null)
+    // Only persist browsing state on the owner's own page — otherwise every
+    // visited author leaves residue keyed by *their* pubkey in localStorage,
+    // which is both unbounded growth and a behavioral leak on shared devices.
+    if (!readOnly) saveLastArticleId(pubkey, feedMode, article?.id || null)
   }
 
-  // ── Author search state ───────────────────────────────────────────────────────
+  // ── Author-feed state (shared by 'search' and 'mine' modes) ──────────────────
+  // Only 'search' mode persists — 'mine' always pins the viewed user and is
+  // a separate concept from an author search.
   const [authorFilter,   setAuthorFilter]   = useState(() => loadLastAuthor(pubkey))
   const [searchResults,  setSearchResults]  = useState([])
   const [searchProfiles, setSearchProfiles] = useState(new Map())
   const [searchLoading,  setSearchLoading]  = useState(false)
+  const isAuthorFeed = feedMode === 'search' || feedMode === 'mine'
 
   // ── Bookmark group management ─────────────────────────────────────────────────
   const [collapsed,  setCollapsed]  = useState({})
@@ -65,10 +128,25 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
   // ── Author feed multi-select ──────────────────────────────────────────────────
   const [searchCheckedIds, setSearchCheckedIds] = useState(new Set())
 
-  // ── Persist last author to localStorage ─────────────────────────────────────
-  useEffect(() => { saveLastAuthor(pubkey, authorFilter) }, [authorFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Explicit-search-only helper — anything that should count as "the user
+  // searched for this author" goes through here so we persist it.
+  function pickSearchAuthor(author) {
+    setAuthorFilter(author)
+    if (!readOnly) saveLastAuthor(pubkey, author)
+  }
 
-  // ── Accept externally-requested author (e.g. "My Articles" from Write tab) ─
+  // When the user pastes an naddr into Search, we load the author's feed and
+  // auto-select the specific article (matched by d-tag). The dTag sits here
+  // until the freshly-loaded searchResults effect consumes it.
+  const pendingArticleDTagRef = useRef(null)
+  function handleSelectArticle({ pubkey: authorPk, dTag, author }) {
+    pendingArticleDTagRef.current = { pubkey: authorPk, dTag }
+    pickSearchAuthor(author)
+  }
+
+  // ── Accept externally-requested author (from "My Articles" tab) ──────────
+  // Does NOT persist — the pinned-to-viewed-user state shouldn't pollute the
+  // Search Authors tab's last-searched memory.
   useEffect(() => {
     if (!requestedAuthor) return
     setAuthorFilter(requestedAuthor)
@@ -129,55 +207,158 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
   // ── Load author articles when selected ────────────────────────────────────────
 
   useEffect(() => {
-    if (!authorFilter) {
+    if (!authorFilter?.pubkey) {
       setSearchResults([])
       setSearchProfiles(new Map())
       return
     }
     loadAuthorArticles(authorFilter.pubkey)
-  }, [authorFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authorFilter?.pubkey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function loadAuthorArticles(pubkey) {
+  // Active subscription trackers — stopped on supersession and on unmount
+  // so superseded author fetches don't keep pulling events for their full
+  // timeout window.
+  const activeSubsRef = useRef([])
+  function trackSub(subHandle) {
+    activeSubsRef.current.push(subHandle)
+    return subHandle
+  }
+  function stopActiveSubs() {
+    const subs = activeSubsRef.current
+    activeSubsRef.current = []
+    for (const s of subs) {
+      try { s.stop() } catch {}
+    }
+  }
+  useEffect(() => () => stopActiveSubs(), [])
+
+  function restoreSelectedFromSaved(articles) {
+    const savedId = loadLastArticleIds(pubkey)[feedMode]
+    if (!savedId) return
+    const match = articles.find(a => a.id === savedId)
+    if (match) setSelectedRaw(match)
+  }
+
+  // Consume pending naddr-dTag once the author's feed has loaded. If the
+  // article isn't in the top-100 feed Primal returned, fall back to a direct
+  // NDK lookup by (pubkey, d-tag) so older articles still resolve.
+  useEffect(() => {
+    const pending = pendingArticleDTagRef.current
+    if (!pending) return
+    if (searchLoading) return
+    if (searchResults.length === 0) return
+    if (pending.pubkey !== authorFilter?.pubkey) return
+
+    const match = searchResults.find(a =>
+      (a.tags?.find(t => t[0] === 'd')?.[1] || '') === pending.dTag
+    )
+    if (match) {
+      pendingArticleDTagRef.current = null
+      setSelected(match)
+      return
+    }
+
+    // Article not in the feed window — fetch it directly and prepend.
+    let cancelled = false
+    ;(async () => {
+      try {
+        const ndk = getNDK()
+        await connectAndWait(ndk, 3000).catch(() => {})
+        if (cancelled) return
+        const events = await withTimeout(
+          ndk.fetchEvents({
+            kinds: [30023], authors: [pending.pubkey], '#d': [pending.dTag],
+          }),
+          8000,
+          'fetch-timeout'
+        )
+        if (cancelled) return
+        const article = Array.from(events)[0]
+        if (!article) {
+          pendingArticleDTagRef.current = null
+          return
+        }
+        setSearchResults(prev => {
+          if (prev.some(a => a.id === article.id)) return prev
+          return [article, ...prev]
+        })
+        pendingArticleDTagRef.current = null
+        setSelected(article)
+      } catch {
+        pendingArticleDTagRef.current = null
+      }
+    })()
+    return () => { cancelled = true }
+  }, [searchResults, searchLoading, authorFilter?.pubkey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadAuthorArticles(authorPubkey) {
+    // Cancel any in-flight author/profile subscriptions from a prior call so
+    // a fast-switching user doesn't leave N sockets open until each 3s window.
+    stopActiveSubs()
     const gen = ++genRef.current
     setSearchLoading(true)
     setSearchResults([])
     setSelectedRaw(null)
     try {
-      const ndk = getNDK()
-
-      // Fetch kind 30023 articles BY this author directly from relays
-      const events = await Promise.race([
-        ndk.fetchEvents({ kinds: [30023], authors: [pubkey] }),
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
-      ])
+      // Primal's indexer has every author's articles pre-collected from all
+      // the relays it crawls — single fast WebSocket call, no EOSE timing
+      // games. This is the primary source.
+      const primal = await fetchAuthorLongformFeed(authorPubkey, null, 100)
       if (genRef.current !== gen) return
 
-      // Convert NDKEvent set → array sorted by date
-      const articles = Array.from(events).sort((a, b) => b.created_at - a.created_at)
+      let articles = dedupeReplaceable(primal.articles || [])
+        .sort((a, b) => getPublishedAt(b) - getPublishedAt(a))
+      const profiles = new Map(primal.profiles || new Map())
 
-      // Also fetch the author's profile
-      const profileEvents = await Promise.race([
-        ndk.fetchEvents({ kinds: [0], authors: [pubkey] }),
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-      ]).catch(() => new Set())
-      if (genRef.current !== gen) return
-
-      const profiles = new Map()
-      for (const ev of Array.from(profileEvents)) {
-        try {
-          const p = JSON.parse(ev.content)
-          profiles.set(ev.pubkey, { ...p, pubkey: ev.pubkey })
-        } catch {}
+      // Show Primal results immediately — the common case is "done".
+      if (articles.length > 0) {
+        setSearchResults(articles)
+        setSearchProfiles(profiles)
+        setSearchLoading(false)
+        restoreSelectedFromSaved(articles)
       }
 
-      setSearchResults(articles)
-      setSearchProfiles(profiles)
+      // Fallback only when Primal returned nothing (rare — brand-new author,
+      // or Primal outage). Don't block the UI on it.
+      if (articles.length === 0) {
+        const ndk = getNDK()
+        await connectAndWait(ndk, 3000).catch(() => {})
+        if (genRef.current !== gen) return
 
-      // Restore last viewed article if available
-      const savedId = loadLastArticleIds(pubkey).search
-      if (savedId) {
-        const match = articles.find(a => a.id === savedId)
-        if (match) setSelectedRaw(match)
+        const articleSub = trackSub(collectFromRelays(
+          ndk, { kinds: [30023], authors: [authorPubkey] }, 3000
+        ))
+        const rawArticles = await articleSub.promise
+        if (genRef.current !== gen) return
+
+        articles = dedupeReplaceable(rawArticles)
+          .sort((a, b) => getPublishedAt(b) - getPublishedAt(a))
+        setSearchResults(articles)
+        restoreSelectedFromSaved(articles)
+      }
+
+      // Fetch profile from relays only if Primal didn't include it.
+      if (!profiles.has(authorPubkey)) {
+        const ndk = getNDK()
+        await connectAndWait(ndk, 3000).catch(() => {})
+        if (genRef.current !== gen) return
+        const profileSub = trackSub(collectFromRelays(
+          ndk, { kinds: [0], authors: [authorPubkey] }, 2000
+        ))
+        const profileEvents = await profileSub.promise
+        if (genRef.current !== gen) return
+        const best = new Map()
+        for (const ev of profileEvents) {
+          const prev = best.get(ev.pubkey)
+          if (!prev || (ev.created_at || 0) > (prev.created_at || 0)) best.set(ev.pubkey, ev)
+        }
+        for (const ev of best.values()) {
+          try {
+            const p = JSON.parse(ev.content)
+            profiles.set(ev.pubkey, { ...p, pubkey: ev.pubkey })
+          } catch {}
+        }
+        if (genRef.current === gen) setSearchProfiles(new Map(profiles))
       }
     } catch {
       if (genRef.current !== gen) return
@@ -192,16 +373,20 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
     const out = []
     for (const list of lists) {
       for (const item of (list.articles || [])) {
+        const pub = item.publishedAt || 0
+        const tags = [
+          ['title', item.title || ''],
+          ['image', item.image || ''],
+          ['d',     item.aTag?.split(':')[2] || ''],
+        ]
+        if (pub) tags.push(['published_at', String(pub)])
         out.push({
           id:          item.aTag,
           pubkey:      item.aTag?.split(':')[1] || '',
-          created_at:  Math.floor((item.addedAt || 0) / 1000),
+          // Fall back to addedAt for feed date when no published_at stored yet.
+          created_at:  pub || Math.floor((item.addedAt || 0) / 1000),
           content:     '',
-          tags: [
-            ['title', item.title || ''],
-            ['image', item.image || ''],
-            ['d',     item.aTag?.split(':')[2] || ''],
-          ],
+          tags,
           _aTag:       item.aTag,
           _listId:     list.id,
           _listTitle:  list.title,
@@ -217,7 +402,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
   // ── Computed display articles ──────────────────────────────────────────────────
 
   const displayArticles = (() => {
-    if (feedMode === 'search') return searchResults
+    if (isAuthorFeed) return searchResults
 
     const items = buildBookmarkArticles()
     const lq = titleQuery.trim().toLowerCase()
@@ -230,19 +415,27 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
     })
   })()
 
-  const displayProfiles = feedMode === 'search' ? searchProfiles : collectionProfiles
+  const displayProfiles = isAuthorFeed ? searchProfiles : collectionProfiles
 
   // ── Respond to mode changes (feedMode is controlled by parent) ─────────────
   const prevFeedModeRef = useRef(feedMode)
   useEffect(() => {
     if (feedMode === prevFeedModeRef.current) return
+    const prev = prevFeedModeRef.current
     prevFeedModeRef.current = feedMode
     setTitleQuery('')
+
+    // Entering 'search' — restore to last-searched author (may be null →
+    // blank search). Don't carry over whatever 'mine' pinned.
+    if (feedMode === 'search' && prev !== 'search') {
+      setAuthorFilter(loadLastAuthor(pubkey))
+    }
+
     // Restore last article for the target mode
     const savedIds = loadLastArticleIds(pubkey)
     const savedId = savedIds[feedMode]
     if (savedId) {
-      if (feedMode === 'search') {
+      if (feedMode === 'search' || feedMode === 'mine') {
         const match = searchResults.find(a => a.id === savedId)
         setSelectedRaw(match || null)
       } else {
@@ -256,6 +449,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
 
   function handleClearAuthor() {
     setAuthorFilter(null)
+    if (!readOnly) saveLastAuthor(pubkey, null)
     setSelected(null)
   }
 
@@ -279,8 +473,8 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
     e.preventDefault()
   }, [])
 
-  // ── Active author for profile panel (both modes) ───────────────────────────
-  const activeProfilePubkey = feedMode === 'search'
+  // ── Active author for profile panel ────────────────────────────────────────
+  const activeProfilePubkey = isAuthorFeed
     ? authorFilter?.pubkey || null
     : selected?.pubkey || null
 
@@ -314,9 +508,27 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               </div>
             )}
             <div className="flex-1">
-              <AuthorSearch onSelectAuthor={setAuthorFilter} expanded />
+              <AuthorSearch
+                onSelectAuthor={pickSearchAuthor}
+                onSelectArticle={handleSelectArticle}
+                expanded
+              />
             </div>
           </>
+        ) : feedMode === 'mine' ? (
+          <div className="flex items-center gap-2 flex-shrink-0 min-w-0">
+            {authorFilter?.picture && isSafeUrl(authorFilter.picture) && (
+              <img src={authorFilter.picture} alt=""
+                className="w-5 h-5 rounded-full flex-shrink-0 object-cover"
+                onError={e => { e.target.style.display = 'none' }} />
+            )}
+            <span className="text-xs text-neutral-300 truncate max-w-[200px]">
+              {authorFilter?.name || 'Articles'}
+            </span>
+            <span className="text-xs text-neutral-700">
+              · {searchLoading ? 'loading…' : `${searchResults.length} article${searchResults.length !== 1 ? 's' : ''}`}
+            </span>
+          </div>
         ) : (
           <>
             <input type="text" value={titleQuery}
@@ -339,10 +551,10 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
         <div className="flex flex-col overflow-hidden flex-shrink-0"
           style={{ width: `${feedWidth}px` }}>
 
-          {feedMode === 'search' ? (
+          {isAuthorFeed ? (
             authorFilter ? (
               <>
-                {searchCheckedIds.size > 0 && (
+                {!readOnly && searchCheckedIds.size > 0 && (
                   <BulkActionBar
                     articles={displayArticles.filter(a => searchCheckedIds.has(a.id))}
                     profiles={displayProfiles}
@@ -352,7 +564,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                     onClearSelection={() => setSearchCheckedIds(new Set())}
                   />
                 )}
-                {displayArticles.length > 0 && (
+                {!readOnly && displayArticles.length > 0 && (
                   <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
                     <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
                       <input
@@ -380,7 +592,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                   selectedId={selected?.id}
                   checkedIds={searchCheckedIds}
                   onSelect={setSelected}
-                  onToggleSelect={(id, checked) => {
+                  onToggleSelect={readOnly ? null : (id, checked) => {
                     setSearchCheckedIds(prev => {
                       const next = new Set(prev)
                       checked ? next.add(id) : next.delete(id)
@@ -388,9 +600,9 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                     })
                   }}
                   onLoadMore={() => {}}
-                  lists={lists}
-                  onAddToList={addArticle}
-                  onCreateList={createList}
+                  lists={readOnly ? null : lists}
+                  onAddToList={readOnly ? null : addArticle}
+                  onCreateList={readOnly ? null : createList}
                   onLoadInEditor={onLoadInEditor}
                 />
               </>
@@ -399,7 +611,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
             )
           ) : (
             <>
-            {checkedIds.size > 0 && (
+            {!readOnly && checkedIds.size > 0 && (
               <BulkActionBar
                 articles={displayArticles.filter(a => checkedIds.has(a.id))}
                 profiles={new Map()}
@@ -411,7 +623,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                 onClearSelection={() => setCheckedIds(new Set())}
               />
             )}
-            {displayArticles.length > 0 && (
+            {!readOnly && displayArticles.length > 0 && (
               <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
                 <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
                   <input
@@ -439,7 +651,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               onSelect={setSelected}
               displayArticles={displayArticles}
               checkedIds={checkedIds}
-              onToggleCheck={(id, checked) => {
+              onToggleCheck={readOnly ? null : (id, checked) => {
                 setCheckedIds(prev => {
                   const next = new Set(prev)
                   checked ? next.add(id) : next.delete(id)
@@ -448,11 +660,10 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               }}
               addArticle={addArticle}
               createList={createList}
-              removeArticle={removeArticle}
-              moveArticle={moveArticle}
               deleteList={deleteList}
               renameList={renameList}
               reorderLists={reorderLists}
+              readOnly={readOnly}
               onOpenHelp={() => setHelpOpen(true)}
             />
             </>
@@ -470,19 +681,19 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               key={selected.id}
               article={selected}
               profile={displayProfiles.get(selected.pubkey)}
-              lists={lists}
-              onAddToList={addArticle}
-              onCreateList={createList}
-              onMoveArticle={moveArticle}
-              onRemoveFromList={selected?._listId ? removeArticle : undefined}
+              lists={readOnly ? null : lists}
+              onAddToList={readOnly ? null : addArticle}
+              onCreateList={readOnly ? null : createList}
+              onMoveArticle={readOnly ? null : moveArticle}
+              onRemoveFromList={!readOnly && selected?._listId ? removeArticle : undefined}
               onLoadInEditor={onLoadInEditor}
               onClose={() => setSelected(null)}
               onAuthorClick={(author) => {
-                setAuthorFilter(author)
+                pickSearchAuthor(author)
                 onFeedModeChange('search')
                 setSelected(null)
               }}
-              readOnly={!!user?.readOnly}
+              readOnly={readOnly}
               user={user}
             />
           ) : (
@@ -501,7 +712,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               pubkey={activeProfilePubkey}
               user={user}
               onAuthorClick={feedMode !== 'search' ? (author) => {
-                setAuthorFilter(author)
+                pickSearchAuthor(author)
                 onFeedModeChange('search')
                 setSelected(null)
               } : undefined}
@@ -520,9 +731,9 @@ function SearchEmptyState() {
     <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 gap-4">
       <div className="text-3xl text-neutral-700">🔍</div>
       <div className="space-y-1.5">
-        <p className="text-sm text-neutral-300">Search for a Nostr author</p>
+        <p className="text-sm text-neutral-300">Search</p>
         <p className="text-xs text-neutral-600 max-w-xs leading-relaxed">
-          Browse their long-form articles and recipes. Bookmark anything you want to keep in your Collection.
+          Search by author name, or paste an <span className="text-neutral-400">npub</span> to jump to an author, or an <span className="text-neutral-400">naddr</span> to open a specific article.
         </p>
       </div>
     </div>
@@ -557,7 +768,7 @@ function HelpOverlay({ onClose }) {
             <p className="text-neutral-200 font-medium mb-1">How to add items</p>
             <ul className="list-disc list-inside space-y-1 text-neutral-500">
               <li>Bookmark articles in any Nostr client</li>
-              <li>Use <span className="text-neutral-300">Author Search</span> here to find and bookmark articles</li>
+              <li>Use <span className="text-neutral-300">Search</span> here to find and bookmark articles</li>
               <li>Create named reading lists to organize your collection</li>
             </ul>
           </div>
@@ -578,18 +789,16 @@ function HelpOverlay({ onClose }) {
 
 // ── Bookmarks panel ─────────────────────────────────────────────────────────────
 
-function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, createList, removeArticle, moveArticle, deleteList, renameList, reorderLists, onOpenHelp }) {
+function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, createList, deleteList, renameList, reorderLists, readOnly, onOpenHelp }) {
   const [editingId,     setEditingId]     = useState(null)
   const [editTitle,     setEditTitle]     = useState('')
   const [confirmDel,    setConfirmDel]    = useState(null)
   const [itemMenuId,    setItemMenuId]    = useState(null) // aTag of item with open menu
-  const [menuNewGroup,  setMenuNewGroup]  = useState(null) // null | 'move' | 'copy'
-  const [menuNewName,   setMenuNewName]   = useState('')
 
   // Close item menu on outside click
   useEffect(() => {
     if (!itemMenuId) return
-    function handler() { setItemMenuId(null); setMenuNewGroup(null); setMenuNewName('') }
+    function handler() { setItemMenuId(null) }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [itemMenuId])
@@ -602,16 +811,29 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
       <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 gap-4">
         <div className="text-3xl text-neutral-700">📚</div>
         <div className="space-y-1.5">
-          <p className="text-sm text-neutral-300">Your collection is empty</p>
-          <p className="text-xs text-neutral-600 max-w-xs leading-relaxed">
-            Bookmark long-form articles and recipes from any Nostr app — they'll appear here.
-            Or use <span className="text-neutral-400">Author Search</span> to find and bookmark articles.
-          </p>
+          {readOnly ? (
+            <>
+              <p className="text-sm text-neutral-300">No public bookmarks</p>
+              <p className="text-xs text-neutral-600 max-w-xs leading-relaxed">
+                This user hasn't published any public reading lists yet.
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-neutral-300">Your collection is empty</p>
+              <p className="text-xs text-neutral-600 max-w-xs leading-relaxed">
+                Bookmark long-form articles and recipes from any Nostr app — they'll appear here.
+                Or use <span className="text-neutral-400">Search</span> to find and bookmark articles.
+              </p>
+            </>
+          )}
         </div>
-        <button onClick={onOpenHelp}
-          className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-500 hover:text-neutral-300 hover:border-neutral-500 transition-colors">
-          Learn more
-        </button>
+        {!readOnly && (
+          <button onClick={onOpenHelp}
+            className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-500 hover:text-neutral-300 hover:border-neutral-500 transition-colors">
+            Learn more
+          </button>
+        )}
       </div>
     )
   }
@@ -650,14 +872,23 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
 
   // Close item menu when clicking outside
   function handlePanelClick() {
-    if (itemMenuId) { setItemMenuId(null); setMenuNewGroup(null); setMenuNewName('') }
+    if (itemMenuId) setItemMenuId(null)
   }
 
   return (
     <div className="overflow-y-auto flex-1" onClick={handlePanelClick}>
       {lists.map((list, listIndex) => {
         const allItems    = list.articles || []
-        const items       = allItems.filter(item => visibleIds.has(item.aTag))
+        // Sort by published_at (or addedAt fallback) desc so the newest
+        // article surfaces first, matching the author feed behavior.
+        const items       = allItems
+          .filter(item => visibleIds.has(item.aTag))
+          .slice()
+          .sort((a, b) => {
+            const at = a.publishedAt || Math.floor((a.addedAt || 0) / 1000)
+            const bt = b.publishedAt || Math.floor((b.addedAt || 0) / 1000)
+            return bt - at
+          })
         const isCollapsed = !!collapsed[list.id]
         const isEditing   = editingId === list.id
         const isDeleting  = confirmDel === list.id
@@ -686,7 +917,7 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
               <span className="text-neutral-700 text-xs flex-shrink-0">
                 {items.length !== allItems.length ? `${items.length}/${allItems.length}` : allItems.length}
               </span>
-              {!isEditing && !isDeleting && (
+              {!readOnly && !isEditing && !isDeleting && (
                 <>
                   {/* Group reorder arrows */}
                   <button onClick={e => { e.stopPropagation(); reorderLists(listIndex, listIndex - 1) }}
@@ -732,8 +963,11 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
               const isHex = (s) => s && (/^[a-f0-9]{6,}$/i.test(s) || s.startsWith('npub'))
               const authorDisplay = item.author && !isHex(item.author) ? item.author : ''
               const tagSummary = (item.tTags || []).slice(0, 3).join(', ')
-              const dateStr = item.addedAt
-                ? new Date(item.addedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+              const dateMs = item.publishedAt
+                ? item.publishedAt * 1000
+                : (item.addedAt || 0)
+              const dateStr = dateMs
+                ? new Date(dateMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
                 : ''
               const menuOpen = itemMenuId === item.aTag
               const otherLists = lists.filter(l => l.id !== list.id)
@@ -743,11 +977,13 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                   className={`relative flex items-center border-b border-neutral-800/60 transition-colors ${isSelected ? 'bg-purple-950/30' : 'hover:bg-neutral-800/40'}`}
                   style={{ height: '88px' }}>
                   {/* Checkbox */}
-                  <div className="pl-2 pr-0 flex items-center flex-shrink-0" onClick={e => e.stopPropagation()}>
-                    <input type="checkbox" checked={checkedIds.has(item.aTag)}
-                      onChange={e => onToggleCheck(item.aTag, e.target.checked)}
-                      className="accent-purple-600 cursor-pointer opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity" />
-                  </div>
+                  {!readOnly && (
+                    <div className="pl-2 pr-0 flex items-center flex-shrink-0" onClick={e => e.stopPropagation()}>
+                      <input type="checkbox" checked={checkedIds.has(item.aTag)}
+                        onChange={e => onToggleCheck(item.aTag, e.target.checked)}
+                        className="accent-purple-600 cursor-pointer opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity" />
+                    </div>
+                  )}
                   <button onClick={() => onSelect(fakeArticle)}
                     className="flex items-center gap-3 px-2 text-left flex-1 min-w-0 h-full">
                     <div className="w-14 h-14 rounded flex-shrink-0 bg-neutral-800 overflow-hidden">
@@ -775,6 +1011,7 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                   </button>
 
                   {/* Three-dots menu */}
+                  {!readOnly && (
                   <div className="flex-shrink-0 pr-2 relative" onMouseDown={e => e.stopPropagation()}>
                     <button
                       onClick={e => { e.stopPropagation(); setItemMenuId(menuOpen ? null : item.aTag) }}
@@ -786,113 +1023,21 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                         <circle cx="8" cy="13" r="1.5" />
                       </svg>
                     </button>
-                    {menuOpen && (
-                      <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 min-w-[180px] max-h-[70vh] overflow-y-auto"
-                        onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
-                        {/* Move to */}
-                        <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Move to</p>
-                        {otherLists.map(target => (
-                          <button key={`mv-${target.id}`}
-                            onClick={() => { moveArticle(list.id, target.id, item.aTag); setItemMenuId(null); setMenuNewGroup(null) }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate">
-                            {target.title}
-                          </button>
-                        ))}
-                        {menuNewGroup === 'move' && itemMenuId === item.aTag ? (
-                          <div className="px-2 py-1.5 flex gap-1">
-                            <input autoFocus type="text" value={menuNewName} onChange={e => setMenuNewName(e.target.value)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter' && menuNewName.trim()) {
-                                  (async () => {
-                                    const newList = await createList(menuNewName.trim())
-                                    moveArticle(list.id, newList.id, item.aTag)
-                                    setItemMenuId(null); setMenuNewGroup(null); setMenuNewName('')
-                                  })()
-                                }
-                                if (e.key === 'Escape') setMenuNewGroup(null)
-                              }}
-                              placeholder="Group name…" maxLength={60}
-                              className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none" />
-                            <button onClick={async () => {
-                              if (!menuNewName.trim()) return
-                              const newList = await createList(menuNewName.trim())
-                              moveArticle(list.id, newList.id, item.aTag)
-                              setItemMenuId(null); setMenuNewGroup(null); setMenuNewName('')
-                            }} disabled={!menuNewName.trim()}
-                              className="text-xs px-2 py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors">✓</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => { setMenuNewGroup('move'); setMenuNewName('') }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-500 hover:text-neutral-300 hover:bg-neutral-700 transition-colors">
-                            + New group
-                          </button>
-                        )}
-                        <div className="border-t border-neutral-700" />
-
-                        {/* Copy to */}
-                        <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Copy to</p>
-                        {otherLists.map(target => (
-                          <button key={`cp-${target.id}`}
-                            onClick={() => {
-                              addArticle(target.id, {
-                                aTag: item.aTag, title: item.title, image: item.image,
-                                author: item.author, authorPic: item.authorPic,
-                                addedAt: Date.now(), tTags: item.tTags || [],
-                              })
-                              setItemMenuId(null); setMenuNewGroup(null)
-                            }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate">
-                            {target.title}
-                          </button>
-                        ))}
-                        {menuNewGroup === 'copy' && itemMenuId === item.aTag ? (
-                          <div className="px-2 py-1.5 flex gap-1">
-                            <input autoFocus type="text" value={menuNewName} onChange={e => setMenuNewName(e.target.value)}
-                              onKeyDown={e => {
-                                if (e.key === 'Enter' && menuNewName.trim()) {
-                                  (async () => {
-                                    const newList = await createList(menuNewName.trim())
-                                    addArticle(newList.id, {
-                                      aTag: item.aTag, title: item.title, image: item.image,
-                                      author: item.author, authorPic: item.authorPic,
-                                      addedAt: Date.now(), tTags: item.tTags || [],
-                                    })
-                                    setItemMenuId(null); setMenuNewGroup(null); setMenuNewName('')
-                                  })()
-                                }
-                                if (e.key === 'Escape') setMenuNewGroup(null)
-                              }}
-                              placeholder="Group name…" maxLength={60}
-                              className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none" />
-                            <button onClick={async () => {
-                              if (!menuNewName.trim()) return
-                              const newList = await createList(menuNewName.trim())
-                              addArticle(newList.id, {
-                                aTag: item.aTag, title: item.title, image: item.image,
-                                author: item.author, authorPic: item.authorPic,
-                                addedAt: Date.now(), tTags: item.tTags || [],
-                              })
-                              setItemMenuId(null); setMenuNewGroup(null); setMenuNewName('')
-                            }} disabled={!menuNewName.trim()}
-                              className="text-xs px-2 py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors">✓</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => { setMenuNewGroup('copy'); setMenuNewName('') }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-500 hover:text-neutral-300 hover:bg-neutral-700 transition-colors">
-                            + New group
-                          </button>
-                        )}
-                        <div className="border-t border-neutral-700" />
-
-                        {/* Remove */}
-                        <button
-                          onClick={() => { removeArticle(list.id, item.aTag); setItemMenuId(null); setMenuNewGroup(null) }}
-                          className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-950/40 transition-colors">
-                          Remove from "{list.title}"
-                        </button>
-                      </div>
-                    )}
+                    <ArticleActionsMenu
+                      open={menuOpen}
+                      onClose={() => setItemMenuId(null)}
+                      article={fakeArticle}
+                      title={item.title || ''}
+                      image={item.image || ''}
+                      tTags={item.tTags || []}
+                      lists={otherLists}
+                      onAddToList={addArticle}
+                      onCreateList={createList}
+                      authorName={item.author || ''}
+                      authorPic={item.authorPic || ''}
+                    />
                   </div>
+                  )}
                 </div>
               )
             })}

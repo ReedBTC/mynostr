@@ -232,10 +232,12 @@ export async function fetchFollowingLongformFeed(pubkey, until = null, limit = 2
 
 /**
  * Fetch long-form articles by a specific author via Primal's index.
- * Replaces the old NDK contact-list + relay fetch path.
+ * Primal's long_form_content_feed op defaults to a social-graph feed when
+ * given only `pubkey`; `notes: 'authored'` makes it return articles *by*
+ * that pubkey, which is what we actually want here.
  */
-export async function fetchAuthorLongformFeed(pubkey, until = null, limit = 50) {
-  const params = { pubkey, limit }
+export async function fetchAuthorLongformFeed(pubkey, until = null, limit = 100) {
+  const params = { pubkey, notes: 'authored', limit }
   if (until) params.until = until
   try {
     const events = await query('long_form_content_feed', params)

@@ -20,16 +20,26 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK } from './ndk.js'
 
-const STORAGE_KEY = 'mynostr_reading_lists'
+// Per-pubkey cache so viewing multiple authors on the same machine doesn't
+// leak one person's enriched bookmarks into another's display.
+const STORAGE_KEY_PREFIX = 'mynostr_reading_lists:'
 
 // ── LocalStorage helpers ──────────────────────────────────────────────────────
 
-function loadFromStorage() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch { return [] }
+function storageKeyFor(pubkey) {
+  return pubkey ? `${STORAGE_KEY_PREFIX}${pubkey}` : null
 }
 
-function saveToStorage(lists) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(lists)) } catch {}
+function loadFromStorage(pubkey) {
+  const key = storageKeyFor(pubkey)
+  if (!key) return []
+  try { return JSON.parse(localStorage.getItem(key) || '[]') } catch { return [] }
+}
+
+function saveToStorage(pubkey, lists) {
+  const key = storageKeyFor(pubkey)
+  if (!key) return
+  try { localStorage.setItem(key, JSON.stringify(lists)) } catch {}
 }
 
 // ── Nostr event helpers ───────────────────────────────────────────────────────
@@ -101,8 +111,8 @@ async function enrichBookmarkItems(lists) {
   const ndk = getNDK()
 
   // Separate items into two buckets:
-  // 1. needsArticle: missing title (bare `a` tag imports) — fetch kind 30023 + profile
-  // 2. needsProfile: has title but missing real author name — just fetch kind 0 profile
+  // 1. needsArticle: missing title OR publishedAt — fetch kind 30023 + profile
+  // 2. needsProfile: has title/publishedAt but missing real author name — just fetch kind 0 profile
   const needsArticle = []
   const needsProfile = []
   const allPubkeys = new Set()
@@ -113,7 +123,7 @@ async function enrichBookmarkItems(lists) {
       const pubkey = item.aTag.split(':')[1]
       if (!pubkey) continue
 
-      if (!item.title) {
+      if (!item.title || !item.publishedAt) {
         needsArticle.push(item)
         allPubkeys.add(pubkey)
       } else if (isHexLike(item.author) || !item.authorPic) {
@@ -183,6 +193,10 @@ async function enrichBookmarkItems(lists) {
       item.title = getTag(ev, 'title') || item.title
       item.image = getTag(ev, 'image') || item.image
       item.tTags = ev.tags?.filter(t => t[0] === 't').map(t => t[1]) || item.tTags || []
+      const pub = parseInt(getTag(ev, 'published_at'))
+      if (!item.publishedAt) {
+        item.publishedAt = !isNaN(pub) && pub ? pub : (ev.created_at || 0)
+      }
     }
     if (profile) {
       const name = profile.display_name || profile.name || ''
@@ -223,11 +237,16 @@ export function useReadingLists(user) {
     async function load() {
       setLoading(true)
 
-      if (readOnly || !pubkey) {
-        setLists(loadFromStorage())
+      if (!pubkey) {
+        setLists([])
         setLoading(false)
         return
       }
+
+      // Show cached lists immediately so the UI isn't empty while relays respond.
+      const cachedInitial = loadFromStorage(pubkey)
+      if (cancelled) return
+      if (cachedInitial.length > 0) setLists(cachedInitial)
 
       try {
         const ndk    = getNDK()
@@ -266,7 +285,7 @@ export function useReadingLists(user) {
 
         // Merge cached metadata (author, authorPic, title, image) from localStorage
         // into fresh relay data so enriched info isn't lost on reload
-        const cached = loadFromStorage()
+        const cached = loadFromStorage(pubkey)
         const cachedItemMap = new Map()
         for (const list of cached) {
           for (const art of (list.articles || [])) {
@@ -277,16 +296,20 @@ export function useReadingLists(user) {
           for (const art of list.articles) {
             const c = cachedItemMap.get(art.aTag)
             if (!c) continue
-            if (!art.author    && c.author)    art.author    = c.author
-            if (!art.authorPic && c.authorPic) art.authorPic = c.authorPic
-            if (!art.title     && c.title)     art.title     = c.title
-            if (!art.image     && c.image)     art.image     = c.image
+            if (!art.author      && c.author)      art.author      = c.author
+            if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
+            if (!art.title       && c.title)       art.title       = c.title
+            if (!art.image       && c.image)       art.image       = c.image
+            if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
             if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
           }
         }
 
         setLists(result)
-        saveToStorage(result)
+        // Only persist for the signed-in owner. Visitor caches (every other
+        // author's lists) would grow unbounded in localStorage across a long
+        // session, so keep those in-memory for the page lifetime only.
+        if (!readOnly) saveToStorage(pubkey, result)
 
         // Background enrichment — fetch metadata for items still missing info
         if (!cancelled && !enrichingRef.current) {
@@ -297,12 +320,13 @@ export function useReadingLists(user) {
             if (didEnrich) {
               // Force a re-render with the enriched data
               setLists([...result])
-              saveToStorage(result)
+              if (!readOnly) saveToStorage(pubkey, result)
             }
           }).catch(() => { enrichingRef.current = false })
         }
       } catch {
-        setLists(loadFromStorage())
+        if (cancelled) return
+        setLists(loadFromStorage(pubkey))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -314,12 +338,16 @@ export function useReadingLists(user) {
 
   // Publish a list to Nostr and update local state
   const publishList = useCallback(async (list) => {
+    // Defense in depth — UI already hides these paths for visitors, but if a
+    // caller ever slipped through, we must not mutate the viewed user's cache.
+    if (readOnly) return
+
     const updated = (prev) =>
       prev.some(l => l.id === list.id)
         ? prev.map(l => l.id === list.id ? list : l)
         : [list, ...prev]
 
-    if (!readOnly && pubkey) {
+    if (pubkey) {
       try {
         const ndk   = getNDK()
         const event = new NDKEvent(ndk)
@@ -338,12 +366,13 @@ export function useReadingLists(user) {
 
     setLists(prev => {
       const next = updated(prev)
-      saveToStorage(next)
+      saveToStorage(pubkey, next)
       return next
     })
   }, [readOnly, pubkey])
 
   const createList = useCallback(async (name) => {
+    if (readOnly) return null
     const list = {
       id:        makeSlug(name),
       title:     name,
@@ -352,9 +381,10 @@ export function useReadingLists(user) {
     }
     await publishList(list)
     return list
-  }, [publishList])
+  }, [readOnly, publishList])
 
   const addArticle = useCallback(async (listId, articleMeta) => {
+    if (readOnly) return
     setLists(prev => {
       const list = prev.find(l => l.id === listId)
       if (!list) return prev
@@ -363,9 +393,10 @@ export function useReadingLists(user) {
       publishList(updated)
       return prev
     })
-  }, [publishList])
+  }, [readOnly, publishList])
 
   const removeArticle = useCallback(async (listId, aTag) => {
+    if (readOnly) return
     setLists(prev => {
       const list = prev.find(l => l.id === listId)
       if (!list) return prev
@@ -373,10 +404,11 @@ export function useReadingLists(user) {
       publishList(updated)
       return prev
     })
-  }, [publishList])
+  }, [readOnly, publishList])
 
   const deleteList = useCallback(async (listId) => {
-    if (!readOnly && pubkey) {
+    if (readOnly) return
+    if (pubkey) {
       try {
         const ndk   = getNDK()
         const event = new NDKEvent(ndk)
@@ -389,12 +421,13 @@ export function useReadingLists(user) {
     }
     setLists(prev => {
       const next = prev.filter(l => l.id !== listId)
-      saveToStorage(next)
+      saveToStorage(pubkey, next)
       return next
     })
   }, [readOnly, pubkey])
 
   const renameList = useCallback(async (listId, newTitle) => {
+    if (readOnly) return
     setLists(prev => {
       const list = prev.find(l => l.id === listId)
       if (!list) return prev
@@ -402,9 +435,10 @@ export function useReadingLists(user) {
       publishList(updated)
       return prev
     })
-  }, [publishList])
+  }, [readOnly, publishList])
 
   const moveArticle = useCallback(async (fromListId, toListId, aTag) => {
+    if (readOnly) return
     setLists(prev => {
       const from = prev.find(l => l.id === fromListId)
       const to   = prev.find(l => l.id === toListId)
@@ -423,19 +457,22 @@ export function useReadingLists(user) {
       publishList(updatedTo)
       return prev
     })
-  }, [publishList])
+  }, [readOnly, publishList])
 
   const reorderLists = useCallback((fromIndex, toIndex) => {
+    // Visitors can't re-order someone else's lists — the cache belongs to the
+    // viewed user, not the viewer.
+    if (readOnly) return
     setLists(prev => {
       if (fromIndex < 0 || fromIndex >= prev.length) return prev
       if (toIndex   < 0 || toIndex   >= prev.length) return prev
       const next = [...prev]
       const [moved] = next.splice(fromIndex, 1)
       next.splice(toIndex, 0, moved)
-      saveToStorage(next)
+      saveToStorage(pubkey, next)
       return next
     })
-  }, [])
+  }, [readOnly, pubkey])
 
   return { lists, loading, createList, addArticle, removeArticle, moveArticle, deleteList, renameList, reorderLists }
 }

@@ -87,6 +87,62 @@ export function isSafeUrl(url) {
   }
 }
 
+// Returns the article's published_at tag (unix seconds) when set, else
+// falls back to the event's created_at. Feeds should sort and display with
+// this so user-authored dates beat relay-publish times.
+export function getPublishedAt(ev) {
+  const tag = ev?.tags?.find(t => t[0] === 'published_at')?.[1]
+  if (tag) {
+    const n = parseInt(tag)
+    if (!isNaN(n)) return n
+  }
+  return ev?.created_at || 0
+}
+
+// Returns the article's published_at as a YYYY-MM-DD string. Useful when
+// pre-filling the metadata date field or building frontmatter on export.
+export function getPublishedAtDate(ev) {
+  const ts = getPublishedAt(ev)
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  if (isNaN(d)) return ''
+  return d.toISOString().split('T')[0]
+}
+
+// Race a promise against a timeout. Rejects with the given label if the
+// inner promise hasn't settled in `ms` milliseconds. Use for relay fetches
+// that can otherwise hang indefinitely when no EOSE arrives.
+export function withTimeout(promise, ms, label = 'timeout') {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(label)), ms)),
+  ])
+}
+
+// Copy text to the clipboard. Tries the async Clipboard API first, then
+// falls back to document.execCommand('copy') for insecure contexts (iframes,
+// http://, older browsers). Returns true on success.
+export async function copyToClipboard(text) {
+  if (!text) return false
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {}
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 // Escapes characters that have special meaning in markdown link syntax
 function escapeMarkdownLink(str) {
   return (str || '').replace(/[[\]()]/g, '\\$&')

@@ -1,20 +1,27 @@
 import { useState } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
 import { truncateNpub, isSafeUrl } from '../lib/utils.js'
 import { resetNDK } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
+import { useOwnerContext } from '../lib/ownerContext.jsx'
 import BoostModal from './BoostModal.jsx'
 import HelpModal from '../modules/longform/components/HelpModal.jsx'
 import MobileNavDrawer from './MobileNavDrawer.jsx'
+import ShareButton from './ShareButton.jsx'
 
 /**
  * AppShell — persistent layout wrapping every module.
- * Desktop: logo · scrollable module tabs · user avatar + boost/help/logout.
+ * Desktop: logo · scrollable module tabs · (share) avatar + boost/help/login-or-logout.
  * Mobile: hamburger + active module label + avatar; nav lives in a slide-in drawer.
- * Full viewport below the bar is handed to the active module.
+ *
+ * `user` here is the *viewed* user (whose page is on screen). Session identity
+ * (used for gating editor UI) comes from OwnerContext.
  */
-export default function AppShell({ user, activeModule, onModuleChange, onLogout, children }) {
+export default function AppShell({ user, sessionUser, activeModule, onModuleChange, onLogout, children }) {
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
+  const { isOwner, isReadOnly } = useOwnerContext()
   const [boostOpen, setBoostOpen]   = useState(false)
   const [helpOpen,  setHelpOpen]    = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -25,6 +32,20 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
     resetNDK()
     onLogout()
   }
+
+  function handleLoginClick() {
+    // Pass the current page as "from" so LoginRoute can bring an owner
+    // straight back to it instead of bouncing to the default module.
+    const from = user?.npub ? `/${user.npub}/${activeModule}` : null
+    navigate('/login', from ? { state: { from } } : undefined)
+  }
+
+  // Visitor badge — shown whenever the user isn't editing their own page.
+  // Covers logged-out visitors, signed-in users viewing someone else, and
+  // read-only (npub-login) sessions on their own page.
+  const viewerBadgeText = isReadOnly
+    ? (sessionUser ? (sessionUser.pubkey === user?.pubkey ? 'Read-only' : 'Viewing') : 'Viewing')
+    : null
 
   return (
     <div className="flex flex-col h-screen bg-neutral-950 text-neutral-100 font-mono overflow-hidden">
@@ -50,11 +71,12 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {user?.readOnly && (
+            {viewerBadgeText && (
               <span className="text-[10px] text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
-                RO
+                {viewerBadgeText === 'Read-only' ? 'RO' : 'View'}
               </span>
             )}
+            <ShareButton variant="icon" />
             <UserAvatar profile={profile} />
           </div>
         </header>
@@ -62,12 +84,10 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
         /* ── Desktop top bar ───────────────────────────────────── */
         <header className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950 shrink-0 px-3">
 
-          {/* Logo */}
-          <img
-            src="/mynostr.png"
-            alt="MyNostr"
-            className="h-7 shrink-0 mr-1"
-          />
+          {/* Logo — always links home */}
+          <Link to="/" aria-label="MyNostr home" className="shrink-0 mr-1">
+            <img src="/mynostr.png" alt="MyNostr" className="h-7" />
+          </Link>
 
           {/* Module tabs — horizontally scrollable so nothing wraps or truncates */}
           <nav
@@ -84,13 +104,15 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
             ))}
           </nav>
 
-          {/* Right: read-only badge · avatar · boost · logout */}
+          {/* Right: viewer badge · share · avatar · boost · help · login/logout */}
           <div className="flex items-center gap-2 shrink-0 pl-2">
-            {user?.readOnly && (
+            {viewerBadgeText && (
               <span className="text-xs text-amber-500 border border-amber-900 rounded px-2 py-0.5">
-                Read-only
+                {viewerBadgeText}
               </span>
             )}
+
+            <ShareButton variant="button" />
 
             <UserAvatar profile={profile} />
 
@@ -121,13 +143,23 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
               </button>
             )}
 
-            <button
-              onClick={handleLogout}
-              className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
-              aria-label="Logout"
-            >
-              Logout
-            </button>
+            {sessionUser ? (
+              <button
+                onClick={handleLogout}
+                className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
+                aria-label="Logout"
+              >
+                Logout
+              </button>
+            ) : (
+              <button
+                onClick={handleLoginClick}
+                className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded border border-purple-900 hover:border-purple-700"
+                aria-label="Login"
+              >
+                Login
+              </button>
+            )}
           </div>
         </header>
       )}
@@ -137,16 +169,20 @@ export default function AppShell({ user, activeModule, onModuleChange, onLogout,
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           user={user}
+          sessionUser={sessionUser}
           activeModule={activeModule}
           onModuleChange={onModuleChange}
           onBoost={() => setBoostOpen(true)}
           onHelp={() => setHelpOpen(true)}
           onLogout={handleLogout}
+          onLogin={handleLoginClick}
           showHelp={activeModule === 'longform'}
         />
       )}
 
-      {boostOpen && <BoostModal user={user} onClose={() => setBoostOpen(false)} readOnly={!!user?.readOnly} />}
+      {/* BoostModal uses `user` for the "boost as" identity — that's the session
+          user, not whoever's page we're on. */}
+      {boostOpen && <BoostModal user={sessionUser} onClose={() => setBoostOpen(false)} readOnly={!isOwner} />}
       {helpOpen  && <HelpModal onClose={() => setHelpOpen(false)} />}
 
       {/* ── Module content ──────────────────────────────────────── */}

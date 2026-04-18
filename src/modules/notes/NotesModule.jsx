@@ -15,12 +15,14 @@ import { publishNote } from '../../lib/publishNote.js'
 import { getNDK } from '../../lib/ndk.js'
 import { uploadToBlossom } from '../../lib/blossom.js'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
+import { useOwnerContext } from '../../lib/ownerContext.jsx'
 
 // Compact default heights — phone-like proportions
 const TEXTAREA_MIN_H = 100
 const PREVIEW_COLLAPSED_H = 200
 
 export default function NotesModule({ user }) {
+  const { isOwner } = useOwnerContext()
   const readOnly = !!user?.readOnly
   const isMobile = useIsMobile()
   const fileRef = useRef(null)
@@ -416,6 +418,23 @@ export default function NotesModule({ user }) {
       setPublishing(false)
     }
   }, [expandedContent, finalTags])
+
+  // Visitor / read-only mode — the full note-viewing stream is a later phase.
+  // For now, show a placeholder instead of the composer.
+  if (!isOwner) {
+    const displayName = user?.profile?.displayName || user?.profile?.name || 'this user'
+    return (
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-sm mx-auto px-4 py-12 text-center">
+          <div className="text-3xl text-neutral-700 mb-4">📝</div>
+          <p className="text-sm text-neutral-300 mb-2">Notes by {displayName}</p>
+          <p className="text-xs text-neutral-600 leading-relaxed">
+            A public feed of this user's short notes is coming soon.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex-1 overflow-y-auto">
