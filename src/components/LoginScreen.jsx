@@ -23,6 +23,11 @@ export default function LoginScreen({ onLogin }) {
   const [qrUri, setQrUri] = useState(null)
   const [qrWaiting, setQrWaiting] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Bunker/NIP-46 can request user-approval via a web URL (nsec.app etc).
+  // On mobile, window.open from an async callback is blocked by popup blockers,
+  // so we surface the URL in the UI for the user to tap manually. The *user
+  // gesture* of tapping the rendered link bypasses the blocker.
+  const [authUrl, setAuthUrl] = useState(null)
   const qrSignerRef = useRef(null)
   // Token for the extension-detection poll so a competing login flow can abort it.
   const extPollTokenRef = useRef({ aborted: true })
@@ -286,6 +291,7 @@ export default function LoginScreen({ onLogin }) {
 
   async function loginWithBunker() {
     setError('')
+    setAuthUrl(null)
     cancelActiveQrFlow()
     const token = bunkerValue.trim()
     if (!token) {
@@ -297,22 +303,41 @@ export default function LoginScreen({ onLogin }) {
       return
     }
     setLoading(true)
+    // If the bunker requests web approval (authUrl) we know it's alive and
+    // just waiting for the user — extend the timeout to give them time to tap.
+    // On mobile, window.open from an async callback is blocked, so we surface
+    // the URL in the UI; on desktop we also try to pop it up.
+    let timeoutId = null
+    let rejectTimeout = null
+    let authRequested = false
     try {
       resetNDK()
       const ndk = getNDK()
       const signer = NDKNip46Signer.bunker(ndk, token)
       signer.on('authUrl', (url) => {
+        authRequested = true
+        if (timeoutId) clearTimeout(timeoutId)
+        if (rejectTimeout) {
+          timeoutId = setTimeout(() => rejectTimeout(new Error('__timeout__')), 180000)
+        }
+        let safe = null
         try {
           const parsed = new URL(url)
-          if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-            window.open(url, '_blank', 'width=600,height=700')
-          }
+          if (parsed.protocol === 'https:' || parsed.protocol === 'http:') safe = url
         } catch {}
+        if (!safe) return
+        setAuthUrl(safe)
+        if (!isMobile) {
+          try { window.open(safe, '_blank', 'width=600,height=700') } catch {}
+        }
       })
       ndk.signer = signer
       await Promise.race([
         signer.blockUntilReady(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('__timeout__')), 30000)),
+        new Promise((_, reject) => {
+          rejectTimeout = reject
+          timeoutId = setTimeout(() => reject(new Error('__timeout__')), 30000)
+        }),
       ])
       await connectAndWait(ndk)
       const ndkUser = await signer.user()
@@ -320,13 +345,17 @@ export default function LoginScreen({ onLogin }) {
       onLogin(user)
     } catch (err) {
       if (err.message === '__timeout__') {
-        setError('Bunker did not respond in time. Check that the connection string is valid and the bunker is online.')
+        setError(authRequested
+          ? 'Bunker requested approval but never completed. Tap the approval link above, then wait for your signer to connect.'
+          : 'Bunker did not respond in time. Check that the connection string is valid and the bunker is online.')
       } else {
         setError('Bunker login failed: ' + (err.message || 'unknown error'))
       }
     } finally {
+      if (timeoutId) clearTimeout(timeoutId)
       setLoading(false)
       setBunkerValue('')
+      setAuthUrl(null)
     }
   }
 
@@ -616,6 +645,28 @@ export default function LoginScreen({ onLogin }) {
             <Divider />
             <NostrConnectSection />
           </>
+        )}
+
+        {/* Bunker requested web approval — the user must tap this to approve
+            in their signer. Must be a real <a> tap so mobile popup blockers
+            don't eat it (window.open from an async callback is blocked). */}
+        {authUrl && (
+          <div className="rounded-lg border border-purple-700 bg-purple-950/40 p-3 text-center space-y-2">
+            <p className="text-xs text-purple-200">
+              Your bunker is asking you to approve this connection.
+            </p>
+            <a
+              href={authUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block w-full py-2 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 text-white text-sm font-medium transition-colors"
+            >
+              Open approval page
+            </a>
+            <p className="text-[11px] text-neutral-500 leading-relaxed">
+              Approve in the new tab, then return here. Login finishes automatically.
+            </p>
+          </div>
         )}
 
         {/* Error display */}
