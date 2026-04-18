@@ -238,53 +238,78 @@ export default function LoginScreen({ onLogin }) {
     setQrWaiting(true)
     try {
       const ndk = getNDK()
-      // Make sure the relay is connected BEFORE we construct the signer —
-      // the factory subscribes immediately, and a subscription created
-      // against a dead socket will never receive the historical response
-      // event we're trying to pick up. Especially important after a mobile
-      // tab wakeup where the WebSocket was likely suspended.
+      // Make sure app-wide relays are connected so post-login fetches work.
+      // The signer itself gets a *dedicated* relay pool (see below) so it
+      // doesn't matter whether this succeeds.
       await connectAndWait(ndk)
-      // Resume a pending nostrconnect signer if one is persisted. This is
-      // what makes mobile login work across a tab reload / WebSocket
-      // suspension: the new subscription uses the same localSigner pubkey
-      // (matching the relay's #p filter) and the same secret (matching the
-      // "is this the connect response?" check), so the event the signer
-      // already published gets delivered and decrypted.
+
+      // Different signers publish the connect response to different relays:
+      // Primal publishes to relay.primal.net, Amber tends toward relay.nsec.app
+      // or relay.damus.io. A single-relay URI leaves one of them stranded.
+      // We advertise all three in the nostrconnect URI *and* subscribe to all
+      // three, so whichever relay the signer picks, we'll see the event.
+      const NC_RELAYS = [
+        'wss://relay.nsec.app',
+        'wss://relay.primal.net',
+        'wss://relay.damus.io',
+      ]
+
       const pending = loadPendingNip46()
       let signer = null
+      let savedUri = null
+      let savedSecret = null
+      let savedPrivkey = null
+      let savedRelays = null
       if (pending) {
         try {
           const parsedUri = new URL(pending.nostrConnectUri)
-          const relay = parsedUri.searchParams.get('relay')
-          const savedSecret = parsedUri.searchParams.get('secret')
-          if (relay && savedSecret) {
-            signer = NDKNip46Signer.nostrconnect(ndk, relay, pending.localSignerPrivkey, {
-              name: 'MyNostr',
-              url: 'https://mynostr.app',
-            })
-            // The factory regenerated secret + URI — overwrite so both the
-            // secret check in blockUntilReadyNostrConnect and the URI we
-            // surface in the UI match what the signer app already saw.
-            signer.nostrConnectSecret = savedSecret
-            signer.nostrConnectUri = pending.nostrConnectUri
+          const uriRelays = parsedUri.searchParams.getAll('relay')
+          const s = parsedUri.searchParams.get('secret')
+          if (uriRelays.length && s) {
+            savedUri = pending.nostrConnectUri
+            savedSecret = s
+            savedPrivkey = pending.localSignerPrivkey
+            savedRelays = uriRelays
           }
         } catch {
-          signer = null
+          // corrupted persisted state — fall through
         }
-        if (!signer) clearPendingNip46()
+        if (!savedUri) clearPendingNip46()
       }
-      if (!signer) {
-        signer = NDKNip46Signer.nostrconnect(ndk, 'wss://relay.primal.net', undefined, {
+
+      if (savedUri) {
+        // Restore: reuse the same localSigner privkey so the #p filter
+        // matches the already-published event, and overwrite the
+        // auto-generated secret/URI so the secret check lines up too.
+        signer = new NDKNip46Signer(ndk, undefined, savedPrivkey, savedRelays, {
           name: 'MyNostr',
           url: 'https://mynostr.app',
         })
+        signer.nostrConnectSecret = savedSecret
+        signer.nostrConnectUri = savedUri
+      } else {
+        // Fresh flow: construct with multi-relay support, then rebuild the
+        // URI with all relay params. NDK's generator only emits the first.
+        signer = new NDKNip46Signer(ndk, undefined, undefined, NC_RELAYS, {
+          name: 'MyNostr',
+          url: 'https://mynostr.app',
+        })
+        const localPubkey = signer.localSigner.pubkey
+        const sec = signer.nostrConnectSecret
+        const params = [
+          `name=${encodeURIComponent('MyNostr')}`,
+          `url=${encodeURIComponent('https://mynostr.app')}`,
+          `secret=${encodeURIComponent(sec)}`,
+          ...NC_RELAYS.map(r => `relay=${encodeURIComponent(r)}`),
+        ]
+        signer.nostrConnectUri = `nostrconnect://${localPubkey}?${params.join('&')}`
         savePendingNip46({
           localSignerPrivkey: signer.localSigner.privateKey,
           nostrConnectUri: signer.nostrConnectUri,
         })
       }
       qrSignerRef.current = signer
-      const secret = new URL(signer.nostrConnectUri).searchParams.get('secret')
+      const secret = signer.nostrConnectSecret
       setQrUri(signer.nostrConnectUri)
 
       await new Promise((resolve, reject) => {
