@@ -71,10 +71,22 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {viewerBadgeText && (
-              <span className="text-[10px] text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
-                {viewerBadgeText === 'Read-only' ? 'RO' : 'View'}
-              </span>
+            {sessionUser ? (
+              <button
+                onClick={handleLogout}
+                aria-label="Logout"
+                className="text-[10px] text-neutral-400 hover:text-neutral-100 border border-neutral-700 hover:border-neutral-500 rounded px-1.5 py-0.5 transition-colors"
+              >
+                Logout
+              </button>
+            ) : (
+              <button
+                onClick={handleLoginClick}
+                aria-label="Login"
+                className="text-[10px] text-purple-300 hover:text-purple-100 border border-purple-800 hover:border-purple-600 rounded px-1.5 py-0.5 transition-colors"
+              >
+                Login
+              </button>
             )}
             <ShareButton variant="icon" />
             <UserAvatar profile={profile} />

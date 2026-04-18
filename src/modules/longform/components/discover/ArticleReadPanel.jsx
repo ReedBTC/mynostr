@@ -277,18 +277,19 @@ export default function ArticleReadPanel({
     <div className="flex-1 flex flex-col overflow-hidden min-w-0">
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-neutral-800 flex-shrink-0">
-        {/* Mobile back arrow — collapses the reader and returns to the feed.
-            Same onClose path as the desktop ✕ button; just a leading arrow
-            in the spot users expect on a phone. */}
+        {/* Mobile back button — collapses the reader and returns to the feed.
+            Same onClose path as the desktop ✕ button; shown as a chevron + the
+            word "Back" so it reads unambiguously as navigation. */}
         {isMobile && (
           <button
             onClick={onClose}
             aria-label="Back to feed"
-            className="flex-shrink-0 text-neutral-400 hover:text-neutral-100 transition-colors px-1 -ml-1"
+            className="flex-shrink-0 flex items-center gap-1 text-xs px-2 py-1 -ml-2 rounded text-neutral-300 hover:text-neutral-100 hover:bg-neutral-800 transition-colors"
           >
-            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M10 12 L6 8 L10 4" />
             </svg>
+            <span>Back</span>
           </button>
         )}
 
