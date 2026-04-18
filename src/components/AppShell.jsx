@@ -101,6 +101,17 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             <img src="/mynostr.png" alt="MyNostr" className="h-7" />
           </Link>
 
+          {/* Boost MyNostr — anchored next to the logo so it reads as a
+              tip-the-site action rather than tipping the viewed author. */}
+          <button
+            onClick={() => setBoostOpen(true)}
+            className="shrink-0 flex items-center gap-1.5 text-xs text-amber-500 hover:text-amber-300 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700 mr-2"
+            aria-label="Boost MyNostr"
+          >
+            <img src="/mynostr.png" alt="" className="h-4 w-4" aria-hidden="true" />
+            <span>Boost MyNostr</span>
+          </button>
+
           {/* Module tabs — horizontally scrollable so nothing wraps or truncates */}
           <nav
             className="flex items-end flex-1 overflow-x-auto gap-0 scrollbar-none min-w-0"
@@ -136,14 +147,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 {truncateNpub(user?.npub || '')}
               </p>
             </div>
-
-            <button
-              onClick={() => setBoostOpen(true)}
-              className="text-xs text-amber-600 hover:text-amber-400 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700"
-              aria-label="Boost MyNostr"
-            >
-              ⚡ Boost
-            </button>
 
             {activeModule === 'longform' && (
               <button
