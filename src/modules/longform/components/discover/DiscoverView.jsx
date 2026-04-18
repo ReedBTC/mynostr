@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 // Trust note: events returned by Primal are rendered without local signature
 // verification (same model as Primal's own clients). A compromised Primal
@@ -97,6 +98,11 @@ function dedupeReplaceable(events) {
 }
 
 export default function DiscoverView({ user, lists, addArticle, createList, removeArticle, moveArticle, deleteList, renameList, reorderLists, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+
+  // Below md:, the two-pane layout collapses to one-pane-at-a-time: the feed
+  // until an article is picked, then the reader (with a back arrow) until
+  // dismissed. Desktop keeps its resizable side-by-side layout.
+  const isMobile = useIsMobile()
 
   // ── Selection / filter ────────────────────────────────────────────────────────
   const [selected,    setSelectedRaw]    = useState(null)
@@ -539,12 +545,18 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
         )}
       </div>
 
-      {/* ── Body — feed + reader, 50/50 default ── */}
+      {/* ── Body — feed + reader, 50/50 default on desktop; on mobile either
+          feed OR reader (controlled by whether an article is selected). ── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Left pane — article feed / bookmarks */}
-        <div className="flex flex-col overflow-hidden flex-shrink-0"
-          style={{ width: `${feedWidth}px` }}>
+        {/* Left pane — article feed / bookmarks. Hidden on mobile while an
+            article is open; full-width when visible. */}
+        <div className={`flex flex-col overflow-hidden ${
+            isMobile
+              ? selected ? 'hidden' : 'flex-1 w-full'
+              : 'flex-shrink-0'
+          }`}
+          style={isMobile ? undefined : { width: `${feedWidth}px` }}>
 
           {isAuthorFeed ? (
             authorFilter ? (
@@ -665,12 +677,20 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
           )}
         </div>
 
-        {/* Drag handle between feed and center pane */}
-        <div onMouseDown={startDrag}
-          className="w-1 flex-shrink-0 bg-neutral-800 hover:bg-purple-700 cursor-col-resize transition-colors" />
+        {/* Drag handle between feed and reader — desktop only. */}
+        {!isMobile && (
+          <div onMouseDown={startDrag}
+            className="w-1 flex-shrink-0 bg-neutral-800 hover:bg-purple-700 cursor-col-resize transition-colors" />
+        )}
 
-        {/* Right pane — article reader or empty state */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Right pane — article reader. On mobile, hidden until an article
+            is selected; then takes the whole body until the back arrow
+            dismisses it. */}
+        <div className={`flex flex-col overflow-hidden ${
+          isMobile
+            ? selected ? 'flex-1 w-full' : 'hidden'
+            : 'flex-1'
+        }`}>
           {selected ? (
             <ArticleReadPanel
               key={selected.id}
@@ -690,6 +710,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               }}
               readOnly={readOnly}
               user={user}
+              isMobile={isMobile}
             />
           ) : (
             <div className="flex-1 flex items-center justify-center">

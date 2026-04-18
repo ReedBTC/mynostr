@@ -36,6 +36,7 @@ export default function ArticleReadPanel({
   onAuthorClick,
   readOnly,
   user,
+  isMobile,
 }) {
   const [listMenuOpen, setListMenuOpen] = useState(false)
   const [adding,       setAdding]       = useState(false)
@@ -276,6 +277,21 @@ export default function ArticleReadPanel({
     <div className="flex-1 flex flex-col overflow-hidden min-w-0">
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-neutral-800 flex-shrink-0">
+        {/* Mobile back arrow — collapses the reader and returns to the feed.
+            Same onClose path as the desktop ✕ button; just a leading arrow
+            in the spot users expect on a phone. */}
+        {isMobile && (
+          <button
+            onClick={onClose}
+            aria-label="Back to feed"
+            className="flex-shrink-0 text-neutral-400 hover:text-neutral-100 transition-colors px-1 -ml-1"
+          >
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M10 12 L6 8 L10 4" />
+            </svg>
+          </button>
+        )}
+
         {/* Author + date */}
         <div className="flex items-center gap-2 min-w-0 text-xs text-neutral-500">
           {onAuthorClick && (authorName || authorPic) ? (
@@ -459,11 +475,14 @@ export default function ArticleReadPanel({
             />
           </div>
 
-          {/* Close */}
-          <button onClick={onClose}
-            className="text-neutral-600 hover:text-neutral-300 transition-colors text-base leading-none px-1 ml-1">
-            ✕
-          </button>
+          {/* Close — desktop only. On mobile the leading back arrow handles
+              dismissal so we don't show two close controls. */}
+          {!isMobile && (
+            <button onClick={onClose}
+              className="text-neutral-600 hover:text-neutral-300 transition-colors text-base leading-none px-1 ml-1">
+              ✕
+            </button>
+          )}
         </div>
       </div>
 
