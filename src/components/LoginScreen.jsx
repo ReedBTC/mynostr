@@ -5,13 +5,6 @@ import { QRCodeSVG } from 'qrcode.react'
 import { getNDK, resetNDK, connectAndWait } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 
-// Mobile platform detection — userAgent is stable for the page lifetime,
-// so we compute these once at module load. Used to show platform-appropriate
-// signer tiles (Amber is Android-only; on iOS we hide it to avoid a dead tile).
-const UA = typeof navigator !== 'undefined' ? navigator.userAgent : ''
-const IS_IOS = /iPad|iPhone|iPod/.test(UA) && !(typeof window !== 'undefined' && window.MSStream)
-const IS_ANDROID = /Android/.test(UA)
-
 // Mobile NIP-46 flows need to survive tab reloads and WebSocket suspensions
 // — user taps a signer app, approves, comes back, but the browser tab was
 // reaped or the relay socket was suspended while they were away, so the fresh
@@ -611,42 +604,28 @@ export default function LoginScreen({ onLogin }) {
       {/* Mobile: signer app button + paste input */}
       {isMobile && (
         <div className="space-y-3">
-          {/* Signer tiles — both tiles open the pre-generated nostrconnect://
-              URI via the system handler. Primal is shown on all mobile
-              platforms; Amber is Android-only (no iOS build exists). */}
-          <div className={`grid gap-2 ${IS_ANDROID ? 'grid-cols-2' : 'grid-cols-1'}`}>
-            <button
-              onClick={openInSignerApp}
-              disabled={loading || !qrUri}
-              className="py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
-            >
-              {qrWaiting && !qrUri ? (
-                <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : (
-                'Primal'
-              )}
-            </button>
-            {IS_ANDROID && (
-              <button
-                onClick={openInSignerApp}
-                disabled={loading || !qrUri}
-                className="py-3 px-4 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
-              >
-                {qrWaiting && !qrUri ? (
-                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  'Amber'
-                )}
-              </button>
+          {/* Single tile — taps open the pre-generated nostrconnect:// URI
+              via the system handler. Android routes to whichever signer
+              claimed the scheme (Amber, Primal, etc); iOS routes to the
+              user's installed signer. */}
+          <button
+            onClick={openInSignerApp}
+            disabled={loading || !qrUri}
+            className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
+          >
+            {qrWaiting && !qrUri ? (
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              'Open in Signer App'
             )}
-          </div>
+          </button>
           {qrUri && (
             <button
               onClick={copyQrUri}
               disabled={loading}
               className="w-full py-2 px-4 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed text-neutral-300 text-xs border border-neutral-700 transition-colors"
             >
-              {copied ? 'Copied!' : 'Copy connection link for another signer'}
+              {copied ? 'Copied!' : 'Copy connection link'}
             </button>
           )}
           {qrWaiting && qrUri && (
@@ -657,9 +636,7 @@ export default function LoginScreen({ onLogin }) {
           )}
 
           <p className="text-xs text-neutral-500 text-center">
-            {IS_ANDROID
-              ? 'Tap to open Primal or Amber. Using a different signer? Copy the link above.'
-              : 'Tap to open Primal. Using a different signer? Copy the link above.'}
+            Your phone will open whichever signer app claimed the nostrconnect link. Using a different signer? Copy the link above and paste it in.
           </p>
 
           <div className="flex items-center gap-3">
