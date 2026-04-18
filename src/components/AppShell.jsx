@@ -105,12 +105,25 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               tip-the-site action rather than tipping the viewed author. */}
           <button
             onClick={() => setBoostOpen(true)}
-            className="shrink-0 flex items-center gap-1.5 text-xs text-amber-500 hover:text-amber-300 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700 mr-2"
+            className="shrink-0 flex items-center gap-1.5 text-xs text-amber-500 hover:text-amber-300 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700"
             aria-label="Boost MyNostr"
           >
             <img src="/mynostr.png" alt="" className="h-4 w-4" aria-hidden="true" />
             <span>Boost MyNostr</span>
           </button>
+
+          {/* Help — lives on the left next to Boost so it's grouped with the
+              site-level actions, not per-user controls. Only shown for modules
+              that currently have a help modal (longform). */}
+          {activeModule === 'longform' && (
+            <button
+              onClick={() => setHelpOpen(true)}
+              className="shrink-0 text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600 mr-2"
+              aria-label="Help"
+            >
+              ?
+            </button>
+          )}
 
           {/* Module tabs — horizontally scrollable so nothing wraps or truncates */}
           <nav
@@ -127,7 +140,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             ))}
           </nav>
 
-          {/* Right: viewer badge · share · avatar · boost · help · login/logout */}
+          {/* Right: viewer badge · share · avatar · login/logout */}
           <div className="flex items-center gap-2 shrink-0 pl-2">
             {viewerBadgeText && (
               <span className="text-xs text-amber-500 border border-amber-900 rounded px-2 py-0.5">
@@ -147,16 +160,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 {truncateNpub(user?.npub || '')}
               </p>
             </div>
-
-            {activeModule === 'longform' && (
-              <button
-                onClick={() => setHelpOpen(true)}
-                className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
-                aria-label="Help"
-              >
-                ?
-              </button>
-            )}
 
             {sessionUser ? (
               <button
