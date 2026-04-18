@@ -118,31 +118,22 @@ function LoginRoute({ sessionUser, onLogin }) {
   const location = useLocation()
   const from = location.state?.from || null
 
-  // If the caller passed a `from` path and the just-logged-in user owns that
-  // npub, return them to the exact page they clicked Login from. Otherwise
-  // fall through to the normal flow (their own page).
-  function destinationFor(user) {
-    if (!user?.npub) return null
+  // Navigate away from /login once a session exists. Runs both on mount
+  // (already-logged-in user hit /login) and when setSessionUser fires from
+  // LoginScreen — we rely on the render triggered by the state change rather
+  // than calling navigate() synchronously inside the login handler, so
+  // LoginScreen's async flows can unwind cleanly before unmount.
+  useEffect(() => {
+    if (!sessionUser?.npub) return
+    let dest = `/${sessionUser.npub}`
     if (from) {
       const fromNpub = from.split('/').filter(Boolean)[0]
-      if (fromNpub === user.npub) return from
+      if (fromNpub === sessionUser.npub) dest = from
     }
-    return `/${user.npub}`
-  }
+    navigate(dest, { replace: true })
+  }, [sessionUser, from, navigate])
 
-  // Already logged in — bounce straight to the right destination.
-  useEffect(() => {
-    const dest = destinationFor(sessionUser)
-    if (dest) navigate(dest, { replace: true })
-  }, [sessionUser, navigate]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  function handleLogin(user) {
-    onLogin(user)
-    const dest = destinationFor(user)
-    if (dest) navigate(dest, { replace: true })
-  }
-
-  return <LoginScreen onLogin={handleLogin} />
+  return <LoginScreen onLogin={onLogin} />
 }
 
 // /:npub resolves to the user's landing page. Until the Profile module exists,
