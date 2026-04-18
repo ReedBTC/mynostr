@@ -12,17 +12,28 @@ const UA = typeof navigator !== 'undefined' ? navigator.userAgent : ''
 const IS_IOS = /iPad|iPhone|iPod/.test(UA) && !(typeof window !== 'undefined' && window.MSStream)
 const IS_ANDROID = /Android/.test(UA)
 
-// Mobile NIP-46 flows need to survive a tab reload or WebSocket suspension
-// (the user taps a signer app, approves, comes back — the original subscription
-// may be dead). We persist the signer payload and restore it on mount / when
-// the tab becomes visible again, then re-query the relay for the response.
+// Mobile NIP-46 flows need to survive tab reloads and WebSocket suspensions
+// — user taps a signer app, approves, comes back, but the browser tab was
+// reaped or the relay socket was suspended while they were away, so the fresh
+// subscription has a different localSigner pubkey in its #p filter and never
+// sees the response event the signer already published.
+//
+// We can't use NDK's toPayload() mid-flow — it throws when userPubkey/
+// bunkerPubkey aren't set yet (which is exactly our situation). Persist the
+// raw internals instead: localSigner privkey and the nostrconnect URI
+// (contains the secret, relay, and local pubkey). On restore, build a new
+// signer with the SAME localSigner and overwrite nostrConnectSecret /
+// nostrConnectUri so both the relay subscription filter and the secret check
+// line up with the event already sitting in the relay.
 const PENDING_NIP46_KEY = 'mynostr_pending_nip46'
 const PENDING_NIP46_MAX_AGE_MS = 10 * 60 * 1000
 
-function savePendingNip46(payload) {
+function savePendingNip46(state) {
   try {
+    if (!state?.localSignerPrivkey || !state?.nostrConnectUri) return
     localStorage.setItem(PENDING_NIP46_KEY, JSON.stringify({
-      payload,
+      localSignerPrivkey: state.localSignerPrivkey,
+      nostrConnectUri: state.nostrConnectUri,
       createdAt: Date.now(),
     }))
   } catch {}
@@ -32,13 +43,13 @@ function loadPendingNip46() {
   try {
     const raw = localStorage.getItem(PENDING_NIP46_KEY)
     if (!raw) return null
-    const { payload, createdAt } = JSON.parse(raw)
-    if (!payload || typeof payload !== 'string') return null
-    if (Date.now() - Number(createdAt) > PENDING_NIP46_MAX_AGE_MS) {
+    const parsed = JSON.parse(raw)
+    if (!parsed?.localSignerPrivkey || !parsed?.nostrConnectUri) return null
+    if (Date.now() - Number(parsed.createdAt) > PENDING_NIP46_MAX_AGE_MS) {
       localStorage.removeItem(PENDING_NIP46_KEY)
       return null
     }
-    return payload
+    return parsed
   } catch {
     return null
   }
@@ -227,32 +238,48 @@ export default function LoginScreen({ onLogin }) {
     setQrWaiting(true)
     try {
       const ndk = getNDK()
-      // Resume a pending nostrconnect signer if one is persisted — this lets
-      // the flow pick up the response event on mobile if the tab was reloaded
-      // or the WebSocket was suspended while the user approved in the signer
-      // app. Falls through to a fresh signer if nothing valid is saved.
-      const pendingPayload = loadPendingNip46()
+      // Resume a pending nostrconnect signer if one is persisted. This is
+      // what makes mobile login work across a tab reload / WebSocket
+      // suspension: the new subscription uses the same localSigner pubkey
+      // (matching the relay's #p filter) and the same secret (matching the
+      // "is this the connect response?" check), so the event the signer
+      // already published gets delivered and decrypted.
+      const pending = loadPendingNip46()
       let signer = null
-      if (pendingPayload) {
+      if (pending) {
         try {
-          signer = await NDKNip46Signer.fromPayload(pendingPayload, ndk)
+          const parsedUri = new URL(pending.nostrConnectUri)
+          const relay = parsedUri.searchParams.get('relay')
+          const savedSecret = parsedUri.searchParams.get('secret')
+          if (relay && savedSecret) {
+            signer = NDKNip46Signer.nostrconnect(ndk, relay, pending.localSignerPrivkey, {
+              name: 'MyNostr',
+              url: 'https://mynostr.app',
+            })
+            // The factory regenerated secret + URI — overwrite so both the
+            // secret check in blockUntilReadyNostrConnect and the URI we
+            // surface in the UI match what the signer app already saw.
+            signer.nostrConnectSecret = savedSecret
+            signer.nostrConnectUri = pending.nostrConnectUri
+          }
         } catch {
-          clearPendingNip46()
           signer = null
         }
+        if (!signer) clearPendingNip46()
       }
       if (!signer) {
         signer = NDKNip46Signer.nostrconnect(ndk, 'wss://relay.primal.net', undefined, {
           name: 'MyNostr',
           url: 'https://mynostr.app',
         })
-        try { savePendingNip46(signer.toPayload()) } catch {}
+        savePendingNip46({
+          localSignerPrivkey: signer.localSigner.privateKey,
+          nostrConnectUri: signer.nostrConnectUri,
+        })
       }
       qrSignerRef.current = signer
-      const secret = signer.nostrConnectUri
-        ? new URL(signer.nostrConnectUri).searchParams.get('secret')
-        : null
-      setQrUri(signer.nostrConnectUri || null)
+      const secret = new URL(signer.nostrConnectUri).searchParams.get('secret')
+      setQrUri(signer.nostrConnectUri)
 
       await new Promise((resolve, reject) => {
         let done = false
