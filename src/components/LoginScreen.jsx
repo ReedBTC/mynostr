@@ -93,15 +93,19 @@ export default function LoginScreen({ onLogin }) {
   // Start QR flow when QR tab is active (desktop) or always on mobile —
   // pre-generating the nostrconnect:// URI so the first tap of "Open in
   // Signer App" navigates immediately instead of just generating the link.
+  //
+  // Collapse the trigger to a single stable value so mobile doesn't re-run
+  // when ncTab transitions null→'paste' on mount (both map to 'mobile').
+  const qrTrigger = isMobile ? 'mobile' : ncTab
   useEffect(() => {
-    if (isMobile || ncTab === 'qr') startQrFlow()
+    if (qrTrigger === 'mobile' || qrTrigger === 'qr') startQrFlow()
     return () => {
       if (qrSignerRef.current) {
         qrSignerRef.current.stop()
         qrSignerRef.current = null
       }
     }
-  }, [ncTab, isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [qrTrigger]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchUserProfile(ndk, pubkey) {
     const user = ndk.getUser({ pubkey })
@@ -427,9 +431,13 @@ export default function LoginScreen({ onLogin }) {
 
   async function copyQrUri() {
     if (!qrUri) return
-    await navigator.clipboard.writeText(qrUri)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    try {
+      await navigator.clipboard.writeText(qrUri)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setError('Could not access the clipboard — select and copy manually.')
+    }
   }
 
   function openInSignerApp() {
@@ -476,7 +484,9 @@ export default function LoginScreen({ onLogin }) {
         if (!safe) return
         setAuthUrl(safe)
         if (!isMobile) {
-          try { window.open(safe, '_blank', 'width=600,height=700') } catch {}
+          // noopener,noreferrer — bunker-supplied URL; strip the opener handle
+          // so the approval page can't navigate our tab via window.opener.
+          try { window.open(safe, '_blank', 'width=600,height=700,noopener,noreferrer') } catch {}
         }
       })
       ndk.signer = signer
