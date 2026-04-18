@@ -562,7 +562,7 @@ export default function ArticleReadPanel({
               Loading article…
             </div>
           ) : (
-            <div className="[&_img]:max-h-64 [&_img]:w-auto [&_img]:object-contain">
+            <div className="[&_img]:max-h-64 [&_img]:w-auto [&_img]:object-contain [&_img]:block [&_img]:mx-auto">
               <MDEditor.Markdown
                 source={displayContent}
                 rehypePlugins={[rehypeSanitize]}

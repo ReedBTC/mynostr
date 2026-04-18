@@ -10,12 +10,12 @@ import ArticleFeed from './ArticleFeed.jsx'
 import ArticleReadPanel from './ArticleReadPanel.jsx'
 import AuthorSearch from './AuthorSearch.jsx'
 import BulkActionBar from './BulkActionBar.jsx'
-import AuthorProfilePanel from './AuthorProfilePanel.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
 const MIN_FEED_W = 220
+const MIN_READER_W = 320
 function defaultFeedWidth() {
-  return Math.max(MIN_FEED_W, Math.floor(window.innerWidth * 0.30))
+  return Math.max(MIN_FEED_W, Math.floor(window.innerWidth / 2))
 }
 
 function authorKey(pubkey) { return `mynostr_last_author_${pubkey}` }
@@ -459,7 +459,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
     const startX = e.clientX
     const startW = feedWidthRef.current
     function onMove(ev) {
-      const maxW = Math.floor(window.innerWidth / 2)
+      const maxW = Math.max(MIN_FEED_W, window.innerWidth - MIN_READER_W)
       const newW = Math.max(MIN_FEED_W, Math.min(maxW, startW + ev.clientX - startX))
       feedWidthRef.current = newW
       setFeedWidth(newW)
@@ -472,11 +472,6 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
     document.addEventListener('mouseup',   onUp)
     e.preventDefault()
   }, [])
-
-  // ── Active author for profile panel ────────────────────────────────────────
-  const activeProfilePubkey = isAuthorFeed
-    ? authorFilter?.pubkey || null
-    : selected?.pubkey || null
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
@@ -544,7 +539,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
         )}
       </div>
 
-      {/* ── Body — persistent 3-pane layout ── */}
+      {/* ── Body — feed + reader, 50/50 default ── */}
       <div className="flex flex-1 overflow-hidden">
 
         {/* Left pane — article feed / bookmarks */}
@@ -674,7 +669,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
         <div onMouseDown={startDrag}
           className="w-1 flex-shrink-0 bg-neutral-800 hover:bg-purple-700 cursor-col-resize transition-colors" />
 
-        {/* Center pane — article reader or empty state */}
+        {/* Right pane — article reader or empty state */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {selected ? (
             <ArticleReadPanel
@@ -701,23 +696,6 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               <p className="text-xs text-neutral-700">Select an article to read</p>
             </div>
           )}
-        </div>
-
-        {/* Right pane — author profile (always rendered to prevent layout shift) */}
-        <div className="flex-shrink-0 border-l border-neutral-800 overflow-y-auto bg-neutral-950" style={{ width: 280 }}>
-          {activeProfilePubkey ? (
-            <AuthorProfilePanel
-              key={activeProfilePubkey}
-              profile={displayProfiles.get(activeProfilePubkey)}
-              pubkey={activeProfilePubkey}
-              user={user}
-              onAuthorClick={feedMode !== 'search' ? (author) => {
-                pickSearchAuthor(author)
-                onFeedModeChange('search')
-                setSelected(null)
-              } : undefined}
-            />
-          ) : null}
         </div>
       </div>
     </div>
