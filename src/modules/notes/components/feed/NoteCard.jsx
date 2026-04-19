@@ -24,6 +24,7 @@ import NoteActionsMenu from './NoteActionsMenu.jsx'
 import NoteActionBar from './NoteActionBar.jsx'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
+import { useNotesNavigationContext } from '../../notesNavigationContext.jsx'
 
 // Only mobile clamps kind-1 notes behind a "Show more" gate; desktop has
 // the vertical space to just render the whole thing.
@@ -54,6 +55,7 @@ function extractZapSplits(tags) {
 
 export default function NoteCard({ note, profile }) {
   const isMobile = useIsMobile()
+  const { openAuthorInSearch } = useNotesNavigationContext()
   const bodyRef = useRef(null)
   const menuRef = useRef(null)
   const [expanded, setExpanded] = useState(false)
@@ -101,20 +103,48 @@ export default function NoteCard({ note, profile }) {
     <article className="bg-neutral-900 border border-neutral-800 rounded-lg p-3">
       {/* Header */}
       <header className="flex items-center gap-2 mb-2">
-        {pic && isSafeUrl(pic) ? (
-          <img
-            src={pic}
-            alt=""
-            className="w-8 h-8 rounded-full object-cover shrink-0"
-            onError={e => { e.target.style.display = 'none' }}
-          />
+        {openAuthorInSearch && note?.pubkey ? (
+          <button
+            type="button"
+            onClick={() => openAuthorInSearch({ pubkey: note.pubkey, name: displayName, picture: pic })}
+            className="flex items-center gap-2 min-w-0 flex-1 hover:opacity-80 transition-opacity text-left"
+            title={`View notes from ${displayName}`}
+          >
+            {pic && isSafeUrl(pic) ? (
+              <img
+                src={pic}
+                alt=""
+                className="w-8 h-8 rounded-full object-cover shrink-0"
+                referrerPolicy="no-referrer"
+                onError={e => { e.target.style.display = 'none' }}
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-neutral-700 shrink-0" />
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-neutral-200 truncate">{displayName}</p>
+              {handle && <p className="text-[10px] text-neutral-500 truncate">{handle}</p>}
+            </div>
+          </button>
         ) : (
-          <div className="w-8 h-8 rounded-full bg-neutral-700 shrink-0" />
+          <>
+            {pic && isSafeUrl(pic) ? (
+              <img
+                src={pic}
+                alt=""
+                className="w-8 h-8 rounded-full object-cover shrink-0"
+                referrerPolicy="no-referrer"
+                onError={e => { e.target.style.display = 'none' }}
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-neutral-700 shrink-0" />
+            )}
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-neutral-200 truncate">{displayName}</p>
+              {handle && <p className="text-[10px] text-neutral-500 truncate">{handle}</p>}
+            </div>
+          </>
         )}
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-neutral-200 truncate">{displayName}</p>
-          {handle && <p className="text-[10px] text-neutral-500 truncate">{handle}</p>}
-        </div>
         <span className="text-[10px] text-neutral-500 shrink-0" title={new Date((note?.created_at || 0) * 1000).toLocaleString()}>
           {timeAgo(note?.created_at)}
         </span>

@@ -17,10 +17,22 @@ import NoteSearch from './NoteSearch.jsx'
 import AuthorNotesPane from './AuthorNotesPane.jsx'
 import NoteCard from './NoteCard.jsx'
 
-export default function SearchTab() {
+export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
   // Mutually exclusive: one of these is set at a time.
-  const [pickedAuthor, setPickedAuthor] = useState(null)
+  const [pickedAuthor, setPickedAuthor] = useState(initialAuthor || null)
   const [pickedNote,   setPickedNote]   = useState(null) // { id, author? }
+
+  // Owner clicked an author elsewhere in Notes (e.g. a NoteCard header) and
+  // NotesModule routed us here with the author pre-filled. Ack back so the
+  // same author can be re-clicked later.
+  useEffect(() => {
+    if (initialAuthor) {
+      setPickedAuthor(initialAuthor)
+      setPickedNote(null)
+      onInitialAuthorConsumed?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialAuthor])
 
   function handlePickAuthor(author) {
     setPickedAuthor(author)

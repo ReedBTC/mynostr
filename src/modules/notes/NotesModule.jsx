@@ -13,19 +13,30 @@
  * The Write pane is always mounted (hidden via CSS) so draft state survives
  * a detour through the other tabs — same pattern LongformModule uses.
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import NoteComposer from './components/NoteComposer.jsx'
 import MyNotesTab from './components/feed/MyNotesTab.jsx'
 import BookmarksTab from './components/feed/BookmarksTab.jsx'
 import SearchTab from './components/feed/SearchTab.jsx'
 import { NoteBookmarksProvider } from './noteBookmarksContext.jsx'
 import { UserReactionsProvider } from './userReactionsContext.jsx'
+import { NotesNavigationProvider } from './notesNavigationContext.jsx'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 
 export default function NotesModule({ user, sessionUser }) {
   const { isOwner } = useOwnerContext()
 
   const [moduleTab, setModuleTab] = useState(isOwner ? 'write' : 'notes')
+  // Author handoff for "click name/pfp → open in Search." Only populated
+  // when the owner triggers it; SearchTab consumes it once on mount and
+  // calls back to clear so re-opening the same author still works.
+  const [searchInitialAuthor, setSearchInitialAuthor] = useState(null)
+
+  const openAuthorInSearch = useCallback((author) => {
+    if (!isOwner || !author?.pubkey) return
+    setSearchInitialAuthor(author)
+    setModuleTab('search')
+  }, [isOwner])
 
   // If a visitor somehow lands on an owner-only tab (e.g. a stale URL or
   // coming back after logout), bounce to the default visitor tab.
@@ -55,6 +66,7 @@ export default function NotesModule({ user, sessionUser }) {
   return (
     <NoteBookmarksProvider user={sessionUser}>
     <UserReactionsProvider user={sessionUser}>
+    <NotesNavigationProvider openAuthorInSearch={isOwner ? openAuthorInSearch : null}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar ── */}
@@ -100,9 +112,13 @@ export default function NotesModule({ user, sessionUser }) {
         <BookmarksTab user={user} isOwner={isOwner} />
       )}
       {!isWriteActive && moduleTab === 'search' && isOwner && (
-        <SearchTab />
+        <SearchTab
+          initialAuthor={searchInitialAuthor}
+          onInitialAuthorConsumed={() => setSearchInitialAuthor(null)}
+        />
       )}
     </div>
+    </NotesNavigationProvider>
     </UserReactionsProvider>
     </NoteBookmarksProvider>
   )
