@@ -1,20 +1,25 @@
 /**
- * BookmarksTab — paginated feed of a user's public kind 10003 bookmarks.
+ * BookmarksTab — paginated feed of a user's public kind 1 bookmarks.
  *
- * Flow:
- *   1. Fetch the single replaceable kind 10003 event for the viewed user.
- *      Try Primal first (fast, via fetchProfiles-style user-infos isn't
- *      appropriate — use NDK directly for this one event).
- *   2. Extract `e`-tags → array of note ids. Order is whatever the client
- *      that wrote the list produced; we honor it so users see their list
- *      the way their primary client shows it.
- *   3. Paginate: slice the id array into windows of pageSize and call
- *      fetchNotesByIds for each window. Hydrate author profiles per page.
+ * Two modes:
  *
- * Encrypted/private bookmarks live in the event's `content` field (NIP-04
- * payload) — we intentionally skip that: this app doesn't yet carry the
- * decrypt flow, and users would be surprised by "logged-in encrypted
- * bookmarks suddenly visible."
+ *   Owner view — chip bar across the top lists the session user's primary
+ *   (kind 10003) list plus every custom (kind 30003) category, plus a
+ *   "+ New" action. The feed paginates through whatever chip is selected.
+ *   Category data comes from the hoisted NoteBookmarksContext, which keeps
+ *   the source of truth so add/remove mutations reflect instantly without
+ *   a re-fetch.
+ *
+ *   Visitor view — flat primary feed fetched directly over NDK. Categories
+ *   are not surfaced to visitors (we'd have to do a second round of fetches
+ *   per-profile and the UX benefit is marginal). Visitors cannot mutate.
+ *
+ * Live filtering: the active category's items are the authoritative id
+ * set. We filter feed.items against that Set at render time so a
+ * just-removed note drops out instantly (no scroll reset).
+ *
+ * Private/encrypted bookmarks (NIP-04 payload in kind 10003 `content`) are
+ * intentionally not surfaced — we'd need the decrypt flow first.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
@@ -22,6 +27,7 @@ import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
+import BookmarkChipBar from './BookmarkChipBar.jsx'
 import NotesFeed from './NotesFeed.jsx'
 
 const BOOKMARK_KIND = 10003
@@ -53,62 +59,86 @@ export default function BookmarksTab({ user, isOwner }) {
   const pubkey = user?.pubkey
   const displayName = user?.profile?.displayName || user?.profile?.name || 'this user'
 
-  // When the viewer is the owner, the session-scoped bookmarks context owns
-  // the authoritative primary list. Menu mutations (add / remove) land there
-  // synchronously; we use its `items` to live-filter the paginated feed so a
-  // "Remove from bookmarks" click drops the note out immediately without
-  // resetting scroll or re-fetching.
-  const { categories } = useNoteBookmarksContext()
-  const primaryItems = isOwner
-    ? categories.find(c => c.id === NOTE_PRIMARY_CATEGORY_ID)?.items
-    : null
-  const allowedIds = useMemo(() => {
-    if (!primaryItems) return null
-    return new Set(primaryItems.map(it => it.id))
-  }, [primaryItems])
+  const { categories, loading: bookmarksLoading, createCategory } = useNoteBookmarksContext()
 
-  // Bookmark id array lives outside useInfiniteFeed — it's fetched once per
-  // viewed user, then the hook paginates through the slice.
-  const [ids, setIds] = useState([])
-  const [idsLoading, setIdsLoading] = useState(false)
-  const [idsError, setIdsError] = useState(null)
-  const idsCursorRef = useRef(0)
+  // ── Owner: category chip state ──────────────────────────────────────
+  const [activeCategoryId, setActiveCategoryId] = useState(null)
+
+  // Pick a sensible default chip once data is available. Prefer primary
+  // if it exists, else the first custom category. Re-run whenever the
+  // currently-active chip vanishes (e.g., its last note was moved to
+  // another category and the set dropped to 0 items → filtered out).
+  useEffect(() => {
+    if (!isOwner) return
+    if (categories.length === 0) {
+      if (activeCategoryId) setActiveCategoryId(null)
+      return
+    }
+    const exists = categories.some(c => c.id === activeCategoryId)
+    if (exists) return
+    const primary = categories.find(c => c.id === NOTE_PRIMARY_CATEGORY_ID)
+    setActiveCategoryId(primary ? primary.id : categories[0].id)
+  }, [isOwner, categories, activeCategoryId])
+
+  const activeCategory = isOwner
+    ? categories.find(c => c.id === activeCategoryId)
+    : null
+
+  // ── Visitor: direct primary-list fetch ──────────────────────────────
+  const [visitorIds, setVisitorIds] = useState(null)
+  const [visitorError, setVisitorError] = useState(null)
 
   useEffect(() => {
-    idsCursorRef.current = 0
-    setIds([])
-    setIdsError(null)
-    if (!pubkey) return
+    if (isOwner || !pubkey) return
     let cancelled = false
-    setIdsLoading(true)
+    setVisitorIds(null)
+    setVisitorError(null)
     ;(async () => {
       try {
         const list = await loadBookmarkIds(pubkey)
         if (cancelled) return
-        setIds(list)
+        setVisitorIds(list)
       } catch (e) {
         if (cancelled) return
-        setIdsError(e?.message || 'Failed to load bookmarks')
-      } finally {
-        if (!cancelled) setIdsLoading(false)
+        setVisitorError(e?.message || 'Failed to load bookmarks')
       }
     })()
     return () => { cancelled = true }
-  }, [pubkey])
+  }, [isOwner, pubkey])
+
+  // ── Unified id list for the active view ─────────────────────────────
+  const currentIds = useMemo(() => {
+    if (isOwner) return activeCategory ? activeCategory.items.map(it => it.id) : []
+    return visitorIds || []
+  }, [isOwner, activeCategory, visitorIds])
+
+  // The pagination cursor walks through currentIds in slices. Both it and
+  // the id list itself live in refs so loadPage stays stable across
+  // mutations — we don't want the feed hook to tear down and refetch when
+  // the user adds or removes a note from the active chip.
+  const idsRef = useRef([])
+  useEffect(() => { idsRef.current = currentIds }, [currentIds])
+  const cursorRef = useRef(0)
+
+  // Key: pubkey + chip identity. Changes → feed resets to page 1.
+  const feedKey = useMemo(() => {
+    if (isOwner) return `bookmarks:owner:${pubkey || ''}:${activeCategoryId || ''}`
+    return `bookmarks:visitor:${pubkey || ''}:${(visitorIds || []).length}`
+  }, [isOwner, pubkey, activeCategoryId, visitorIds])
+
+  useEffect(() => { cursorRef.current = 0 }, [feedKey])
 
   const loadPage = useCallback(async ({ limit }) => {
-    const start = idsCursorRef.current
+    const ids = idsRef.current
+    const start = cursorRef.current
     const slice = ids.slice(start, start + limit)
     if (slice.length === 0) return { items: [], done: true }
-    idsCursorRef.current = start + slice.length
+    cursorRef.current = start + slice.length
 
     const { notes, profiles } = await fetchNotesByIds(slice)
-    // Preserve the bookmark list order so the UI matches what users see in
-    // their primary client. Primal returns unsorted; sort by slice index.
     const indexOf = new Map(slice.map((id, i) => [id, i]))
     notes.sort((a, b) => (indexOf.get(a.id) ?? 1e9) - (indexOf.get(b.id) ?? 1e9))
 
-    // Backfill missing author profiles in one batch.
     const missing = new Set()
     for (const n of notes) if (!profiles.has(n.pubkey)) missing.add(n.pubkey)
     if (missing.size) {
@@ -121,27 +151,30 @@ export default function BookmarksTab({ user, isOwner }) {
     return {
       items: notes,
       profiles,
-      done: idsCursorRef.current >= ids.length,
+      done: cursorRef.current >= ids.length,
     }
-  }, [ids])
+  }, [])
 
-  // Key change → useInfiniteFeed resets and calls page 1. We key on the
-  // bookmark-id array identity so the hook resets once `ids` is loaded.
-  const key = useMemo(() => `bookmarks:${pubkey || ''}:${ids.length}`, [pubkey, ids.length])
+  const waitingOnInitial = isOwner
+    ? (bookmarksLoading && categories.length === 0)
+    : visitorIds === null
 
   const feed = useInfiniteFeed({
-    key,
+    key: feedKey,
     loadPage,
     pageSize: 20,
-    enabled: !!pubkey && !idsLoading && ids.length > 0,
+    enabled: !!pubkey && !waitingOnInitial && currentIds.length > 0,
   })
 
-  const emptyMessage = isOwner
-    ? 'You haven\u2019t bookmarked any notes yet.'
-    : `${displayName} hasn\u2019t bookmarked any public notes.`
+  // Live filter: drop any already-paginated note that's no longer in the
+  // active id set (e.g., user just removed it or moved it).
+  const allowedIdSet = useMemo(() => new Set(currentIds), [currentIds])
+  const displayedItems = useMemo(
+    () => feed.items.filter(n => allowedIdSet.has(n.id)),
+    [feed.items, allowedIdSet],
+  )
 
-  // While we wait for the kind 10003 event, show the same spinner the feed
-  // uses for page 1 so there's no flash of "no bookmarks."
+  // ── Render ─────────────────────────────────────────────────────────
   if (!pubkey) {
     return (
       <div className="flex-1 overflow-y-auto">
@@ -152,7 +185,7 @@ export default function BookmarksTab({ user, isOwner }) {
     )
   }
 
-  if (idsLoading) {
+  if (waitingOnInitial) {
     return (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-4 py-10 text-center">
@@ -163,41 +196,65 @@ export default function BookmarksTab({ user, isOwner }) {
     )
   }
 
-  if (idsError) {
+  if (!isOwner && visitorError) {
     return (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-4 py-10 text-center">
-          <p className="text-xs text-red-400">{idsError}</p>
+          <p className="text-xs text-red-400">{visitorError}</p>
         </div>
       </div>
     )
   }
 
-  if (ids.length === 0) {
+  const chipBar = isOwner ? (
+    <BookmarkChipBar
+      categories={categories}
+      activeCategoryId={activeCategoryId}
+      onSelect={setActiveCategoryId}
+      onCreateCategory={createCategory}
+    />
+  ) : null
+
+  // Owner with zero categories → chip bar still renders (so they can
+  // create one via "+ New"), feed pane shows an empty-state hint.
+  if (isOwner && categories.length === 0) {
     return (
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-xl mx-auto px-4 py-10 text-center">
-          <p className="text-xs text-neutral-500">{emptyMessage}</p>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <BookmarkChipBar
+          categories={[]}
+          activeCategoryId={null}
+          onSelect={setActiveCategoryId}
+          onCreateCategory={createCategory}
+        />
+        <div className="max-w-xl mx-auto w-full px-4 py-10 text-center">
+          <p className="text-xs text-neutral-500">
+            You haven’t bookmarked any notes yet.
+          </p>
         </div>
       </div>
     )
   }
 
-  const displayedItems = allowedIds
-    ? feed.items.filter(n => allowedIds.has(n.id))
-    : feed.items
+  const emptyMessage = isOwner
+    ? (activeCategory
+        ? `Nothing in ${activeCategory.title} yet.`
+        : 'You haven’t bookmarked any notes yet.')
+    : `${displayName} hasn’t bookmarked any public notes.`
 
   return (
-    <NotesFeed
-      items={displayedItems}
-      profiles={feed.profiles}
-      loading={feed.loading}
-      initialLoading={feed.initialLoading}
-      error={feed.error}
-      done={feed.done}
-      sentinelRef={feed.sentinelRef}
-      emptyMessage={emptyMessage}
-      onReload={feed.reload}
-    />
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {chipBar}
+      <NotesFeed
+        items={displayedItems}
+        profiles={feed.profiles}
+        loading={feed.loading}
+        initialLoading={feed.initialLoading}
+        error={feed.error}
+        done={feed.done}
+        sentinelRef={feed.sentinelRef}
+        emptyMessage={emptyMessage}
+        onReload={feed.reload}
+      />
+    </div>
   )
 }

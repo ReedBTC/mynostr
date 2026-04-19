@@ -226,32 +226,55 @@ export function useNoteBookmarks(user) {
       createdAt: Math.floor(Date.now() / 1000),
       readOnly: false,
     }
-    // Optimistic: add locally so the submenu shows it instantly.
+    // Local only — publishing an empty 30003 would either clash with our
+    // delete convention (empty = tombstone) or pollute relays. First
+    // addNote publishes the category with real items.
     setCategories(prev => {
       if (prev.some(c => c.id === id)) return prev
       const next = [cat, ...prev]
       saveToStorage(pubkey, next)
       return next
     })
-    await publishCategory(cat)
     return cat
-  }, [readOnly, pubkey, publishCategory])
+  }, [readOnly, pubkey])
 
+  // Mutually-exclusive bookmarks: a note lives in exactly one bucket at a
+  // time. Adding to target X removes from every other bucket (primary + any
+  // other 30003 set) it was in. We batch the state mutation so the UI sees
+  // one atomic move, then publish each affected bucket in sequence.
+  //
+  // Trade-off: moving between kinds costs two signatures (e.g., 10003 out +
+  // 30003 in). Most NIP-07 extensions auto-approve replaceables; NIP-46
+  // signers surface it as two prompts. Acceptable for v1.
   const addNote = useCallback(async (categoryId, noteId) => {
     if (readOnly || !noteId) return
     const id = noteId.toLowerCase()
-    let updated = null
+    const toPublish = []
     setCategories(prev => {
-      const cat = prev.find(c => c.id === categoryId)
-      if (!cat || cat.readOnly) return prev
-      if (cat.items.some(it => it.id === id)) return prev
-      const newCat = { ...cat, items: [{ id, addedAt: Date.now() }, ...cat.items] }
-      updated = newCat
-      const next = prev.map(c => c.id === categoryId ? newCat : c)
+      const target = prev.find(c => c.id === categoryId)
+      if (!target) return prev
+
+      const next = prev.map(c => {
+        if (c.id === categoryId) {
+          if (c.items.some(it => it.id === id)) return c  // already there — no-op
+          const newCat = { ...c, items: [{ id, addedAt: Date.now() }, ...c.items] }
+          toPublish.push(newCat)
+          return newCat
+        }
+        // Evict from any other bucket that held it.
+        if (c.items.some(it => it.id === id)) {
+          const newCat = { ...c, items: c.items.filter(it => it.id !== id) }
+          toPublish.push(newCat)
+          return newCat
+        }
+        return c
+      })
       saveToStorage(pubkey, next)
       return next
     })
-    if (updated) await publishCategory(updated)
+    for (const cat of toPublish) {
+      await publishCategory(cat)
+    }
   }, [readOnly, pubkey, publishCategory])
 
   const removeNote = useCallback(async (categoryId, noteId) => {

@@ -16,12 +16,16 @@
 import { useState, useRef, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { copyToClipboard } from '../../../../lib/utils.js'
+import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
+import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
 
 export default function NoteActionsMenu({ open, onClose, note }) {
   const { categories, createCategory, addNote, removeNote, canEdit } = useNoteBookmarksContext()
+  const isMobile = useIsMobile()
   const [submenu, setSubmenu] = useState(false)
   const [removeSubmenu, setRemoveSubmenu] = useState(false)
+  const [mobileSheet, setMobileSheet] = useState(false)
   const [newName, setNewName] = useState('')
   const [copied, setCopied] = useState(null)
   const [pending, setPending] = useState(null) // 'add' | 'remove' | null
@@ -90,6 +94,33 @@ export default function NoteActionsMenu({ open, onClose, note }) {
     }
   }
 
+  async function sheetPick(categoryId) {
+    setPending('add')
+    try {
+      await addNote(categoryId, note.id)
+    } finally {
+      if (mountedRef.current) {
+        setPending(null)
+        setMobileSheet(false)
+        onClose?.()
+      }
+    }
+  }
+
+  async function sheetCreate(name) {
+    setPending('add')
+    try {
+      const cat = await createCategory(name)
+      if (cat) await addNote(cat.id, note.id)
+    } finally {
+      if (mountedRef.current) {
+        setPending(null)
+        setMobileSheet(false)
+        onClose?.()
+      }
+    }
+  }
+
   function handleExportJson() {
     const event = {
       kind: 1,
@@ -120,6 +151,7 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   )
 
   return (
+    <>
     <div
       className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 min-w-[200px] max-h-[70vh] overflow-y-auto"
       onMouseDown={e => e.stopPropagation()}
@@ -128,13 +160,18 @@ export default function NoteActionsMenu({ open, onClose, note }) {
       {showBookmarks && (
         <>
           <button
-            onClick={() => setSubmenu(o => !o)}
+            onClick={() => {
+              if (isMobile) setMobileSheet(true)
+              else setSubmenu(o => !o)
+            }}
             className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors flex items-center justify-between"
           >
             <span>Add to bookmarks</span>
-            <span className="text-neutral-600 text-[10px]">{submenu ? '▲' : '▼'}</span>
+            {!isMobile && (
+              <span className="text-neutral-600 text-[10px]">{submenu ? '▲' : '▼'}</span>
+            )}
           </button>
-          {submenu && (
+          {!isMobile && submenu && (
             <div className="border-t border-neutral-700">
               {writableCategories.map(cat => (
                 <button
@@ -238,5 +275,16 @@ export default function NoteActionsMenu({ open, onClose, note }) {
         Export JSON
       </button>
     </div>
+    {isMobile && showBookmarks && (
+      <BookmarkPickerSheet
+        open={mobileSheet}
+        onClose={() => setMobileSheet(false)}
+        categories={writableCategories}
+        onPick={sheetPick}
+        onCreate={sheetCreate}
+        pending={pending === 'add'}
+      />
+    )}
+    </>
   )
 }
