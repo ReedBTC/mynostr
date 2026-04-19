@@ -19,8 +19,9 @@ import { copyToClipboard } from '../../../../lib/utils.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 
 export default function NoteActionsMenu({ open, onClose, note }) {
-  const { categories, createCategory, addNote, canEdit } = useNoteBookmarksContext()
+  const { categories, createCategory, addNote, removeNote, canEdit } = useNoteBookmarksContext()
   const [submenu, setSubmenu] = useState(false)
+  const [removeSubmenu, setRemoveSubmenu] = useState(false)
   const [newName, setNewName] = useState('')
   const [copied, setCopied] = useState(null)
   const [adding, setAdding] = useState(false)
@@ -54,6 +55,19 @@ export default function NoteActionsMenu({ open, onClose, note }) {
       if (mountedRef.current) {
         setAdding(false)
         setSubmenu(false)
+        onClose?.()
+      }
+    }
+  }
+
+  async function removeFromCategory(categoryId) {
+    setAdding(true)
+    try {
+      await removeNote(categoryId, note.id)
+    } finally {
+      if (mountedRef.current) {
+        setAdding(false)
+        setRemoveSubmenu(false)
         onClose?.()
       }
     }
@@ -101,6 +115,9 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   // writing to them would require a signer we don't have.
   const writableCategories = categories.filter(c => !c.readOnly)
   const showBookmarks = canEdit
+  const containingCategories = writableCategories.filter(c =>
+    c.items?.some(it => it.id === note.id?.toLowerCase())
+  )
 
   return (
     <div
@@ -152,6 +169,40 @@ export default function NoteActionsMenu({ open, onClose, note }) {
                 >✓</button>
               </div>
             </div>
+          )}
+          {containingCategories.length > 0 && (
+            <>
+              <button
+                onClick={() => {
+                  if (containingCategories.length === 1) {
+                    removeFromCategory(containingCategories[0].id)
+                  } else {
+                    setRemoveSubmenu(o => !o)
+                  }
+                }}
+                disabled={adding}
+                className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors flex items-center justify-between disabled:opacity-50"
+              >
+                <span>Remove from bookmarks</span>
+                {containingCategories.length > 1 && (
+                  <span className="text-neutral-600 text-[10px]">{removeSubmenu ? '▲' : '▼'}</span>
+                )}
+              </button>
+              {removeSubmenu && containingCategories.length > 1 && (
+                <div className="border-t border-neutral-700">
+                  {containingCategories.map(cat => (
+                    <button
+                      key={cat.id}
+                      onClick={() => removeFromCategory(cat.id)}
+                      disabled={adding}
+                      className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
+                    >
+                      {cat.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
           )}
           <div className="border-t border-neutral-700" />
         </>
