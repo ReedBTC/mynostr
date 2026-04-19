@@ -106,54 +106,80 @@ export default function BookmarksTab({ user, isOwner }) {
     return () => { cancelled = true }
   }, [isOwner, pubkey])
 
-  // ── Unified id list for the active view ─────────────────────────────
-  const currentIds = useMemo(() => {
-    if (isOwner) return activeCategory ? activeCategory.items.map(it => it.id) : []
-    return visitorIds || []
+  // ── Unified item list for the active view ───────────────────────────
+  // Owner items carry an addedAt (kind 30003 has per-item timestamps in
+  // our JSON content extension; kind 10003 uses the list event's
+  // created_at for every item). Visitor items are plain ids — we only
+  // have the one list-level timestamp, so addedAt defaults to 0 and the
+  // note's own created_at becomes the effective sort key.
+  const currentItems = useMemo(() => {
+    if (isOwner) return activeCategory ? activeCategory.items : []
+    return (visitorIds || []).map(id => ({ id, addedAt: 0 }))
   }, [isOwner, activeCategory, visitorIds])
 
-  // The pagination cursor walks through currentIds in slices. Both it and
-  // the id list itself live in refs so loadPage stays stable across
-  // mutations — we don't want the feed hook to tear down and refetch when
-  // the user adds or removes a note from the active chip.
-  const idsRef = useRef([])
-  useEffect(() => { idsRef.current = currentIds }, [currentIds])
-  const cursorRef = useRef(0)
+  const currentIds = useMemo(() => currentItems.map(it => it.id), [currentItems])
 
-  // Key: pubkey + chip identity. Changes → feed resets to page 1.
+  // Feed key invalidates the prefetch whenever the active id set shifts
+  // — this is how add/remove round-trips into the sorted list. First/
+  // last/length fingerprint is cheap and collides vanishingly rarely.
   const feedKey = useMemo(() => {
-    if (isOwner) return `bookmarks:owner:${pubkey || ''}:${activeCategoryId || ''}`
-    return `bookmarks:visitor:${pubkey || ''}:${(visitorIds || []).length}`
-  }, [isOwner, pubkey, activeCategoryId, visitorIds])
+    const tag = `${currentIds.length}:${currentIds[0]?.slice(0, 8) || ''}:${currentIds[currentIds.length - 1]?.slice(0, 8) || ''}`
+    if (isOwner) return `bookmarks:owner:${pubkey || ''}:${activeCategoryId || ''}:${tag}`
+    return `bookmarks:visitor:${pubkey || ''}:${tag}`
+  }, [isOwner, pubkey, activeCategoryId, currentIds])
 
+  // Prefetched+sorted cache. One fetch per feedKey; pagination is pure
+  // local slicing after that. Sort is (addedAt desc, created_at desc)
+  // so "date bookmarked" wins when meaningful and the note's own
+  // timestamp breaks ties (the whole order for 10003 where everyone
+  // shares one addedAt).
+  const cacheRef = useRef({ key: null, notes: [], profiles: new Map() })
+  const cursorRef = useRef(0)
+  const itemsRef = useRef(currentItems)
+  useEffect(() => { itemsRef.current = currentItems }, [currentItems])
   useEffect(() => { cursorRef.current = 0 }, [feedKey])
 
   const loadPage = useCallback(async ({ limit }) => {
-    const ids = idsRef.current
+    if (cacheRef.current.key !== feedKey) {
+      const items = itemsRef.current
+      if (items.length === 0) {
+        cacheRef.current = { key: feedKey, notes: [], profiles: new Map() }
+        return { items: [], done: true }
+      }
+      const ids = items.map(it => it.id)
+      const addedAtById = new Map(items.map(it => [it.id, it.addedAt || 0]))
+      const { notes, profiles } = await fetchNotesByIds(ids)
+
+      const missing = new Set()
+      for (const n of notes) if (!profiles.has(n.pubkey)) missing.add(n.pubkey)
+      if (missing.size) {
+        try {
+          const fetched = await fetchProfiles([...missing])
+          for (const [pk, p] of fetched) profiles.set(pk, p)
+        } catch {}
+      }
+
+      notes.sort((a, b) => {
+        const aAt = addedAtById.get(a.id) || 0
+        const bAt = addedAtById.get(b.id) || 0
+        if (bAt !== aAt) return bAt - aAt
+        return (b.created_at || 0) - (a.created_at || 0)
+      })
+
+      cacheRef.current = { key: feedKey, notes, profiles }
+      cursorRef.current = 0
+    }
+
+    const { notes, profiles } = cacheRef.current
     const start = cursorRef.current
-    const slice = ids.slice(start, start + limit)
-    if (slice.length === 0) return { items: [], done: true }
+    const slice = notes.slice(start, start + limit)
     cursorRef.current = start + slice.length
-
-    const { notes, profiles } = await fetchNotesByIds(slice)
-    const indexOf = new Map(slice.map((id, i) => [id, i]))
-    notes.sort((a, b) => (indexOf.get(a.id) ?? 1e9) - (indexOf.get(b.id) ?? 1e9))
-
-    const missing = new Set()
-    for (const n of notes) if (!profiles.has(n.pubkey)) missing.add(n.pubkey)
-    if (missing.size) {
-      try {
-        const fetched = await fetchProfiles([...missing])
-        for (const [pk, p] of fetched) profiles.set(pk, p)
-      } catch {}
-    }
-
     return {
-      items: notes,
+      items: slice,
       profiles,
-      done: cursorRef.current >= ids.length,
+      done: cursorRef.current >= notes.length,
     }
-  }, [])
+  }, [feedKey])
 
   const waitingOnInitial = isOwner
     ? (bookmarksLoading && categories.length === 0)
