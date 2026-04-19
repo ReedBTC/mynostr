@@ -3,19 +3,19 @@
  * My Notes / Bookmarks / Search feeds.
  *
  * Layout:
- *   [pfp]  name · @handle         · time
+ *   [pfp]  name · @handle        · time · ⋯
  *          ┌────────────────────────────┐
- *          │ clamped preview body       │  ← max-h-72 when tall
+ *          │ preview body               │  ← clamped only on mobile
  *          │   (image, text, mentions)  │
  *          │                            │
  *          └── gradient fade ───────────┘
- *          [Show more] (only if body overflows)
- *          njump link · note id
+ *          [Show more] (mobile, only if body overflows)
+ *          Like · Zap · Comment · Repost · Bookmark
  *
- * We measure body scrollHeight on mount (and on content/ref changes) against
- * clientHeight to decide whether "Show more" is worth showing. Cheap — runs
- * once per card unless the child mutates (e.g. an image finishes loading and
- * reflows the card).
+ * Mobile-only clamp: we measure body scrollHeight against MOBILE_COLLAPSED_PX
+ * to decide whether "Show more" is worth showing. Desktop has the vertical
+ * space to render the full body. Measurement re-runs briefly after mount to
+ * catch late image-load reflows.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { nip19 } from 'nostr-tools'

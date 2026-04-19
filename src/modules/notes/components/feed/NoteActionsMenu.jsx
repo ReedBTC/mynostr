@@ -39,8 +39,8 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   try { nevent = nip19.neventEncode({ id: note.id, author: note.pubkey }) } catch {}
 
   async function handleCopy(kind) {
+    if (!nevent) return
     const text = kind === 'url' ? `https://njump.me/${nevent}` : nevent
-    if (!text) return
     const ok = await copyToClipboard(text)
     if (!ok) return
     setCopied(kind)

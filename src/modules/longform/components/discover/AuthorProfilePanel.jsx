@@ -101,8 +101,9 @@ export default function AuthorProfilePanel({ profile, pubkey, user, onAuthorClic
           lud16={lud16}
           recipientPubkey={pubkey}
           recipientName={displayName || name}
-          articleEvent={null}
+          targetEvent={null}
           aTag={null}
+          targetKind={null}
           user={user}
           onClose={() => setZapOpen(false)}
         />

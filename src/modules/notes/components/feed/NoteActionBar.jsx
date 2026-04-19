@@ -79,6 +79,8 @@ export default function NoteActionBar({ note, profile }) {
 
   async function handleLike() {
     if (!canPublish || liking || liked) return
+    if (!note?.id || !/^[0-9a-f]{64}$/i.test(note.id)) return
+    if (!note?.pubkey || !/^[0-9a-f]{64}$/i.test(note.pubkey)) return
     // Optimistic: flip to "Liked" right away; revert if signing fails.
     setLiking(true)
     setLiked(true)
@@ -104,6 +106,8 @@ export default function NoteActionBar({ note, profile }) {
 
   async function handleRepost() {
     if (!canPublish || reposting) return
+    if (!note?.id || !/^[0-9a-f]{64}$/i.test(note.id)) return
+    if (!note?.pubkey || !/^[0-9a-f]{64}$/i.test(note.pubkey)) return
     // Optimistic: show "Reposted" immediately; revert on failure.
     setReposting(true)
     setRepostDone(true)

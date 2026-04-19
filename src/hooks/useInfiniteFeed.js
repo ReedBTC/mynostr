@@ -100,7 +100,7 @@ export function useInfiniteFeed({ key, loadPage, pageSize = DEFAULT_PAGE_SIZE, e
   useEffect(() => {
     reset()
     if (!enabled) return
-    // Run in a microtask so callers that just changed `key` can also update
+    // Defer by a macrotask so callers that just changed `key` can also update
     // their loadPage identity synchronously before we fire.
     const id = setTimeout(() => fetchPage(true), 0)
     return () => clearTimeout(id)

@@ -29,14 +29,14 @@ export default function BookmarkChipBar({
     if (creating) inputRef.current?.focus()
   }, [creating])
 
-  function commit() {
+  async function commit() {
     const trimmed = name.trim()
     if (!trimmed) {
       setCreating(false)
       setName('')
       return
     }
-    const cat = onCreateCategory?.(trimmed)
+    const cat = await onCreateCategory?.(trimmed)
     setName('')
     setCreating(false)
     // Select the new chip so the user can start adding notes to it.

@@ -44,6 +44,7 @@ function ImageSegment({ url }) {
         src={url}
         alt=""
         className="block w-full h-auto rounded-lg"
+        referrerPolicy="no-referrer"
         onError={() => setFailed(true)}
       />
     </a>

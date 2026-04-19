@@ -26,7 +26,7 @@
  * Visitor mode: when the user is read-only (viewing someone else's page),
  * we fetch the same events but disable all mutating functions.
  */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK } from './ndk.js'
 
@@ -121,12 +121,6 @@ export function useNoteBookmarks(user) {
 
   const pubkey   = user?.pubkey
   const readOnly = !!user?.readOnly
-  const cancelledRef = useRef(false)
-
-  useEffect(() => {
-    cancelledRef.current = false
-    return () => { cancelledRef.current = true }
-  }, [])
 
   useEffect(() => {
     if (!pubkey) {
