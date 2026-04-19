@@ -5,12 +5,14 @@
  * (plain event ids) instead of NIP-33 `a` tags (addressable events).
  *
  * Storage model:
- *   - Kind 10003 (NIP-51 standard bookmark list): READ-ONLY from this hook.
- *     We surface whatever `e` tags live there as a synthetic category
- *     called "Bookmarks". We deliberately do NOT write to 10003 because
- *     other clients use the same event for encrypted private bookmarks
- *     in the `content` field, and overwriting that would silently destroy
- *     the user's data.
+ *   - Kind 10003 (NIP-51 standard bookmark list): READ/WRITE, but CAREFUL.
+ *     Surfaced as a synthetic category called "Bookmarks" pinned to the
+ *     top. When we republish, we preserve the event's original `content`
+ *     field (other clients store NIP-04 encrypted private bookmarks
+ *     there — clobbering it would silently destroy user data) and any
+ *     non-`e` tags (`a`/`t`/`r` from NIP-51). We only add or remove `e`
+ *     tags. If a user has never created a 10003 event, we don't
+ *     synthesize one; first add creates it.
  *   - Kind 30003 (bookmark sets): READ/WRITE. Each event is one category.
  *     - tags: [['d', categoryId], ['title', name], ['e', id], ['e', id] …]
  *     - content: JSON array [{ id, addedAt }, ...] — mynostr extension so
@@ -51,16 +53,19 @@ function makeSlug(name) {
 
 function parseEventToCategory(event) {
   if (event.kind === 10003) {
-    // Read-only primary. Items come from `e` tags only — NIP-51 doesn't
-    // timestamp them, so addedAt defaults to the event's created_at so
-    // everything sorts below categorized bookmarks the user explicitly
-    // added.
+    // Primary bookmark list. Items come from `e` tags only — NIP-51
+    // doesn't timestamp them, so addedAt defaults to the event's
+    // created_at. We stash the original `content` and any non-`e` tags
+    // so republish is non-destructive (see publishCategory).
     const items = []
     const seen = new Set()
+    const extraTags = []
     for (const t of event.tags || []) {
       if (t[0] === 'e' && typeof t[1] === 'string' && /^[0-9a-f]{64}$/i.test(t[1])) {
         const id = t[1].toLowerCase()
         if (!seen.has(id)) { seen.add(id); items.push({ id, addedAt: (event.created_at || 0) * 1000 }) }
+      } else {
+        extraTags.push(t)
       }
     }
     return {
@@ -68,7 +73,9 @@ function parseEventToCategory(event) {
       title: 'Bookmarks',
       items,
       createdAt: event.created_at || 0,
-      readOnly: true,
+      readOnly: false,
+      extraTags,
+      rawContent: event.content || '',
     }
   }
 
@@ -153,13 +160,12 @@ export function useNoteBookmarks(user) {
         }
         // Drop deleted categories (30003 written with empty tags/content).
         const result = Array.from(byId.values()).filter(c => c.items.length > 0)
-        // Order: writable categories newest-first, then the read-only
-        // primary "Bookmarks" last. Rationale: user's explicit categories
-        // are what they actively curate; the 10003 bucket is more of an
-        // archive.
+        // Order: primary "Bookmarks" (kind 10003) first — it's the default
+        // target most users recognize — then custom 30003 categories
+        // newest-first.
         result.sort((a, b) => {
-          if (a.readOnly && !b.readOnly) return 1
-          if (!a.readOnly && b.readOnly) return -1
+          if (a.id === PRIMARY_CATEGORY_ID) return -1
+          if (b.id === PRIMARY_CATEGORY_ID) return 1
           return b.createdAt - a.createdAt
         })
         if (cancelled) return
@@ -175,20 +181,31 @@ export function useNoteBookmarks(user) {
     return () => { cancelled = true }
   }, [pubkey, readOnly])
 
-  // Publish a category (kind 30003). Never called for the read-only
-  // primary.
+  // Publish a category. Primary (kind 10003) preserves original content +
+  // any non-`e` tags so we don't clobber data written by other clients
+  // (NIP-04 encrypted private bookmarks in `content`; `t`/`r`/`a` tags).
+  // Custom categories write as kind 30003 with a d-tag.
   const publishCategory = useCallback(async (cat) => {
     if (readOnly || !pubkey) return
     if (cat.readOnly) return
     try {
       const ndk = getNDK()
       const event = new NDKEvent(ndk)
-      event.kind = 30003
-      event.tags = [['d', cat.id], ['title', cat.title]]
-      for (const it of cat.items) {
-        if (it?.id) event.tags.push(['e', it.id])
+      if (cat.id === PRIMARY_CATEGORY_ID) {
+        event.kind = 10003
+        event.tags = [...(cat.extraTags || [])]
+        for (const it of cat.items) {
+          if (it?.id) event.tags.push(['e', it.id])
+        }
+        event.content = cat.rawContent || ''
+      } else {
+        event.kind = 30003
+        event.tags = [['d', cat.id], ['title', cat.title]]
+        for (const it of cat.items) {
+          if (it?.id) event.tags.push(['e', it.id])
+        }
+        event.content = JSON.stringify(cat.items)
       }
-      event.content = JSON.stringify(cat.items)
       await event.sign()
       await event.publish()
     } catch {
@@ -255,6 +272,7 @@ export function useNoteBookmarks(user) {
 
   const renameCategory = useCallback(async (categoryId, newTitle) => {
     if (readOnly) return
+    if (categoryId === PRIMARY_CATEGORY_ID) return
     const trimmed = (newTitle || '').trim()
     if (!trimmed) return
     let updated = null
@@ -272,6 +290,7 @@ export function useNoteBookmarks(user) {
 
   const deleteCategory = useCallback(async (categoryId) => {
     if (readOnly) return
+    if (categoryId === PRIMARY_CATEGORY_ID) return
     setCategories(prev => {
       const cat = prev.find(c => c.id === categoryId)
       if (!cat || cat.readOnly) return prev
