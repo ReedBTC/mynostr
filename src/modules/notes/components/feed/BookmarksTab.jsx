@@ -20,6 +20,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
+import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
+import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
 import NotesFeed from './NotesFeed.jsx'
 
 const BOOKMARK_KIND = 10003
@@ -50,6 +52,20 @@ async function loadBookmarkIds(pubkey) {
 export default function BookmarksTab({ user, isOwner }) {
   const pubkey = user?.pubkey
   const displayName = user?.profile?.displayName || user?.profile?.name || 'this user'
+
+  // When the viewer is the owner, the session-scoped bookmarks context owns
+  // the authoritative primary list. Menu mutations (add / remove) land there
+  // synchronously; we use its `items` to live-filter the paginated feed so a
+  // "Remove from bookmarks" click drops the note out immediately without
+  // resetting scroll or re-fetching.
+  const { categories } = useNoteBookmarksContext()
+  const primaryItems = isOwner
+    ? categories.find(c => c.id === NOTE_PRIMARY_CATEGORY_ID)?.items
+    : null
+  const allowedIds = useMemo(() => {
+    if (!primaryItems) return null
+    return new Set(primaryItems.map(it => it.id))
+  }, [primaryItems])
 
   // Bookmark id array lives outside useInfiniteFeed — it's fetched once per
   // viewed user, then the hook paginates through the slice.
@@ -167,9 +183,13 @@ export default function BookmarksTab({ user, isOwner }) {
     )
   }
 
+  const displayedItems = allowedIds
+    ? feed.items.filter(n => allowedIds.has(n.id))
+    : feed.items
+
   return (
     <NotesFeed
-      items={feed.items}
+      items={displayedItems}
       profiles={feed.profiles}
       loading={feed.loading}
       initialLoading={feed.initialLoading}

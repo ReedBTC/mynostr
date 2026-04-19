@@ -24,7 +24,7 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   const [removeSubmenu, setRemoveSubmenu] = useState(false)
   const [newName, setNewName] = useState('')
   const [copied, setCopied] = useState(null)
-  const [adding, setAdding] = useState(false)
+  const [pending, setPending] = useState(null) // 'add' | 'remove' | null
   const mountedRef = useRef(true)
 
   useEffect(() => () => { mountedRef.current = false }, [])
@@ -48,12 +48,12 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   }
 
   async function addToCategory(categoryId) {
-    setAdding(true)
+    setPending('add')
     try {
       await addNote(categoryId, note.id)
     } finally {
       if (mountedRef.current) {
-        setAdding(false)
+        setPending(null)
         setSubmenu(false)
         onClose?.()
       }
@@ -61,12 +61,12 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   }
 
   async function removeFromCategory(categoryId) {
-    setAdding(true)
+    setPending('remove')
     try {
       await removeNote(categoryId, note.id)
     } finally {
       if (mountedRef.current) {
-        setAdding(false)
+        setPending(null)
         setRemoveSubmenu(false)
         onClose?.()
       }
@@ -76,14 +76,14 @@ export default function NoteActionsMenu({ open, onClose, note }) {
   async function createAndAdd() {
     const name = newName.trim()
     if (!name) return
-    setAdding(true)
+    setPending('add')
     try {
       const cat = await createCategory(name)
       if (cat) await addNote(cat.id, note.id)
       if (mountedRef.current) setNewName('')
     } finally {
       if (mountedRef.current) {
-        setAdding(false)
+        setPending(null)
         setSubmenu(false)
         onClose?.()
       }
@@ -140,7 +140,7 @@ export default function NoteActionsMenu({ open, onClose, note }) {
                 <button
                   key={cat.id}
                   onClick={() => addToCategory(cat.id)}
-                  disabled={adding}
+                  disabled={!!pending}
                   className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
                 >
                   {cat.title}
@@ -164,7 +164,7 @@ export default function NoteActionsMenu({ open, onClose, note }) {
                 />
                 <button
                   onClick={createAndAdd}
-                  disabled={!newName.trim() || adding}
+                  disabled={!newName.trim() || !!pending}
                   className="text-xs px-2 py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors"
                 >✓</button>
               </div>
@@ -174,17 +174,23 @@ export default function NoteActionsMenu({ open, onClose, note }) {
             <>
               <button
                 onClick={() => {
+                  if (pending) return
                   if (containingCategories.length === 1) {
                     removeFromCategory(containingCategories[0].id)
                   } else {
                     setRemoveSubmenu(o => !o)
                   }
                 }}
-                disabled={adding}
+                disabled={!!pending}
                 className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors flex items-center justify-between disabled:opacity-50"
               >
-                <span>Remove from bookmarks</span>
-                {containingCategories.length > 1 && (
+                <span className="flex items-center gap-1.5">
+                  {pending === 'remove' && (
+                    <span className="inline-block w-3 h-3 border border-neutral-400 border-t-transparent rounded-full animate-spin" />
+                  )}
+                  {pending === 'remove' ? 'Removing…' : 'Remove from bookmarks'}
+                </span>
+                {containingCategories.length > 1 && pending !== 'remove' && (
                   <span className="text-neutral-600 text-[10px]">{removeSubmenu ? '▲' : '▼'}</span>
                 )}
               </button>
@@ -194,7 +200,7 @@ export default function NoteActionsMenu({ open, onClose, note }) {
                     <button
                       key={cat.id}
                       onClick={() => removeFromCategory(cat.id)}
-                      disabled={adding}
+                      disabled={!!pending}
                       className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
                     >
                       {cat.title}
