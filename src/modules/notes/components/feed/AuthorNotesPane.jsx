@@ -92,9 +92,12 @@ export default function AuthorNotesPane({ pubkey, header, emptyMessage }) {
       items: notes,
       profiles,
       nextCursor: oldest ? oldest.created_at - 1 : null,
-      // Treat a short page as end-of-feed. Primal uses the limit as a hard
-      // cap, so "fewer than asked" means the author has no older notes.
-      done: notes.length < limit,
+      // Only stop when an actual page came back empty. Primal's `feed` op
+      // bundles kind-0 profile events and kind-10000133 stats in with the
+      // kind-1 payload, so a full "limit" response often filters down to
+      // fewer notes — treating that as end-of-feed stops the infinite
+      // scroll after one or two pages.
+      done: notes.length === 0,
     }
   }, [pubkey])
 

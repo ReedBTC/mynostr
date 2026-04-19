@@ -74,7 +74,6 @@ export default function NoteCard({ note, profile }) {
   const displayName = profile?.display_name || profile?.name || (note?.pubkey ? nip19.npubEncode(note.pubkey).slice(0, 12) + '…' : 'Anonymous')
   const handle = profile?.nip05 ? profile.nip05.replace(/^_@/, '') : ''
   const pic = profile?.picture || profile?.image
-  const nevent = note?.id ? nip19.neventEncode({ id: note.id, author: note.pubkey }) : ''
   const zapSplits = extractZapSplits(note?.tags)
 
   return (
@@ -128,20 +127,6 @@ export default function NoteCard({ note, profile }) {
         >
           {expanded ? 'Show less' : 'Show more'}
         </button>
-      )}
-
-      {/* Footer — permalink */}
-      {nevent && (
-        <footer className="mt-2 pt-2 border-t border-neutral-800 flex items-center justify-between gap-2">
-          <a
-            href={`https://njump.me/${nevent}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[10px] text-neutral-500 hover:text-purple-400 transition-colors"
-          >
-            Open on njump →
-          </a>
-        </footer>
       )}
     </article>
   )

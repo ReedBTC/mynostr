@@ -40,6 +40,10 @@ async function loadBookmarkIds(pubkey) {
       if (!seen.has(id)) { seen.add(id); ids.push(id) }
     }
   }
+  // Kind 10003 has no per-item timestamp; clients almost universally
+  // *append* new bookmarks, so the tail of the tag array is the most
+  // recently added. Reverse so the feed leads with "just bookmarked."
+  ids.reverse()
   return ids
 }
 
