@@ -4,7 +4,7 @@ import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { isSafeUrl, getPublishedAt } from '../../../../lib/utils.js'
 import { getNDK } from '../../../../lib/ndk.js'
-import ZapModal from './ZapModal.jsx'
+import ZapModal from '../../../../components/ZapModal.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
 function getTag(event, name) {

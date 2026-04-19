@@ -3,7 +3,7 @@ import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK } from '../../../../lib/ndk.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
-import ZapModal from './ZapModal.jsx'
+import ZapModal from '../../../../components/ZapModal.jsx'
 
 export default function AuthorProfilePanel({ profile, pubkey, user, onAuthorClick }) {
   const [zapOpen, setZapOpen]     = useState(false)

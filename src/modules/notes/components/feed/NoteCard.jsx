@@ -21,6 +21,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { nip19 } from 'nostr-tools'
 import NotePreview from '../NotePreview.jsx'
 import NoteActionsMenu from './NoteActionsMenu.jsx'
+import NoteActionBar from './NoteActionBar.jsx'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 
@@ -163,6 +164,8 @@ export default function NoteCard({ note, profile }) {
           {expanded ? 'Show less' : 'Show more'}
         </button>
       )}
+
+      <NoteActionBar note={note} profile={profile} />
     </article>
   )
 }

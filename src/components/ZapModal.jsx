@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, FALLBACK_RELAYS } from '../../../../lib/ndk.js'
+import { getNDK, FALLBACK_RELAYS } from '../lib/ndk.js'
 
 const PRESETS = [21, 100, 500, 1000, 5000, 10000]
 
@@ -33,7 +33,7 @@ async function fetchInvoice(callback, amountMsats, comment, zapRequestJson) {
 
 // ── Build and sign NIP-57 zap request (kind 9734) ───────────────────────────
 
-async function buildZapRequest({ recipientPubkey, articleEvent, aTag, amountMsats, comment }) {
+async function buildZapRequest({ recipientPubkey, targetEvent, aTag, targetKind, amountMsats, comment }) {
   const ndk = getNDK()
   const ev = new NDKEvent(ndk)
   ev.kind = 9734
@@ -44,10 +44,10 @@ async function buildZapRequest({ recipientPubkey, articleEvent, aTag, amountMsat
     ['relays', ...FALLBACK_RELAYS],
   ]
 
-  // Reference the specific article being zapped
+  // Reference the specific event being zapped
   if (aTag) ev.tags.push(['a', aTag])
-  if (articleEvent?.id) ev.tags.push(['e', articleEvent.id])
-  ev.tags.push(['k', '30023'])
+  if (targetEvent?.id) ev.tags.push(['e', targetEvent.id])
+  if (targetKind) ev.tags.push(['k', String(targetKind)])
 
   await ev.sign()
   return JSON.stringify(ev.rawEvent())
@@ -55,7 +55,18 @@ async function buildZapRequest({ recipientPubkey, articleEvent, aTag, amountMsat
 
 // ── Component ───────────────────────────────────────────────────────────────
 
-export default function ZapModal({ lud16, recipientPubkey, recipientName, articleEvent, aTag, user, onClose }) {
+export default function ZapModal({
+  lud16,
+  recipientPubkey,
+  recipientName,
+  targetEvent,
+  articleEvent, // legacy alias — longform callers still pass this
+  aTag,
+  targetKind = '30023',
+  user,
+  onClose,
+}) {
+  const effectiveTargetEvent = targetEvent || articleEvent || null
   const [step,    setStep]    = useState('amount')  // 'amount' | 'invoice'
   const [amount,  setAmount]  = useState(21)
   const [comment, setComment] = useState('')
@@ -134,8 +145,9 @@ export default function ZapModal({ lud16, recipientPubkey, recipientName, articl
         try {
           zapRequestJson = await buildZapRequest({
             recipientPubkey,
-            articleEvent,
+            targetEvent: effectiveTargetEvent,
             aTag,
+            targetKind,
             amountMsats: msats,
             comment: comment.trim(),
           })
