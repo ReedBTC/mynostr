@@ -79,7 +79,9 @@ export default function NoteActionBar({ note, profile }) {
 
   async function handleLike() {
     if (!canPublish || liking || liked) return
+    // Optimistic: flip to "Liked" right away; revert if signing fails.
     setLiking(true)
+    setLiked(true)
     try {
       const ndk = getNDK()
       const ev = new NDKEvent(ndk)
@@ -92,17 +94,20 @@ export default function NoteActionBar({ note, profile }) {
       ]
       await ev.sign()
       await ev.publish()
-      setLiked(true)
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Like failed:', err)
+      if (mountedRef.current) setLiked(false)
     } finally {
-      setLiking(false)
+      if (mountedRef.current) setLiking(false)
     }
   }
 
   async function handleRepost() {
     if (!canPublish || reposting) return
+    // Optimistic: show "Reposted" immediately; revert on failure.
     setReposting(true)
+    setRepostDone(true)
+    setRepostOpen(false)
     try {
       const ndk = getNDK()
       const ev = new NDKEvent(ndk)
@@ -115,12 +120,11 @@ export default function NoteActionBar({ note, profile }) {
       ]
       await ev.sign()
       await ev.publish()
-      setRepostDone(true)
-      setRepostOpen(false)
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Repost failed:', err)
+      if (mountedRef.current) setRepostDone(false)
     } finally {
-      setReposting(false)
+      if (mountedRef.current) setReposting(false)
     }
   }
 
