@@ -19,7 +19,6 @@ function HashtagSegment({ value, tag }) {
 }
 
 function ImageSegment({ url }) {
-  const [expanded, setExpanded] = useState(false)
   const [failed, setFailed] = useState(false)
 
   if (failed || !isSafeUrl(url)) {
@@ -32,16 +31,22 @@ function ImageSegment({ url }) {
     )
   }
 
+  // Full card width, natural aspect ratio — matches Damus/Primal.
+  // Click opens the original in a new tab for full-resolution viewing.
   return (
-    <div className="my-2">
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block my-2"
+    >
       <img
         src={url}
         alt=""
-        className={`rounded-lg max-w-full cursor-pointer transition-all ${expanded ? '' : 'max-h-48 object-contain'}`}
-        onClick={() => setExpanded(v => !v)}
+        className="block w-full h-auto rounded-lg"
         onError={() => setFailed(true)}
       />
-    </div>
+    </a>
   )
 }
 
@@ -52,7 +57,7 @@ function VideoSegment({ url }) {
       <video
         src={url}
         controls
-        className="rounded-lg max-w-full max-h-48"
+        className="block w-full h-auto rounded-lg"
         preload="metadata"
       />
     </div>
