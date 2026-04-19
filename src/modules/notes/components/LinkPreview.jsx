@@ -29,16 +29,30 @@ export default function LinkPreview({ url }) {
     setLoading(true)
     setError(false)
 
-    fetch(`https://jsonlink.io/api/extract?url=${encodeURIComponent(url)}`)
+    // Microlink returns parsed OG data with CORS-allowed responses. Previous
+    // backend (jsonlink.io) now sits behind a Cloudflare challenge that always
+    // 403s anonymous clients, so every lookup fell back to a plain link.
+    fetch(`https://api.microlink.io/?url=${encodeURIComponent(url)}`)
       .then(r => r.ok ? r.json() : Promise.reject())
       .then(json => {
         if (!mounted.current) return
+        if (json?.status !== 'success' || !json.data) {
+          ogCacheSet(url, null)
+          setError(true)
+          setLoading(false)
+          return
+        }
+        const d = json.data
+        let domain = d.publisher
+        if (!domain) {
+          try { domain = new URL(url).hostname } catch { domain = '' }
+        }
         const result = {
-          title: json.title || '',
-          description: json.description || '',
-          image: json.images?.[0] || '',
-          domain: json.domain || new URL(url).hostname,
-          favicon: json.favicon || '',
+          title: d.title || '',
+          description: d.description || '',
+          image: d.image?.url || '',
+          domain,
+          favicon: d.logo?.url || '',
         }
         ogCacheSet(url, result)
         setData(result)

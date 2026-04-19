@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import MDEditor from '@uiw/react-md-editor'
 import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
+import { nip19 } from 'nostr-tools'
 import { isSafeUrl, getPublishedAt } from '../../../../lib/utils.js'
 import { getNDK } from '../../../../lib/ndk.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
@@ -38,6 +40,8 @@ export default function ArticleReadPanel({
   user,
   isMobile,
 }) {
+  const navigate = useNavigate()
+
   const [listMenuOpen, setListMenuOpen] = useState(false)
   const [adding,       setAdding]       = useState(false)
   const [savedToList,  setSavedToList]  = useState(null)
@@ -233,6 +237,22 @@ export default function ArticleReadPanel({
     }
   }
 
+  // Deep-link this article into the Notes Write module. We pass a naddr
+  // so the composer can emit an NIP-10 a-tag (root) for Reply, or embed
+  // the article as a nostr: URI for Quote. Only reachable when canPublish —
+  // the Notes module's Write tab is owner-only, and navigating there as a
+  // visitor would bounce back to the Notes feed.
+  function openInComposer(field) {
+    if (!canPublish || !user?.npub) return
+    if (!article?.pubkey || !dTag) return
+    try {
+      const naddr = nip19.naddrEncode({ kind: 30023, pubkey: article.pubkey, identifier: dTag })
+      navigate(`/${user.npub}/notes`, {
+        state: { composerPrefill: { [field]: naddr } },
+      })
+    } catch {}
+  }
+
   async function handleZapClick() {
     if (zapLud16) {
       setZapOpen(true)
@@ -356,18 +376,17 @@ export default function ArticleReadPanel({
           ⚡ {zapFetching ? 'Finding…' : 'Zap'}
         </button>
 
-        {/* Comments — coming soon tooltip */}
-        <div className="relative group">
-          <button
-            disabled
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-700 cursor-not-allowed opacity-40"
-          >
-            💬 Comments
-          </button>
-          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-            Coming soon
-          </div>
-        </div>
+        {/* Comment — navigates to the Notes Write module with this article
+            prefilled into the Reply field. Publishes as a kind 1 threaded by
+            a-tag against the article's naddr coordinate. */}
+        <button
+          onClick={() => openInComposer('replyTo')}
+          disabled={!canPublish}
+          title={canPublish ? 'Comment on this article' : 'Sign in to comment'}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 disabled:opacity-40 transition-colors"
+        >
+          💬 Comment
+        </button>
 
         {/* Repost */}
         <div className="relative" ref={repostRef}>
@@ -392,17 +411,13 @@ export default function ArticleReadPanel({
               >
                 🔁 {reposting ? 'Reposting…' : 'Repost'}
               </button>
-              <div className="relative group/quote">
-                <button
-                  disabled
-                  className="w-full text-left px-3 py-2 text-xs text-neutral-600 cursor-not-allowed"
-                >
-                  💬 Quote
-                </button>
-                <div className="absolute left-full top-0 ml-1 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover/quote:opacity-100 transition-opacity pointer-events-none z-10">
-                  Coming soon (Notes module)
-                </div>
-              </div>
+              <button
+                onClick={() => { setRepostOpen(false); openInComposer('quote') }}
+                disabled={!canPublish}
+                className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
+              >
+                💬 Quote
+              </button>
             </div>
           )}
         </div>

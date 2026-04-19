@@ -62,8 +62,8 @@ export default function NoteSearch({ onPickAuthor, onPickNote }) {
     function handleClick(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false)
     }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
+    document.addEventListener('pointerdown', handleClick, true)
+    return () => document.removeEventListener('pointerdown', handleClick, true)
   }, [])
 
   useEffect(() => () => clearTimeout(debounceRef.current), [])

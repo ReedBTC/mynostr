@@ -15,7 +15,9 @@
  * writable category.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
+import { nip19 } from 'nostr-tools'
 import { getNDK } from '../../../../lib/ndk.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
@@ -26,11 +28,29 @@ import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
 
 export default function NoteActionBar({ note, profile }) {
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
   const { sessionUser } = useOwnerContext()
   const { categories, createCategory, addNote, removeNote, canEdit } = useNoteBookmarksContext()
   const { likedIds, markLiked, unmarkLiked } = useUserReactionsContext()
 
   const canPublish = !!sessionUser?.pubkey && !sessionUser?.readOnly
+
+  // Build a portable nevent for the composer's Reply / Quote fields. Author
+  // travels with it so the composer can resolve the p-tag without a fetch.
+  function encodeNoteRef() {
+    if (!note?.id || !/^[0-9a-f]{64}$/i.test(note.id)) return null
+    try { return nip19.neventEncode({ id: note.id, author: note.pubkey }) }
+    catch { return null }
+  }
+
+  function openInComposer(field) {
+    if (!canPublish || !sessionUser?.npub) return
+    const bech32 = encodeNoteRef()
+    if (!bech32) return
+    navigate(`/${sessionUser.npub}/notes`, {
+      state: { composerPrefill: { [field]: bech32 } },
+    })
+  }
 
   // ── Like ──
   // Derived from the shared reactions set so card unmount/remount (scroll
@@ -54,8 +74,8 @@ export default function NoteActionBar({ note, profile }) {
     function onDown(e) {
       if (repostRef.current && !repostRef.current.contains(e.target)) setRepostOpen(false)
     }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
   }, [repostOpen])
 
   // ── Bookmark menu ──
@@ -72,8 +92,8 @@ export default function NoteActionBar({ note, profile }) {
     function onDown(e) {
       if (bookmarkRef.current && !bookmarkRef.current.contains(e.target)) setBookmarkOpen(false)
     }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
   }, [bookmarkOpen])
 
   const writableCategories = categories.filter(c => !c.readOnly)
@@ -235,18 +255,16 @@ export default function NoteActionBar({ note, profile }) {
           ⚡ {zapFetching ? 'Finding…' : 'Zap'}
         </button>
 
-        {/* Comments — coming soon */}
-        <div className="relative group">
-          <button
-            disabled
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-700 cursor-not-allowed opacity-40"
-          >
-            💬 Comment
-          </button>
-          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-            Coming soon
-          </div>
-        </div>
+        {/* Comment — navigates to the Write module with this note prefilled
+            into the Reply field so the author can write a kind 1 reply. */}
+        <button
+          onClick={() => openInComposer('replyTo')}
+          disabled={!canPublish}
+          title={canPublish ? 'Comment on this note' : 'Sign in to comment'}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 disabled:opacity-40 transition-colors"
+        >
+          💬 Comment
+        </button>
 
         {/* Repost */}
         <div className="relative" ref={repostRef}>
@@ -271,17 +289,13 @@ export default function NoteActionBar({ note, profile }) {
               >
                 🔁 {reposting ? 'Reposting…' : 'Repost'}
               </button>
-              <div className="relative group/quote">
-                <button
-                  disabled
-                  className="w-full text-left px-3 py-2 text-xs text-neutral-600 cursor-not-allowed"
-                >
-                  💬 Quote
-                </button>
-                <div className="absolute left-full top-0 ml-1 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover/quote:opacity-100 transition-opacity pointer-events-none z-10">
-                  Coming soon
-                </div>
-              </div>
+              <button
+                onClick={() => { setRepostOpen(false); openInComposer('quote') }}
+                disabled={!canPublish}
+                className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
+              >
+                💬 Quote
+              </button>
             </div>
           )}
         </div>

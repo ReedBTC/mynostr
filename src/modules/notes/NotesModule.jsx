@@ -14,6 +14,7 @@
  * a detour through the other tabs — same pattern LongformModule uses.
  */
 import { useState, useEffect, useCallback } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import NoteComposer from './components/NoteComposer.jsx'
 import MyNotesTab from './components/feed/MyNotesTab.jsx'
 import BookmarksTab from './components/feed/BookmarksTab.jsx'
@@ -25,12 +26,31 @@ import { useOwnerContext } from '../../lib/ownerContext.jsx'
 
 export default function NotesModule({ user, sessionUser }) {
   const { isOwner } = useOwnerContext()
+  const location = useLocation()
+  const navigate = useNavigate()
 
   const [moduleTab, setModuleTab] = useState(isOwner ? 'write' : 'notes')
   // Author handoff for "click name/pfp → open in Search." Only populated
   // when the owner triggers it; SearchTab consumes it once on mount and
   // calls back to clear so re-opening the same author still works.
   const [searchInitialAuthor, setSearchInitialAuthor] = useState(null)
+
+  // Cross-module Comment / Quote deep-link. Any feed (notes, longform) can
+  // push `{ composerPrefill: { replyTo?, quote? } }` into router state when
+  // navigating here; we force the Write tab and hand the payload to the
+  // composer exactly once, then strip it from history so back/forward doesn't
+  // replay the prefill.
+  const [composerPrefill, setComposerPrefill] = useState(null)
+  useEffect(() => {
+    const pending = location.state?.composerPrefill
+    if (!pending) return
+    if (!isOwner) return
+    setComposerPrefill(pending)
+    setModuleTab('write')
+    // Drop the state from history so a soft refresh or tab-switch doesn't
+    // re-trigger the prefill.
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, isOwner, navigate])
 
   const openAuthorInSearch = useCallback((author) => {
     if (!isOwner || !author?.pubkey) return
@@ -98,7 +118,11 @@ export default function NotesModule({ user, sessionUser }) {
           className="flex flex-1 overflow-hidden"
           style={{ display: isWriteActive ? 'flex' : 'none' }}
         >
-          <NoteComposer user={user} />
+          <NoteComposer
+            user={user}
+            initialPrefill={composerPrefill}
+            onInitialPrefillConsumed={() => setComposerPrefill(null)}
+          />
         </div>
       )}
 

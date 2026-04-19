@@ -8,7 +8,7 @@
  * The picked author/note persists only in component state — intentional: a
  * shared browser shouldn't leave residue keyed by searched authors.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
@@ -17,6 +17,7 @@ import NoteSearch from './NoteSearch.jsx'
 import AuthorNotesPane from './AuthorNotesPane.jsx'
 import AuthorBookmarksPane from './AuthorBookmarksPane.jsx'
 import NoteCard from './NoteCard.jsx'
+import NoteThreadView from './NoteThreadView.jsx'
 
 export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
   // Mutually exclusive: one of these is set at a time.
@@ -25,8 +26,15 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
 
   // Author-view mode: which feed to show for the picked author. Resets to
   // 'notes' on every fresh author pick so the toggle doesn't persist
-  // across unrelated authors.
-  const [authorMode, setAuthorMode] = useState('notes') // 'notes' | 'bookmarks'
+  // across unrelated authors. Three-way pill: notes | comments | bookmarks.
+  const [authorMode, setAuthorMode] = useState('notes') // 'notes' | 'comments' | 'bookmarks'
+
+  // Thread stack — click-through any note in the search results to open its
+  // thread. Resets on clear or a fresh author/note pick so you don't carry
+  // a stale thread into an unrelated search.
+  const [threadStack, setThreadStack] = useState([])
+  const openThread  = useCallback(note => setThreadStack(s => [...s, note]), [])
+  const closeThread = useCallback(() => setThreadStack(s => s.slice(0, -1)), [])
 
   // Owner clicked an author elsewhere in Notes (e.g. a NoteCard header) and
   // NotesModule routed us here with the author pre-filled. Ack back so the
@@ -36,6 +44,7 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
       setPickedAuthor(initialAuthor)
       setPickedNote(null)
       setAuthorMode('notes')
+      setThreadStack([])
       onInitialAuthorConsumed?.()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -45,15 +54,18 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
     setPickedAuthor(author)
     setPickedNote(null)
     setAuthorMode('notes')
+    setThreadStack([])
   }
   function handlePickNote(note) {
     setPickedNote(note)
     setPickedAuthor(null)
+    setThreadStack([])
   }
   function handleClear() {
     setPickedAuthor(null)
     setPickedNote(null)
     setAuthorMode('notes')
+    setThreadStack([])
   }
 
   const header = (
@@ -80,28 +92,20 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
           </div>
           {pickedAuthor && (
             <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5 shrink-0">
-              <button
-                type="button"
-                onClick={() => setAuthorMode('notes')}
-                className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
-                  authorMode === 'notes'
-                    ? 'bg-purple-700 text-white'
-                    : 'text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                Notes
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuthorMode('bookmarks')}
-                className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
-                  authorMode === 'bookmarks'
-                    ? 'bg-purple-700 text-white'
-                    : 'text-neutral-400 hover:text-neutral-200'
-                }`}
-              >
-                Bookmarks
-              </button>
+              {['notes', 'comments', 'bookmarks'].map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setAuthorMode(m)}
+                  className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors capitalize ${
+                    authorMode === m
+                      ? 'bg-purple-700 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
             </div>
           )}
           <button
@@ -115,20 +119,34 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
     </div>
   )
 
+  // Thread view short-circuits the author/note panes — back button pops
+  // the stack and the normal search result renders again.
+  if (threadStack.length > 0) {
+    const focus = threadStack[threadStack.length - 1]
+    return <NoteThreadView focus={focus} onBack={closeThread} onNoteClick={openThread} />
+  }
+
   if (pickedAuthor) {
     const who = pickedAuthor.name || 'this author'
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="max-w-xl w-full mx-auto px-4 pt-4 shrink-0">{header}</div>
-        {authorMode === 'notes' ? (
+        {authorMode === 'notes' || authorMode === 'comments' ? (
           <AuthorNotesPane
             pubkey={pickedAuthor.pubkey}
-            emptyMessage={`No notes from ${who} yet.`}
+            emptyMessage={
+              authorMode === 'comments'
+                ? `${who} hasn’t replied to any notes yet.`
+                : `No notes from ${who} yet.`
+            }
+            mode={authorMode}
+            onNoteClick={openThread}
           />
         ) : (
           <AuthorBookmarksPane
             pubkey={pickedAuthor.pubkey}
             emptyMessage={`${who} hasn’t bookmarked any public notes.`}
+            onNoteClick={openThread}
           />
         )}
       </div>
@@ -140,7 +158,7 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
         <div className="max-w-xl mx-auto px-4 py-4">
           {header}
-          <SingleNoteCard id={pickedNote.id} authorHint={pickedNote.author} />
+          <SingleNoteCard id={pickedNote.id} authorHint={pickedNote.author} onNoteClick={openThread} />
         </div>
       </div>
     )
@@ -160,7 +178,7 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
 
 // Fetches one note by id and renders it as a single NoteCard. Primal first,
 // NDK fallback — notes off the Primal index are rare but worth reaching.
-function SingleNoteCard({ id, authorHint }) {
+function SingleNoteCard({ id, authorHint, onNoteClick }) {
   const [note, setNote] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -242,5 +260,5 @@ function SingleNoteCard({ id, authorHint }) {
     )
   }
   if (!note) return null
-  return <NoteCard note={note} profile={profile} />
+  return <NoteCard note={note} profile={profile} onNoteClick={onNoteClick} />
 }

@@ -18,6 +18,11 @@ export default function NotesFeed({
   emptyMessage = 'No notes to show yet.',
   header = null,
   onReload,
+  inBookmarksFeed = false,
+  onNoteClick,
+  selectMode = false,
+  selectedIds,
+  onToggleSelect,
 }) {
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -55,7 +60,15 @@ export default function NotesFeed({
           <ul className="space-y-3">
             {items.map(note => (
               <li key={note.id}>
-                <NoteCard note={note} profile={profiles.get(note.pubkey)} />
+                <NoteCard
+                  note={note}
+                  profile={profiles.get(note.pubkey)}
+                  inBookmarksFeed={inBookmarksFeed}
+                  onNoteClick={onNoteClick}
+                  selectable={selectMode}
+                  selected={selectMode && !!selectedIds?.has(note.id)}
+                  onToggleSelect={onToggleSelect}
+                />
               </li>
             ))}
           </ul>

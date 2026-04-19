@@ -13,6 +13,7 @@ import ZapSplitsSection from './NoteEditor.jsx'
 import NotePreview from './NotePreview.jsx'
 import MentionAutocomplete from './MentionAutocomplete.jsx'
 import EditorMirror from './EditorMirror.jsx'
+import { EmbeddedNoteCard } from './EntityCard.jsx'
 import { nip19 } from 'nostr-tools'
 import { fetchProfiles } from '../../../lib/primal.js'
 import { extractTags, mergeTags, validateKind1Event } from '../../../lib/noteParser.js'
@@ -20,11 +21,12 @@ import { publishNote } from '../../../lib/publishNote.js'
 import { getNDK } from '../../../lib/ndk.js'
 import { uploadToBlossom } from '../../../lib/blossom.js'
 import { useIsMobile } from '../../../hooks/useIsMobile.js'
+import { parseReplyRefs } from '../../../lib/nip10.js'
 
 // Compact default height — phone-like proportions
 const TEXTAREA_MIN_H = 100
 
-export default function NoteComposer({ user }) {
+export default function NoteComposer({ user, initialPrefill, onInitialPrefillConsumed }) {
   const readOnly = !!user?.readOnly
   const isMobile = useIsMobile()
   const fileRef = useRef(null)
@@ -56,6 +58,15 @@ export default function NoteComposer({ user }) {
   const importInputRef = useRef(null)
   const [clearPending, setClearPending] = useState(false)
   const clearTimerRef = useRef(null)
+
+  // Reply / quote threading inputs (text the user types), plus the fetched
+  // reply target — needed so we can emit a proper NIP-10 p-tag for the author
+  // and preserve the thread's root when replying to a mid-thread note.
+  const [replyToInput, setReplyToInput] = useState('')
+  const [quoteInput, setQuoteInput] = useState('')
+  const [replyTargetEvent, setReplyTargetEvent] = useState(null)
+  const [replyTargetLoading, setReplyTargetLoading] = useState(false)
+  const [replyTargetError, setReplyTargetError] = useState('')
   // Tracks timers created outside React effects (image error, copy feedback)
   // so they can be cleared on unmount — avoids "update on unmounted component"
   // warnings if the user switches tabs mid-timeout.
@@ -75,6 +86,19 @@ export default function NoteComposer({ user }) {
       pendingTimersRef.current.clear()
     }
   }, [])
+
+  // A sibling surface (a note's Comment/Quote button, a longform article's
+  // action bar) can deep-link into the composer by navigating here with a
+  // prefill payload. We populate the Reply / Quote fields once, then tell
+  // the parent to clear the payload so re-navigating to the same target
+  // still works the next time.
+  useEffect(() => {
+    if (!initialPrefill) return
+    const { replyTo, quote } = initialPrefill
+    if (replyTo) setReplyToInput(replyTo)
+    if (quote)   setQuoteInput(quote)
+    if (replyTo || quote) onInitialPrefillConsumed?.()
+  }, [initialPrefill, onInitialPrefillConsumed])
 
   // Resize textarea to fit content whenever it changes (covers programmatic
   // sets like JSON import). Re-runs when returning from preview mode so the
@@ -217,6 +241,10 @@ export default function NoteComposer({ user }) {
     setPreviewMode(false)
     setImportError('')
     setClearPending(false)
+    setReplyToInput('')
+    setQuoteInput('')
+    setReplyTargetEvent(null)
+    setReplyTargetError('')
     mentionsMap.current.clear()
   }, [])
 
@@ -226,7 +254,14 @@ export default function NoteComposer({ user }) {
   }, [clearPending, handleClear])
 
   // Show the Clear button only when there's something worth clearing
-  const hasEditorState = !!(content.trim() || zapSplits.length || userZapPct != null || manualTags.length)
+  const hasEditorState = !!(
+    content.trim() ||
+    zapSplits.length ||
+    userZapPct != null ||
+    manualTags.length ||
+    replyToInput.trim() ||
+    quoteInput.trim()
+  )
 
   // Import note by ID (note1... or nevent1...)
   const handleImportById = useCallback(async (input) => {
@@ -345,20 +380,247 @@ export default function NoteComposer({ user }) {
     })
   }, [content])
 
-  // Expand @DisplayName tokens back to nostr:npub1... for publish/preview/export
+  // Parse a note1/nevent1/naddr1 string (with or without "nostr:" prefix) to
+  // a descriptor used by both the Reply and Quote input fields. For
+  // addressable events (naddr, e.g. longform articles) we carry the
+  // kind+pubkey+d-tag coordinate so we can emit an NIP-10 a-tag and skip
+  // the relay fetch (the author is already in the decoded payload).
+  const parseNoteIdInput = useCallback((input) => {
+    const val = (input || '').trim()
+    if (!val) return { valid: false, empty: true }
+    try {
+      const bare = val.replace(/^nostr:/, '')
+      const decoded = nip19.decode(bare)
+      if (decoded.type === 'note') {
+        return {
+          valid: true,
+          addressable: false,
+          id: decoded.data.toLowerCase(),
+          relays: [],
+          bech32: nip19.neventEncode({ id: decoded.data }),
+        }
+      }
+      if (decoded.type === 'nevent') {
+        const relays = decoded.data.relays || []
+        return {
+          valid: true,
+          addressable: false,
+          id: decoded.data.id.toLowerCase(),
+          relays,
+          bech32: nip19.neventEncode({
+            id: decoded.data.id,
+            relays: relays.slice(0, 3),
+            author: decoded.data.author,
+          }),
+        }
+      }
+      if (decoded.type === 'naddr') {
+        const { kind, pubkey, identifier, relays = [] } = decoded.data
+        return {
+          valid: true,
+          addressable: true,
+          eventKind: kind,
+          pubkey: (pubkey || '').toLowerCase(),
+          dTag: identifier || '',
+          aCoord: `${kind}:${pubkey}:${identifier || ''}`,
+          relays,
+          bech32: nip19.naddrEncode({
+            kind,
+            pubkey,
+            identifier: identifier || '',
+            relays: relays.slice(0, 3),
+          }),
+        }
+      }
+      return { valid: false, error: 'Expected a note1, nevent1, or naddr1 identifier' }
+    } catch (e) {
+      return { valid: false, error: e.message || 'Invalid identifier' }
+    }
+  }, [])
+
+  const replyToRef = useMemo(() => parseNoteIdInput(replyToInput), [replyToInput, parseNoteIdInput])
+  const quoteRef   = useMemo(() => parseNoteIdInput(quoteInput),   [quoteInput,   parseNoteIdInput])
+
+  // Fetch the reply target so we know the author (for the p-tag) and
+  // whether it's itself a reply (so we can preserve the original thread root
+  // instead of pretending the target is the root). For addressable targets
+  // (naddr — e.g. longform articles) the author and kind are already in
+  // the decode, so we skip the network round-trip and synthesize the target.
+  useEffect(() => {
+    if (!replyToRef.valid) {
+      setReplyTargetEvent(null)
+      setReplyTargetError('')
+      setReplyTargetLoading(false)
+      return
+    }
+
+    // Addressable reply target — no fetch needed.
+    if (replyToRef.addressable) {
+      setReplyTargetEvent({
+        addressable: true,
+        aCoord: replyToRef.aCoord,
+        eventKind: replyToRef.eventKind,
+        pubkey: replyToRef.pubkey,
+        dTag: replyToRef.dTag,
+        tags: [],
+      })
+      setReplyTargetError('')
+      setReplyTargetLoading(false)
+      return
+    }
+
+    if (replyTargetEvent && !replyTargetEvent.addressable && replyTargetEvent.id === replyToRef.id) return
+
+    let cancelled = false
+    setReplyTargetLoading(true)
+    setReplyTargetError('')
+
+    ;(async () => {
+      try {
+        const ndk = getNDK()
+        const waitStart = Date.now()
+        while (!ndk.pool.connectedRelays().length && Date.now() - waitStart < 3000) {
+          await new Promise(r => setTimeout(r, 100))
+        }
+        const safeHints = (replyToRef.relays || []).filter(r => typeof r === 'string' && r.startsWith('wss://'))
+        const defaultUrls = [...ndk.pool.relays.values()].map(r => r.url)
+        const combined = [...new Set([...defaultUrls, ...safeHints])]
+        const relaySet = combined.length ? NDKRelaySet.fromRelayUrls(combined, ndk, false) : undefined
+
+        let event = await ndk.fetchEvent({ ids: [replyToRef.id] }, undefined, relaySet)
+        if (!event && !cancelled) {
+          await new Promise(r => setTimeout(r, 1500))
+          event = await ndk.fetchEvent({ ids: [replyToRef.id] }, undefined, relaySet)
+        }
+        if (cancelled) return
+        if (!event) throw new Error('Reply target not found on connected relays')
+        if (event.kind !== 1) throw new Error(`Expected kind 1, got kind ${event.kind}`)
+
+        setReplyTargetEvent({
+          addressable: false,
+          id: event.id.toLowerCase(),
+          pubkey: event.pubkey,
+          tags: event.tags || [],
+        })
+        setReplyTargetLoading(false)
+      } catch (e) {
+        if (cancelled) return
+        setReplyTargetError(e.message || 'Failed to load reply target')
+        setReplyTargetEvent(null)
+        setReplyTargetLoading(false)
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [replyToRef.valid, replyToRef.id, replyToRef.addressable, replyToRef.aCoord])
+
+  // Expand @DisplayName tokens back to nostr:npub1... for publish/preview/export.
+  // Also appends the quoted nevent (if set) so the quote renders as an embed
+  // card in any client — and so extractTags() picks it up as an e-tag.
   const expandedContent = useMemo(() => {
     let text = content
     for (const [name, pubkey] of mentionsMap.current) {
       const npub = nip19.npubEncode(pubkey)
       text = text.replaceAll(`@${name}`, `nostr:${npub}`)
     }
+    if (quoteRef.valid && quoteRef.bech32) {
+      // Don't double-embed if the user already referenced the same target in
+      // their content. For events (note1/nevent1) we match by hex id; for
+      // addressable events (naddr1) we match by kind:pubkey:d coordinate.
+      const existingIds = new Set()
+      const existingCoords = new Set()
+      for (const m of text.matchAll(/nostr:(note1[a-z0-9]+|nevent1[a-z0-9]+|naddr1[a-z0-9]+)/g)) {
+        try {
+          const d = nip19.decode(m[1])
+          if (d.type === 'note') existingIds.add(d.data.toLowerCase())
+          else if (d.type === 'nevent') existingIds.add(d.data.id.toLowerCase())
+          else if (d.type === 'naddr') existingCoords.add(`${d.data.kind}:${d.data.pubkey}:${d.data.identifier || ''}`)
+        } catch {}
+      }
+      const already = quoteRef.addressable
+        ? existingCoords.has(quoteRef.aCoord)
+        : existingIds.has(quoteRef.id)
+      if (!already) {
+        const uri = `nostr:${quoteRef.bech32}`
+        text = text.trim() ? `${text}\n\n${uri}` : uri
+      }
+    }
     return text
-  }, [content])
+  }, [content, quoteRef])
+
+  // NIP-10 reply tags. If the target is itself a reply, carry its root forward
+  // so we don't flatten mid-thread replies into fake top-level replies. Also
+  // propagate p-tags from the target (the reply chain participants).
+  //
+  // For addressable targets (naddr — e.g. a longform article) we emit an
+  // a-tag root instead of an e-tag, since the article is identified by its
+  // kind:pubkey:d coordinate, not a single event id.
+  const replyTags = useMemo(() => {
+    if (!replyToRef.valid) return []
+    const tags = []
+    const hint = replyToRef.relays?.[0] || ''
+
+    if (replyToRef.addressable) {
+      tags.push(['a', replyToRef.aCoord, hint, 'root'])
+      if (replyToRef.pubkey) tags.push(['p', replyToRef.pubkey])
+      return tags
+    }
+
+    const targetId = replyToRef.id
+    if (replyTargetEvent && !replyTargetEvent.addressable && replyTargetEvent.id === targetId) {
+      const refs = parseReplyRefs({ tags: replyTargetEvent.tags })
+      if (refs.rootId && refs.rootId !== targetId) {
+        tags.push(['e', refs.rootId, '', 'root'])
+        tags.push(['e', targetId, hint, 'reply'])
+      } else {
+        tags.push(['e', targetId, hint, 'root'])
+      }
+      const seenP = new Set()
+      if (replyTargetEvent.pubkey) {
+        seenP.add(replyTargetEvent.pubkey.toLowerCase())
+        tags.push(['p', replyTargetEvent.pubkey])
+      }
+      for (const t of replyTargetEvent.tags) {
+        if (t[0] !== 'p' || typeof t[1] !== 'string') continue
+        const pk = t[1].toLowerCase()
+        if (seenP.has(pk)) continue
+        seenP.add(pk)
+        tags.push(['p', t[1]])
+      }
+    } else {
+      // Fetch hasn't completed (or failed) — emit a best-effort e-tag so the
+      // reply still threads, even without the author's p-tag.
+      tags.push(['e', targetId, hint, 'root'])
+    }
+    return tags
+  }, [replyToRef, replyTargetEvent])
 
   const finalTags = useMemo(() => {
     const autoTags = extractTags(expandedContent)
-    return mergeTags({ autoTags, zapSplits, userPubkey: user?.pubkey, userPct: userZapPct, manualTags })
-  }, [expandedContent, zapSplits, user?.pubkey, userZapPct, manualTags])
+
+    // If we have reply tags, strip any auto-extracted e/p/a tags that collide
+    // with them — the marked reply tags are authoritative.
+    let filteredAuto = autoTags
+    if (replyTags.length) {
+      const eIds    = new Set(replyTags.filter(t => t[0] === 'e').map(t => t[1].toLowerCase()))
+      const pIds    = new Set(replyTags.filter(t => t[0] === 'p').map(t => t[1].toLowerCase()))
+      const aCoords = new Set(replyTags.filter(t => t[0] === 'a').map(t => (t[1] || '').toLowerCase()))
+      filteredAuto = autoTags.filter(t => {
+        if (t[0] === 'e' && eIds.has((t[1] || '').toLowerCase())) return false
+        if (t[0] === 'p' && pIds.has((t[1] || '').toLowerCase())) return false
+        if (t[0] === 'a' && aCoords.has((t[1] || '').toLowerCase())) return false
+        return true
+      })
+    }
+
+    return mergeTags({
+      autoTags: [...replyTags, ...filteredAuto],
+      zapSplits,
+      userPubkey: user?.pubkey,
+      userPct: userZapPct,
+      manualTags,
+    })
+  }, [expandedContent, replyTags, zapSplits, user?.pubkey, userZapPct, manualTags])
 
   // Combined splits for preview display (includes user if their effective pct > 0)
   const previewZapSplits = useMemo(() => {
@@ -424,7 +686,7 @@ export default function NoteComposer({ user }) {
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
-      <div className="max-w-sm mx-auto px-4 py-5">
+      <div className="max-w-[400px] mx-auto px-4 py-5">
         {/* Hidden file input */}
         <input
           ref={fileRef}
@@ -566,6 +828,51 @@ export default function NoteComposer({ user }) {
           </div>
         ) : (
           <>
+            {/* Reply-to — above the editor. When valid, the note becomes a
+                NIP-10 reply: the target's author gets a p-tag and any
+                existing thread root is preserved. */}
+            <div className="mb-1.5">
+              <div className="relative flex items-center">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-neutral-500 uppercase tracking-wide font-semibold pointer-events-none">
+                  Reply
+                </span>
+                <input
+                  type="text"
+                  value={replyToInput}
+                  onChange={(e) => setReplyToInput(e.target.value)}
+                  placeholder="note1…, nevent1…, or naddr1… to reply to"
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg pl-14 pr-7 py-2 sm:py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-purple-600"
+                  aria-label="Reply to note ID"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+                {replyToInput && (
+                  <button
+                    onClick={() => setReplyToInput('')}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-200 text-base leading-none"
+                    aria-label="Clear reply target"
+                  >×</button>
+                )}
+              </div>
+              {replyToInput.trim() && !replyToRef.valid && (
+                <p className="text-[10px] text-red-400 mt-0.5 pl-1">{replyToRef.error || 'Invalid note ID'}</p>
+              )}
+              {replyToRef.valid && replyTargetLoading && (
+                <p className="text-[10px] text-neutral-500 italic mt-0.5 pl-1">Loading reply target…</p>
+              )}
+              {replyTargetError && !replyTargetLoading && (
+                <p className="text-[10px] text-red-400 mt-0.5 pl-1">{replyTargetError}</p>
+              )}
+              {replyToRef.valid && replyTargetEvent && !replyTargetLoading && (
+                replyTargetEvent.addressable
+                  ? replyTargetEvent.aCoord === replyToRef.aCoord
+                  : replyTargetEvent.id === replyToRef.id
+              ) && (
+                <p className="text-[10px] text-green-500 mt-0.5 pl-1">✓ Ready to reply</p>
+              )}
+            </div>
+
             {/* Compose (Write mode) — hidden in preview mode. */}
             {!previewMode && (
               <div className="relative bg-neutral-900 rounded-lg">
@@ -601,21 +908,64 @@ export default function NoteComposer({ user }) {
             )}
 
             {/* Preview mode — full preview in place of the editor. Uses a
-                compact zap-split display (pfp + %, no names). */}
+                compact zap-split display (pfp + %, no names). When a reply
+                target is set, surface it as a card at the top so the author
+                can sanity-check the thread they're entering. */}
             {previewMode && (
               <div className="bg-neutral-900/50 border border-neutral-800 rounded-lg p-3">
-                {content.trim() ? (
+                {replyToRef.valid && (
+                  <div className="mb-3">
+                    <p className="text-[10px] text-neutral-500 uppercase tracking-wide font-semibold mb-1">
+                      Replying to
+                    </p>
+                    <EmbeddedNoteCard nip19Str={replyToRef.bech32} />
+                  </div>
+                )}
+                {(content.trim() || quoteRef.valid) ? (
                   <NotePreview
                     content={expandedContent}
                     zapSplits={previewZapSplits}
                     authorPubkey={user?.pubkey}
                     compactSplits
+                    showZapSplits={zapSplits.length > 0 || userZapPct != null}
                   />
-                ) : (
+                ) : !replyToRef.valid ? (
                   <p className="text-neutral-700 text-xs italic">Nothing to preview yet — switch back to Write.</p>
-                )}
+                ) : null}
               </div>
             )}
+
+            {/* Quote — below the editor. The nevent is appended to the
+                published content so every client renders it as an embed,
+                and extractTags() picks it up as a 'mention' e-tag. */}
+            <div className="mt-1.5">
+              <div className="relative flex items-center">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-neutral-500 uppercase tracking-wide font-semibold pointer-events-none">
+                  Quote
+                </span>
+                <input
+                  type="text"
+                  value={quoteInput}
+                  onChange={(e) => setQuoteInput(e.target.value)}
+                  placeholder="note1…, nevent1…, or naddr1… to quote"
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg pl-14 pr-7 py-2 sm:py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-purple-600"
+                  aria-label="Quote note ID"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+                {quoteInput && (
+                  <button
+                    onClick={() => setQuoteInput('')}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-200 text-base leading-none"
+                    aria-label="Clear quote"
+                  >×</button>
+                )}
+              </div>
+              {quoteInput.trim() && !quoteRef.valid && (
+                <p className="text-[10px] text-red-400 mt-0.5 pl-1">{quoteRef.error || 'Invalid note ID'}</p>
+              )}
+            </div>
 
             {/* Toolbar row — image upload + zap splits only in Write mode,
                 Write/Preview pill ALWAYS visible (pinned right) so you can

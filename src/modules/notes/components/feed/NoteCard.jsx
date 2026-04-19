@@ -53,7 +53,17 @@ function extractZapSplits(tags) {
   return out.map(z => ({ pubkey: z.pubkey, relay: z.relay, pct: total > 0 ? Math.round(z.weight / total * 100) : 0 }))
 }
 
-export default function NoteCard({ note, profile }) {
+export default function NoteCard({
+  note,
+  profile,
+  inBookmarksFeed = false,
+  onNoteClick,
+  focused = false,
+  compact = false,
+  selectable = false,
+  selected = false,
+  onToggleSelect,
+}) {
   const isMobile = useIsMobile()
   const { openAuthorInSearch } = useNotesNavigationContext()
   const bodyRef = useRef(null)
@@ -64,12 +74,14 @@ export default function NoteCard({ note, profile }) {
 
   useEffect(() => {
     if (!menuOpen) return
+    // Capture phase + pointerdown so the close fires before any inner
+    // stopPropagation, and covers mouse/touch/pen uniformly.
     function onDown(e) {
       if (!menuRef.current) return
       if (!menuRef.current.contains(e.target)) setMenuOpen(false)
     }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
   }, [menuOpen])
 
   // Measure whether the rendered body exceeds the clamp. We poll briefly on
@@ -99,8 +111,32 @@ export default function NoteCard({ note, profile }) {
   const pic = profile?.picture || profile?.image
   const zapSplits = extractZapSplits(note?.tags)
 
-  return (
-    <article className="bg-neutral-900 border border-neutral-800 rounded-lg p-3">
+  // Click-to-open-thread: we want the body region to open the thread but
+  // NOT the nested interactive elements (links, embedded videos/images,
+  // author pfp button, action bar buttons, three-dot menu). Check target
+  // closest match before calling.
+  function handleBodyClick(e) {
+    if (!onNoteClick) return
+    const tgt = e.target
+    if (tgt.closest('a, button, video, iframe')) return
+    onNoteClick(note)
+  }
+
+  const clickable = !!onNoteClick
+  const articleClass = [
+    'bg-neutral-900 border rounded-lg p-3 transition-colors',
+    focused
+      ? 'border-purple-700'
+      : (selectable && selected ? 'border-purple-500' : 'border-neutral-800'),
+    clickable ? 'hover:border-neutral-700 cursor-pointer' : '',
+    selectable ? 'flex-1' : '',
+  ].filter(Boolean).join(' ')
+
+  const articleEl = (
+    <article
+      className={articleClass}
+      onClick={clickable ? handleBodyClick : undefined}
+    >
       {/* Header */}
       <header className="flex items-center gap-2 mb-2">
         {openAuthorInSearch && note?.pubkey ? (
@@ -161,7 +197,7 @@ export default function NoteCard({ note, profile }) {
               <circle cx="13" cy="8" r="1.4" />
             </svg>
           </button>
-          <NoteActionsMenu open={menuOpen} onClose={() => setMenuOpen(false)} note={note} />
+          <NoteActionsMenu open={menuOpen} onClose={() => setMenuOpen(false)} note={note} inBookmarksFeed={inBookmarksFeed} />
         </div>
       </header>
 
@@ -198,4 +234,32 @@ export default function NoteCard({ note, profile }) {
       <NoteActionBar note={note} profile={profile} />
     </article>
   )
+
+  if (selectable) {
+    return (
+      <div className="flex items-start gap-3">
+        <button
+          type="button"
+          onClick={() => onToggleSelect?.(note.id)}
+          aria-checked={selected}
+          role="checkbox"
+          aria-label={selected ? 'Deselect note' : 'Select note'}
+          className={`mt-4 shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
+            selected
+              ? 'bg-purple-600 border-purple-600 hover:bg-purple-500'
+              : 'bg-neutral-900 border-neutral-600 hover:border-neutral-400'
+          }`}
+        >
+          {selected && (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="white" strokeWidth="2" aria-hidden="true">
+              <path d="M2 6l3 3 5-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
+        </button>
+        {articleEl}
+      </div>
+    )
+  }
+
+  return articleEl
 }

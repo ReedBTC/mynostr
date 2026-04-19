@@ -191,7 +191,8 @@ export default function ZapModal({
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
-      onMouseDown={onClose}>
+      onMouseDown={onClose}
+      onClick={e => e.stopPropagation()}>
       <div className="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl w-full max-w-sm"
         onMouseDown={e => e.stopPropagation()}>
 

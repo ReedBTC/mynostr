@@ -20,8 +20,8 @@ import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
 
-export default function NoteActionsMenu({ open, onClose, note }) {
-  const { categories, createCategory, addNote, removeNote, canEdit } = useNoteBookmarksContext()
+export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed = false }) {
+  const { categories, createCategory, addNote, removeNote, canEdit, hiddenIds } = useNoteBookmarksContext()
   const isMobile = useIsMobile()
   const [submenu, setSubmenu] = useState(false)
   const [removeSubmenu, setRemoveSubmenu] = useState(false)
@@ -143,8 +143,9 @@ export default function NoteActionsMenu({ open, onClose, note }) {
 
   // Hide the bookmarks submenu for read-only / logged-out views — the
   // lists we'd list would belong to the viewed user, not the viewer, and
-  // writing to them would require a signer we don't have.
-  const writableCategories = categories.filter(c => !c.readOnly)
+  // writing to them would require a signer we don't have. Hidden chips
+  // are suppressed everywhere in the Notes module, so filter them too.
+  const writableCategories = categories.filter(c => !c.readOnly && !hiddenIds?.has(c.id))
   const showBookmarks = canEdit
   const containingCategories = writableCategories.filter(c =>
     c.items?.some(it => it.id === note.id?.toLowerCase())
@@ -166,7 +167,7 @@ export default function NoteActionsMenu({ open, onClose, note }) {
             }}
             className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors flex items-center justify-between"
           >
-            <span>Add to bookmarks</span>
+            <span>{inBookmarksFeed ? 'Bookmark Category' : 'Add to bookmarks'}</span>
             {!isMobile && (
               <span className="text-neutral-600 text-[10px]">{submenu ? '▲' : '▼'}</span>
             )}

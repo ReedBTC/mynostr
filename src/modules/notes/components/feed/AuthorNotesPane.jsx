@@ -13,9 +13,10 @@
  * `feed` op with `until` returns the next page older than that timestamp.
  */
 import { useCallback, useMemo } from 'react'
-import { fetchAuthorNotes, fetchProfiles } from '../../../../lib/primal.js'
+import { fetchAuthorNotes, fetchAuthorReplies, fetchProfiles } from '../../../../lib/primal.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
+import { isReply } from '../../../../lib/nip10.js'
 import NotesFeed from './NotesFeed.jsx'
 
 // Keep an NDK subscription open for a fixed window so slower relays have
@@ -46,15 +47,25 @@ function collectFromRelays(ndk, filter, windowMs) {
   return { promise, stop }
 }
 
-export default function AuthorNotesPane({ pubkey, header, emptyMessage }) {
+export default function AuthorNotesPane({ pubkey, header, emptyMessage, mode = 'notes', onNoteClick }) {
   const loadPage = useCallback(async ({ cursor, limit }) => {
     if (!pubkey) return { items: [], done: true }
     const until = cursor || null
 
-    // Primary: Primal — fast, pre-indexed.
-    const primal = await fetchAuthorNotes(pubkey, until, limit)
+    // Primary: Primal — fast, pre-indexed. `feed` op with notes:'replies'
+    // returns only the author's replies; default op returns their originals
+    // mixed with replies, so we post-filter client-side below.
+    const primal = mode === 'comments'
+      ? await fetchAuthorReplies(pubkey, until, limit)
+      : await fetchAuthorNotes(pubkey, until, limit)
     let notes = primal.notes
     let profiles = new Map(primal.profiles)
+
+    // Notes mode: Primal's default feed includes the author's replies too.
+    // Strip them so the "Notes" toggle only shows originals.
+    if (mode === 'notes') {
+      notes = notes.filter(n => !isReply(n))
+    }
 
     // Fallback ONLY on the first page (cursor === null) if Primal returned
     // nothing. We don't want to retry NDK on every page — if Primal doesn't
@@ -71,7 +82,10 @@ export default function AuthorNotesPane({ pubkey, header, emptyMessage }) {
         const raw = await sub.promise
         const byId = new Map()
         for (const ev of raw) if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev)
-        notes = Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at)
+        let ndkNotes = Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at)
+        if (mode === 'notes') ndkNotes = ndkNotes.filter(n => !isReply(n))
+        else if (mode === 'comments') ndkNotes = ndkNotes.filter(n => isReply(n))
+        notes = ndkNotes
       } catch {}
     }
 
@@ -91,17 +105,19 @@ export default function AuthorNotesPane({ pubkey, header, emptyMessage }) {
     return {
       items: notes,
       profiles,
-      nextCursor: oldest ? oldest.created_at - 1 : null,
+      // Cursor tracks the raw fetched page (pre-filter) to keep pagination
+      // moving even when `isReply` strips everything on a given page.
+      nextCursor: oldest ? oldest.created_at - 1 : (primal.notes.length ? primal.notes[primal.notes.length - 1].created_at - 1 : null),
       // Only stop when an actual page came back empty. Primal's `feed` op
       // bundles kind-0 profile events and kind-10000133 stats in with the
       // kind-1 payload, so a full "limit" response often filters down to
       // fewer notes — treating that as end-of-feed stops the infinite
       // scroll after one or two pages.
-      done: notes.length === 0,
+      done: primal.notes.length === 0,
     }
-  }, [pubkey])
+  }, [pubkey, mode])
 
-  const key = useMemo(() => `author:${pubkey || ''}`, [pubkey])
+  const key = useMemo(() => `author:${mode}:${pubkey || ''}`, [pubkey, mode])
 
   const feed = useInfiniteFeed({ key, loadPage, pageSize: 25, enabled: !!pubkey })
 
@@ -117,6 +133,7 @@ export default function AuthorNotesPane({ pubkey, header, emptyMessage }) {
       header={header}
       emptyMessage={emptyMessage || 'No notes from this author yet.'}
       onReload={feed.reload}
+      onNoteClick={onNoteClick}
     />
   )
 }

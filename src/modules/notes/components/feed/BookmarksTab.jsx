@@ -10,9 +10,11 @@
  *   the source of truth so add/remove mutations reflect instantly without
  *   a re-fetch.
  *
- *   Visitor view — flat primary feed fetched directly over NDK. Categories
- *   are not surfaced to visitors (we'd have to do a second round of fetches
- *   per-profile and the UX benefit is marginal). Visitors cannot mutate.
+ *   Visitor view — same chip bar, read-only. Delegates to
+ *   AuthorBookmarksPane, which fetches the author's 10003/30001/30003
+ *   events, parses them into categories, and renders the chip bar
+ *   without the "+ New" affordance so visitors can filter through every
+ *   category the author has published.
  *
  * Live filtering: the active category's items are the authoritative id
  * set. We filter feed.items against that Set at render time so a
@@ -23,110 +25,179 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
-import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
 import BookmarkChipBar from './BookmarkChipBar.jsx'
 import NotesFeed from './NotesFeed.jsx'
-
-const BOOKMARK_KIND = 10003
-
-async function loadBookmarkIds(pubkey) {
-  const ndk = getNDK()
-  await connectAndWait(ndk, 3000).catch(() => {})
-  const event = await Promise.race([
-    ndk.fetchEvent({ kinds: [BOOKMARK_KIND], authors: [pubkey] }),
-    new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-  ]).catch(() => null)
-  if (!event) return []
-  const ids = []
-  const seen = new Set()
-  for (const t of event.tags || []) {
-    if (t[0] === 'e' && typeof t[1] === 'string' && /^[0-9a-f]{64}$/i.test(t[1])) {
-      const id = t[1].toLowerCase()
-      if (!seen.has(id)) { seen.add(id); ids.push(id) }
-    }
-  }
-  // Kind 10003 has no per-item timestamp; clients almost universally
-  // *append* new bookmarks, so the tail of the tag array is the most
-  // recently added. Reverse so the feed leads with "just bookmarked."
-  ids.reverse()
-  return ids
-}
+import NoteThreadView from './NoteThreadView.jsx'
+import AuthorBookmarksPane from './AuthorBookmarksPane.jsx'
 
 export default function BookmarksTab({ user, isOwner }) {
   const pubkey = user?.pubkey
   const displayName = user?.profile?.displayName || user?.profile?.name || 'this user'
 
-  const { categories, loading: bookmarksLoading, createCategory } = useNoteBookmarksContext()
+  const {
+    categories,
+    loading: bookmarksLoading,
+    createCategory,
+    bulkMove,
+    bulkRemove,
+    bulkMoveToNew,
+    renameCategory,
+    deleteCategory,
+    hiddenIds,
+    hideCategory,
+    unhideCategory,
+  } = useNoteBookmarksContext()
+
+  // Thread stack — clicking any bookmarked note opens the thread view.
+  const [threadStack, setThreadStack] = useState([])
+  const openThread  = useCallback(note => setThreadStack(s => [...s, note]), [])
+  const closeThread = useCallback(() => setThreadStack(s => s.slice(0, -1)), [])
+
+  // ── Owner: bulk-select state ────────────────────────────────────────
+  // Checkboxes are always visible in the owner bookmark feed. The bulk
+  // action bar slides in when at least one note is selected. Selection
+  // clears on category switch (the ids belong to the old bucket) and
+  // after any successful bulk action.
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false)
+  const [creatingNewMoveTarget, setCreatingNewMoveTarget] = useState(false)
+  const [newMoveTargetName, setNewMoveTargetName] = useState('')
+  // Inline confirm state for bulk-remove — the Remove button flips to
+  // "Confirm?  Yes / No" on first click instead of popping a native
+  // browser prompt (matches the longform module's pattern).
+  const [confirmBulkRemove, setConfirmBulkRemove] = useState(false)
+  const moveMenuRef = useRef(null)
+  const newMoveInputRef = useRef(null)
+
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set())
+    setMoveMenuOpen(false)
+    setCreatingNewMoveTarget(false)
+    setNewMoveTargetName('')
+    setConfirmBulkRemove(false)
+  }, [])
+
+  // Close move dropdown on outside click.
+  useEffect(() => {
+    if (!moveMenuOpen) return
+    function onDown(e) {
+      if (!moveMenuRef.current?.contains(e.target)) {
+        setMoveMenuOpen(false)
+        setCreatingNewMoveTarget(false)
+        setNewMoveTargetName('')
+      }
+    }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [moveMenuOpen])
+
+  useEffect(() => {
+    if (creatingNewMoveTarget) newMoveInputRef.current?.focus()
+  }, [creatingNewMoveTarget])
 
   // ── Owner: category chip state ──────────────────────────────────────
   const [activeCategoryId, setActiveCategoryId] = useState(null)
+  const [manageMode, setManageMode] = useState(false)
+
+  // Exit manage mode whenever the category set drops to "nothing editable"
+  // (just primary, or empty). Prevents an orphan "Done" button lingering.
+  useEffect(() => {
+    if (!manageMode) return
+    const hasEditable = categories.some(c => c.id !== NOTE_PRIMARY_CATEGORY_ID && !c.readOnly)
+    if (!hasEditable) setManageMode(false)
+  }, [manageMode, categories])
+
+  const handleRenameCategory = useCallback(async (categoryId, nextTitle) => {
+    await renameCategory(categoryId, nextTitle)
+  }, [renameCategory])
+
+  const handleHideCategory = useCallback((categoryId) => {
+    // Outside manage mode, hiding the currently-active chip would leave a
+    // blank feed; snap to primary first.
+    if (!manageMode && activeCategoryId === categoryId) {
+      setActiveCategoryId(NOTE_PRIMARY_CATEGORY_ID)
+    }
+    hideCategory(categoryId)
+  }, [manageMode, activeCategoryId, hideCategory])
+
+  const handleUnhideCategory = useCallback((categoryId) => {
+    unhideCategory(categoryId)
+  }, [unhideCategory])
+
+  // The ChipBar now owns the inline "Delete?" confirmation UI (matches the
+  // pattern used by the longform BookmarksPanel), so this handler fires
+  // only after the user has already said Yes.
+  const handleDeleteCategory = useCallback(async (categoryId) => {
+    // If the deleted category is currently active, snap back to primary
+    // before the effect auto-picks a different default (avoids a
+    // noticeable flicker where another category is briefly selected).
+    if (activeCategoryId === categoryId) setActiveCategoryId(NOTE_PRIMARY_CATEGORY_ID)
+    await deleteCategory(categoryId)
+  }, [deleteCategory, activeCategoryId])
+
+  // Switching categories invalidates the selection (those ids belong to
+  // the previous bucket and we don't want to move notes the user can't
+  // see).
+  useEffect(() => {
+    setSelectedIds(new Set())
+    setMoveMenuOpen(false)
+  }, [activeCategoryId])
 
   // Pick a sensible default chip once data is available. Prefer primary
-  // if it exists, else the first custom category. Re-run whenever the
-  // currently-active chip vanishes (e.g., its last note was moved to
-  // another category and the set dropped to 0 items → filtered out).
+  // if it exists, else the first non-hidden custom category. Also bounce
+  // off a hidden chip if the user hides the one they're currently
+  // viewing (outside manage mode; inside manage mode hidden chips stay
+  // selectable so unhide is reachable from any chip).
   useEffect(() => {
     if (!isOwner) return
     if (categories.length === 0) {
       if (activeCategoryId) setActiveCategoryId(null)
       return
     }
-    const exists = categories.some(c => c.id === activeCategoryId)
-    if (exists) return
+    const current = categories.find(c => c.id === activeCategoryId)
+    const currentHiddenOutsideManage = current && hiddenIds.has(current.id) && !manageMode
+    if (current && !currentHiddenOutsideManage) return
     const primary = categories.find(c => c.id === NOTE_PRIMARY_CATEGORY_ID)
-    setActiveCategoryId(primary ? primary.id : categories[0].id)
-  }, [isOwner, categories, activeCategoryId])
+    if (primary) {
+      setActiveCategoryId(primary.id)
+      return
+    }
+    const firstVisible = categories.find(c => !hiddenIds.has(c.id))
+    setActiveCategoryId(firstVisible ? firstVisible.id : categories[0].id)
+  }, [isOwner, categories, activeCategoryId, hiddenIds, manageMode])
 
-  const activeCategory = isOwner
-    ? categories.find(c => c.id === activeCategoryId)
-    : null
+  const activeCategory = categories.find(c => c.id === activeCategoryId) || null
 
-  // ── Visitor: direct primary-list fetch ──────────────────────────────
-  const [visitorIds, setVisitorIds] = useState(null)
-  const [visitorError, setVisitorError] = useState(null)
-
-  useEffect(() => {
-    if (isOwner || !pubkey) return
-    let cancelled = false
-    setVisitorIds(null)
-    setVisitorError(null)
-    ;(async () => {
-      try {
-        const list = await loadBookmarkIds(pubkey)
-        if (cancelled) return
-        setVisitorIds(list)
-      } catch (e) {
-        if (cancelled) return
-        setVisitorError(e?.message || 'Failed to load bookmarks')
-      }
-    })()
-    return () => { cancelled = true }
-  }, [isOwner, pubkey])
-
-  // ── Unified item list for the active view ───────────────────────────
   // Owner items carry an addedAt (kind 30003 has per-item timestamps in
   // our JSON content extension; kind 10003 uses the list event's
-  // created_at for every item). Visitor items are plain ids — we only
-  // have the one list-level timestamp, so addedAt defaults to 0 and the
-  // note's own created_at becomes the effective sort key.
+  // created_at for every item).
   const currentItems = useMemo(() => {
-    if (isOwner) return activeCategory ? activeCategory.items : []
-    return (visitorIds || []).map(id => ({ id, addedAt: 0 }))
-  }, [isOwner, activeCategory, visitorIds])
+    return activeCategory ? activeCategory.items : []
+  }, [activeCategory])
 
   const currentIds = useMemo(() => currentItems.map(it => it.id), [currentItems])
 
   // Feed key invalidates the prefetch whenever the active id set shifts
   // — this is how add/remove round-trips into the sorted list. First/
   // last/length fingerprint is cheap and collides vanishingly rarely.
+  // Visitor mode delegates to AuthorBookmarksPane (early-return below) so
+  // this key is only consumed in owner mode.
   const feedKey = useMemo(() => {
     const tag = `${currentIds.length}:${currentIds[0]?.slice(0, 8) || ''}:${currentIds[currentIds.length - 1]?.slice(0, 8) || ''}`
-    if (isOwner) return `bookmarks:owner:${pubkey || ''}:${activeCategoryId || ''}:${tag}`
-    return `bookmarks:visitor:${pubkey || ''}:${tag}`
-  }, [isOwner, pubkey, activeCategoryId, currentIds])
+    return `bookmarks:owner:${pubkey || ''}:${activeCategoryId || ''}:${tag}`
+  }, [pubkey, activeCategoryId, currentIds])
 
   // Prefetched+sorted cache. One fetch per feedKey; pagination is pure
   // local slicing after that. Sort is (addedAt desc, created_at desc)
@@ -181,16 +252,40 @@ export default function BookmarksTab({ user, isOwner }) {
     }
   }, [feedKey])
 
-  const waitingOnInitial = isOwner
-    ? (bookmarksLoading && categories.length === 0)
-    : visitorIds === null
+  const waitingOnInitial = bookmarksLoading && categories.length === 0
 
   const feed = useInfiniteFeed({
     key: feedKey,
     loadPage,
     pageSize: 20,
-    enabled: !!pubkey && !waitingOnInitial && currentIds.length > 0,
+    enabled: isOwner && !!pubkey && !waitingOnInitial && currentIds.length > 0,
   })
+
+  const handleBulkMove = useCallback(async (targetCategoryId) => {
+    if (selectedIds.size === 0) return
+    const ids = [...selectedIds]
+    clearSelection()
+    await bulkMove(targetCategoryId, ids)
+  }, [selectedIds, bulkMove, clearSelection])
+
+  // Atomic create + move in one hook call. Splitting it into
+  // createCategory → bulkMove would queue two setCategories updates, and
+  // bulkMove's reducer could (and did) race the pending creation and
+  // find no target. The hook's bulkMoveToNew does both in one reducer.
+  const handleBulkMoveToNew = useCallback(async () => {
+    const name = newMoveTargetName.trim()
+    if (!name || selectedIds.size === 0) return
+    const ids = [...selectedIds]
+    clearSelection()
+    await bulkMoveToNew(name, ids)
+  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection])
+
+  const handleBulkRemove = useCallback(async () => {
+    if (selectedIds.size === 0 || !activeCategoryId) return
+    const ids = [...selectedIds]
+    clearSelection()
+    await bulkRemove(activeCategoryId, ids)
+  }, [selectedIds, activeCategoryId, bulkRemove, clearSelection])
 
   // Live filter: drop any already-paginated note that's no longer in the
   // active id set (e.g., user just removed it or moved it).
@@ -201,6 +296,11 @@ export default function BookmarksTab({ user, isOwner }) {
   )
 
   // ── Render ─────────────────────────────────────────────────────────
+  if (threadStack.length > 0) {
+    const focus = threadStack[threadStack.length - 1]
+    return <NoteThreadView focus={focus} onBack={closeThread} onNoteClick={openThread} />
+  }
+
   if (!pubkey) {
     return (
       <div className="flex-1 overflow-y-auto">
@@ -208,6 +308,20 @@ export default function BookmarksTab({ user, isOwner }) {
           <p className="text-xs text-neutral-500">No user loaded.</p>
         </div>
       </div>
+    )
+  }
+
+  // Visitor view — delegate to the shared pane that fetches the author's
+  // 10003 / 30001 / 30003 events, parses them into categories, and renders
+  // a read-only chip bar. Same component the Search tab uses when you
+  // drill into an author's bookmarks.
+  if (!isOwner) {
+    return (
+      <AuthorBookmarksPane
+        pubkey={pubkey}
+        emptyMessage={`${displayName} hasn’t bookmarked any public notes.`}
+        onNoteClick={openThread}
+      />
     )
   }
 
@@ -222,28 +336,9 @@ export default function BookmarksTab({ user, isOwner }) {
     )
   }
 
-  if (!isOwner && visitorError) {
-    return (
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-xl mx-auto px-4 py-10 text-center">
-          <p className="text-xs text-red-400">{visitorError}</p>
-        </div>
-      </div>
-    )
-  }
-
-  const chipBar = isOwner ? (
-    <BookmarkChipBar
-      categories={categories}
-      activeCategoryId={activeCategoryId}
-      onSelect={setActiveCategoryId}
-      onCreateCategory={createCategory}
-    />
-  ) : null
-
   // Owner with zero categories → chip bar still renders (so they can
   // create one via "+ New"), feed pane shows an empty-state hint.
-  if (isOwner && categories.length === 0) {
+  if (categories.length === 0) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         <BookmarkChipBar
@@ -261,15 +356,149 @@ export default function BookmarksTab({ user, isOwner }) {
     )
   }
 
-  const emptyMessage = isOwner
-    ? (activeCategory
-        ? `Nothing in ${activeCategory.title} yet.`
-        : 'You haven’t bookmarked any notes yet.')
-    : `${displayName} hasn’t bookmarked any public notes.`
+  const emptyMessage = activeCategory
+    ? `Nothing in ${activeCategory.title} yet.`
+    : 'You haven’t bookmarked any notes yet.'
+
+  const moveTargets = categories.filter(
+    c => c.id !== activeCategoryId && !hiddenIds.has(c.id),
+  )
+  const hasSelection = selectedIds.size > 0
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {chipBar}
+      <BookmarkChipBar
+        categories={categories}
+        activeCategoryId={activeCategoryId}
+        onSelect={setActiveCategoryId}
+        onCreateCategory={createCategory}
+        manageMode={manageMode}
+        onToggleManageMode={setManageMode}
+        onRenameCategory={handleRenameCategory}
+        onDeleteCategory={handleDeleteCategory}
+        hiddenIds={hiddenIds}
+        onHideCategory={handleHideCategory}
+        onUnhideCategory={handleUnhideCategory}
+      />
+
+      {hasSelection && (
+        <div className="max-w-xl mx-auto w-full px-4 py-2 border-b border-neutral-800 flex items-center gap-2 text-xs">
+          <span className="text-neutral-300 shrink-0">
+            {selectedIds.size} selected
+          </span>
+
+          <div ref={moveMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setMoveMenuOpen(v => !v)}
+              className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
+            >
+              Move to…
+            </button>
+            {moveMenuOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-lg z-20 min-w-[200px] max-h-72 overflow-y-auto">
+                {moveTargets.map(cat => (
+                  <button
+                    key={cat.id}
+                    type="button"
+                    onClick={() => handleBulkMove(cat.id)}
+                    className="block w-full text-left px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-800"
+                  >
+                    {cat.title}
+                  </button>
+                ))}
+
+                {moveTargets.length > 0 && <div className="border-t border-neutral-800" />}
+
+                {creatingNewMoveTarget ? (
+                  <div className="px-2 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        ref={newMoveInputRef}
+                        type="text"
+                        value={newMoveTargetName}
+                        onChange={e => setNewMoveTargetName(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') handleBulkMoveToNew()
+                          if (e.key === 'Escape') {
+                            setCreatingNewMoveTarget(false)
+                            setNewMoveTargetName('')
+                          }
+                        }}
+                        placeholder="New category name…"
+                        maxLength={60}
+                        className="flex-1 min-w-0 text-xs px-2 py-1.5 rounded bg-neutral-950 border border-purple-500 text-neutral-100 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleBulkMoveToNew}
+                        disabled={!newMoveTargetName.trim()}
+                        title="Create category + move selection"
+                        aria-label="Create category and move selection"
+                        className="shrink-0 w-7 h-7 rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+                          <path d="M3 7.5l3 3 5-7" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[10px] text-neutral-500">
+                      Enter / ✓ to confirm · Esc to cancel
+                    </p>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setCreatingNewMoveTarget(true)}
+                    className="block w-full text-left px-3 py-2 text-xs text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
+                  >
+                    + New category…
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {confirmBulkRemove ? (
+            <div className="flex items-center gap-1 px-2" title={`Remove the selected bookmark${selectedIds.size === 1 ? '' : 's'} from ${activeCategory?.title || 'this category'}`}>
+              <span className="text-neutral-400">
+                Remove {selectedIds.size}?
+              </span>
+              <button
+                type="button"
+                onClick={handleBulkRemove}
+                className="px-1.5 text-red-400 hover:text-red-300 transition-colors"
+              >
+                Yes
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmBulkRemove(false)}
+                className="px-1.5 text-neutral-500 hover:text-neutral-300 transition-colors"
+              >
+                No
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmBulkRemove(true)}
+              className="px-3 py-1 rounded border border-red-900/60 text-red-400 hover:bg-red-950/50 transition-colors"
+            >
+              Remove
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="ml-auto text-neutral-400 hover:text-neutral-200"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       <NotesFeed
         items={displayedItems}
         profiles={feed.profiles}
@@ -280,6 +509,11 @@ export default function BookmarksTab({ user, isOwner }) {
         sentinelRef={feed.sentinelRef}
         emptyMessage={emptyMessage}
         onReload={feed.reload}
+        inBookmarksFeed
+        onNoteClick={openThread}
+        selectMode={true}
+        selectedIds={selectedIds}
+        onToggleSelect={toggleSelect}
       />
     </div>
   )

@@ -1,85 +1,61 @@
 /**
  * AuthorBookmarksPane — paginated feed of kind 1 notes that an arbitrary
- * author has publicly bookmarked in their kind 10003 list.
+ * author has publicly bookmarked, split by bookmark category.
  *
- * Walks the author's primary NIP-51 bookmark event (kind 10003), takes
- * the `e` tags in reverse order (most-recently-added first — the
- * universal client convention since 10003 has no per-item timestamp),
- * and pages through them via Primal's fetchNotesByIds in slices of 20.
+ * Fetches the author's kind 10003 (primary "Bookmarks") and kind 30003
+ * (custom categories) events via useAuthorBookmarkCategories. Renders the
+ * same BookmarkChipBar used by the owner's My Bookmarks tab in read-only
+ * mode (no "+ New") so viewers can filter by category.
+ *
+ * Active category's items feed into the same prefetch+sort+slice pipeline
+ * used in BookmarksTab. Sort is (addedAt desc, created_at desc); for kind
+ * 10003 addedAt ties across every item so the note's own timestamp carries
+ * the order.
  *
  * Private bookmarks (NIP-04 encrypted in `content`) are intentionally
  * ignored — we don't hold the author's decryption key.
- *
- * Companion to AuthorNotesPane: same NotesFeed rendering surface so the
- * Search tab can flip between "their notes" and "their bookmarks" with
- * a single pill toggle and no layout shifts.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
-import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
+import { useAuthorBookmarkCategories } from '../../../../lib/useAuthorBookmarkCategories.js'
+import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
+import BookmarkChipBar from './BookmarkChipBar.jsx'
 import NotesFeed from './NotesFeed.jsx'
 
-const BOOKMARK_KIND = 10003
+export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick }) {
+  const { categories, loading } = useAuthorBookmarkCategories(pubkey)
 
-async function loadBookmarkItems(pubkey) {
-  // Returns [{ id, addedAt }] where addedAt is the bookmark event's
-  // created_at (all items in a 10003 share it — we rely on the note's
-  // own created_at as the real tie-break at sort time).
-  const ndk = getNDK()
-  await connectAndWait(ndk, 3000).catch(() => {})
-  const event = await Promise.race([
-    ndk.fetchEvent({ kinds: [BOOKMARK_KIND], authors: [pubkey] }),
-    new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-  ]).catch(() => null)
-  if (!event) return []
-  const items = []
-  const seen = new Set()
-  const addedAt = (event.created_at || 0) * 1000
-  for (const t of event.tags || []) {
-    if (t[0] === 'e' && typeof t[1] === 'string' && /^[0-9a-f]{64}$/i.test(t[1])) {
-      const id = t[1].toLowerCase()
-      if (!seen.has(id)) { seen.add(id); items.push({ id, addedAt }) }
-    }
-  }
-  return items
-}
-
-export default function AuthorBookmarksPane({ pubkey, emptyMessage }) {
-  const [bookmarkItems, setBookmarkItems] = useState(null) // null = loading, [] = empty
-  const [error, setError] = useState(null)
-
+  // Default to primary if present, else first custom category. Re-run when
+  // the active chip vanishes (category list refetched/changed).
+  const [activeCategoryId, setActiveCategoryId] = useState(null)
   useEffect(() => {
-    if (!pubkey) { setBookmarkItems([]); return }
-    let cancelled = false
-    setBookmarkItems(null)
-    setError(null)
-    ;(async () => {
-      try {
-        const items = await loadBookmarkItems(pubkey)
-        if (cancelled) return
-        setBookmarkItems(items)
-      } catch (e) {
-        if (cancelled) return
-        setError(e?.message || 'Failed to load bookmarks')
-        setBookmarkItems([])
-      }
-    })()
-    return () => { cancelled = true }
-  }, [pubkey])
+    if (categories.length === 0) {
+      if (activeCategoryId) setActiveCategoryId(null)
+      return
+    }
+    const exists = categories.some(c => c.id === activeCategoryId)
+    if (exists) return
+    const primary = categories.find(c => c.id === NOTE_PRIMARY_CATEGORY_ID)
+    setActiveCategoryId(primary ? primary.id : categories[0].id)
+  }, [categories, activeCategoryId])
 
-  // Prefetch+sort on first loadPage per feedKey, then slice locally.
-  // Sort is (addedAt desc, created_at desc); for 10003 addedAt ties
-  // across every item so the note's own timestamp carries the order.
+  const activeCategory = categories.find(c => c.id === activeCategoryId) || null
+  const currentItems = activeCategory ? activeCategory.items : []
+  const currentIds = useMemo(() => currentItems.map(it => it.id), [currentItems])
+
+  // Feed key invalidates the prefetch whenever the active id set shifts.
+  const feedKey = useMemo(() => {
+    const tag = `${currentIds.length}:${currentIds[0]?.slice(0, 8) || ''}:${currentIds[currentIds.length - 1]?.slice(0, 8) || ''}`
+    return `author-bookmarks:${pubkey || ''}:${activeCategoryId || ''}:${tag}`
+  }, [pubkey, activeCategoryId, currentIds])
+
+  // Prefetched+sorted cache. One fetch per feedKey; pagination is pure
+  // local slicing after that.
   const cacheRef = useRef({ key: null, notes: [], profiles: new Map() })
   const cursorRef = useRef(0)
-  const itemsRef = useRef([])
-  useEffect(() => { itemsRef.current = bookmarkItems || [] }, [bookmarkItems])
-
-  const feedKey = useMemo(
-    () => `author-bookmarks:${pubkey || ''}:${(bookmarkItems || []).length}`,
-    [pubkey, bookmarkItems],
-  )
+  const itemsRef = useRef(currentItems)
+  useEffect(() => { itemsRef.current = currentItems }, [currentItems])
   useEffect(() => { cursorRef.current = 0 }, [feedKey])
 
   const loadPage = useCallback(async ({ limit }) => {
@@ -124,15 +100,14 @@ export default function AuthorBookmarksPane({ pubkey, emptyMessage }) {
     }
   }, [feedKey])
 
-  const waitingOnList = bookmarkItems === null
   const feed = useInfiniteFeed({
     key: feedKey,
     loadPage,
     pageSize: 20,
-    enabled: !waitingOnList && (bookmarkItems || []).length > 0,
+    enabled: !loading && currentIds.length > 0,
   })
 
-  if (waitingOnList) {
+  if (loading && categories.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-4 py-10 text-center">
@@ -143,27 +118,38 @@ export default function AuthorBookmarksPane({ pubkey, emptyMessage }) {
     )
   }
 
-  if (error) {
+  if (categories.length === 0) {
     return (
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-xl mx-auto px-4 py-10 text-center">
-          <p className="text-xs text-red-400">{error}</p>
+          <p className="text-xs text-neutral-500">{emptyMessage || 'No public bookmarks.'}</p>
         </div>
       </div>
     )
   }
 
   return (
-    <NotesFeed
-      items={feed.items}
-      profiles={feed.profiles}
-      loading={feed.loading}
-      initialLoading={feed.initialLoading}
-      error={feed.error}
-      done={feed.done}
-      sentinelRef={feed.sentinelRef}
-      emptyMessage={emptyMessage || 'No public bookmarks.'}
-      onReload={feed.reload}
-    />
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <BookmarkChipBar
+        categories={categories}
+        activeCategoryId={activeCategoryId}
+        onSelect={setActiveCategoryId}
+        readOnly
+      />
+      <NotesFeed
+        items={feed.items}
+        profiles={feed.profiles}
+        loading={feed.loading}
+        initialLoading={feed.initialLoading}
+        error={feed.error}
+        done={feed.done}
+        sentinelRef={feed.sentinelRef}
+        emptyMessage={activeCategory
+          ? `Nothing in ${activeCategory.title} yet.`
+          : (emptyMessage || 'No public bookmarks.')}
+        onReload={feed.reload}
+        onNoteClick={onNoteClick}
+      />
+    </div>
   )
 }

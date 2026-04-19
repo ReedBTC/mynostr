@@ -342,6 +342,43 @@ export async function fetchAuthorNotes(pubkey, until = null, limit = 25) {
 }
 
 /**
+ * Fetch short notes (kind 1) authored by a specific pubkey that are *replies*
+ * (NIP-10 reply tag), pre-filtered by Primal. Same shape as fetchAuthorNotes.
+ */
+export async function fetchAuthorReplies(pubkey, until = null, limit = 25) {
+  if (!pubkey) return { notes: [], profiles: new Map() }
+  const params = { pubkey, notes: 'replies', limit }
+  if (until) params.until = until
+  try {
+    const events = await query('feed', params)
+    const { notes, profiles } = splitNoteEvents(events)
+    return { notes, profiles }
+  } catch {
+    return { notes: [], profiles: new Map() }
+  }
+}
+
+/**
+ * Fetch a full thread — the root note plus every descendant reply Primal
+ * has indexed — starting from any note in the thread. Uses Primal's
+ * `thread_view` op; a single call returns the event, its ancestors, and
+ * all descendants.
+ *
+ * Returns { notes: Array<kind1>, profiles: Map<pubkey, profile> }.
+ * Callers walk the reply chain themselves using parseReplyRefs().
+ */
+export async function fetchThread(eventId) {
+  if (!eventId) return { notes: [], profiles: new Map() }
+  try {
+    const events = await query('thread_view', { event_id: eventId, limit: 400 })
+    const { notes, profiles } = splitNoteEvents(events)
+    return { notes, profiles }
+  } catch {
+    return { notes: [], profiles: new Map() }
+  }
+}
+
+/**
  * Batch-fetch a set of events by id (Primal's `events` op). Used by the
  * Bookmarks tab to hydrate the e-tag list from a kind 10003 bookmark event.
  * Primal returns whatever it has cached — callers should be prepared for

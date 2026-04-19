@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { isSafeUrl } from '../../../lib/utils.js'
 import { parseNoteContent } from '../../../lib/noteParser.js'
 import { MentionChip, EmbeddedNoteCard } from './EntityCard.jsx'
@@ -20,6 +20,20 @@ function HashtagSegment({ value, tag }) {
 
 function ImageSegment({ url }) {
   const [failed, setFailed] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  // Esc closes. Also lock background scroll while the lightbox is up.
+  useEffect(() => {
+    if (!open) return
+    function onKey(e) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [open])
 
   if (failed || !isSafeUrl(url)) {
     return (
@@ -32,22 +46,48 @@ function ImageSegment({ url }) {
   }
 
   // Full card width, natural aspect ratio — matches Damus/Primal.
-  // Click opens the original in a new tab for full-resolution viewing.
+  // Click opens an in-app fullscreen lightbox (closable with the ✕ button,
+  // a backdrop click, or Esc).
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="block my-2"
-    >
-      <img
-        src={url}
-        alt=""
-        className="block w-full h-auto rounded-lg"
-        referrerPolicy="no-referrer"
-        onError={() => setFailed(true)}
-      />
-    </a>
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="block my-2 w-full cursor-zoom-in"
+        aria-label="Open image"
+      >
+        <img
+          src={url}
+          alt=""
+          className="block w-full h-auto rounded-lg"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4"
+          onClick={e => { e.stopPropagation(); setOpen(false) }}
+        >
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); setOpen(false) }}
+            aria-label="Close image"
+            className="absolute top-3 right-3 w-9 h-9 rounded-full bg-black/60 hover:bg-black/80 text-neutral-100 text-xl leading-none flex items-center justify-center border border-neutral-700"
+          >
+            ✕
+          </button>
+          <img
+            src={url}
+            alt=""
+            onClick={e => e.stopPropagation()}
+            className="max-w-full max-h-full object-contain rounded"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+      )}
+    </>
   )
 }
 
@@ -69,12 +109,12 @@ function YouTubeSegment({ videoId, url }) {
   return (
     <div className="my-1.5 aspect-video">
       <iframe
-        src={`https://www.youtube-nocookie.com/embed/${videoId}`}
+        src={`https://www.youtube.com/embed/${videoId}`}
         title="YouTube video"
         className="w-full h-full rounded-lg"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
         allowFullScreen
-        sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox"
+        referrerPolicy="strict-origin-when-cross-origin"
       />
     </div>
   )
@@ -82,7 +122,12 @@ function YouTubeSegment({ videoId, url }) {
 
 // ─── Main Preview ────────────────────────────────────────────────────────────
 
-export default function NotePreview({ content, zapSplits, authorPubkey, compactSplits = false }) {
+// `showZapSplits` is opt-in (default off). Feed contexts (NoteCard) don't
+// set it — surfacing splits there implies "the zap ⚡ button will honor this
+// distribution," which our ZapModal can't do yet (no NWC, one bolt11 per
+// zap). The composer's write-preview opts in so authors can still see how
+// their split tags will render to readers once that lands.
+export default function NotePreview({ content, zapSplits, authorPubkey, compactSplits = false, showZapSplits = false }) {
   const segments = useMemo(() => parseNoteContent(content), [content])
 
   return (
@@ -114,8 +159,9 @@ export default function NotePreview({ content, zapSplits, authorPubkey, compactS
         })}
       </div>
 
-      {/* Zap splits */}
-      <ZapSplitDisplay zapSplits={zapSplits} compact={compactSplits} />
+      {showZapSplits && Array.isArray(zapSplits) && zapSplits.length > 0 && (
+        <ZapSplitDisplay zapSplits={zapSplits} compact={compactSplits} />
+      )}
     </div>
   )
 }
