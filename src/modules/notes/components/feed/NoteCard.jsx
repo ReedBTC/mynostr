@@ -22,8 +22,11 @@ import { nip19 } from 'nostr-tools'
 import NotePreview from '../NotePreview.jsx'
 import NoteActionsMenu from './NoteActionsMenu.jsx'
 import { isSafeUrl } from '../../../../lib/utils.js'
+import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 
-const COLLAPSED_PX = 288 // ~18rem — a comfortable preview window
+// Only mobile clamps kind-1 notes behind a "Show more" gate; desktop has
+// the vertical space to just render the whole thing.
+const MOBILE_COLLAPSED_PX = 288
 
 function timeAgo(seconds) {
   if (!seconds) return ''
@@ -49,6 +52,7 @@ function extractZapSplits(tags) {
 }
 
 export default function NoteCard({ note, profile }) {
+  const isMobile = useIsMobile()
   const bodyRef = useRef(null)
   const menuRef = useRef(null)
   const [expanded, setExpanded] = useState(false)
@@ -67,22 +71,25 @@ export default function NoteCard({ note, profile }) {
 
   // Measure whether the rendered body exceeds the clamp. We poll briefly on
   // mount to catch late image load reflows — one-shot would miss any image
-  // that hasn't loaded on first paint.
+  // that hasn't loaded on first paint. Desktop skips entirely — no clamp.
   useLayoutEffect(() => {
-    if (expanded) return
+    if (!isMobile || expanded) {
+      if (canExpand) setCanExpand(false)
+      return
+    }
     const node = bodyRef.current
     if (!node) return
     let cancelled = false
     const measure = () => {
       if (cancelled) return
-      setCanExpand(node.scrollHeight > COLLAPSED_PX + 8)
+      setCanExpand(node.scrollHeight > MOBILE_COLLAPSED_PX + 8)
     }
     measure()
     const t1 = setTimeout(measure, 200)
     const t2 = setTimeout(measure, 800)
     const t3 = setTimeout(measure, 2000)
     return () => { cancelled = true; clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
-  }, [note?.id, note?.content, expanded])
+  }, [note?.id, note?.content, expanded, isMobile])
 
   const displayName = profile?.display_name || profile?.name || (note?.pubkey ? nip19.npubEncode(note.pubkey).slice(0, 12) + '…' : 'Anonymous')
   const handle = profile?.nip05 ? profile.nip05.replace(/^_@/, '') : ''
@@ -127,12 +134,12 @@ export default function NoteCard({ note, profile }) {
         </div>
       </header>
 
-      {/* Body — clamped until expanded */}
+      {/* Body — clamped until expanded (mobile only) */}
       <div className="relative">
         <div
           ref={bodyRef}
           className="relative overflow-hidden"
-          style={expanded ? undefined : { maxHeight: COLLAPSED_PX }}
+          style={isMobile && !expanded ? { maxHeight: MOBILE_COLLAPSED_PX } : undefined}
         >
           <NotePreview
             content={note?.content || ''}
@@ -142,13 +149,13 @@ export default function NoteCard({ note, profile }) {
           />
         </div>
         {/* Fade overlay hints that more content is hidden */}
-        {!expanded && canExpand && (
+        {isMobile && !expanded && canExpand && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-neutral-900 to-transparent" />
         )}
       </div>
 
-      {/* Show more / less */}
-      {canExpand && (
+      {/* Show more / less — mobile only */}
+      {isMobile && canExpand && (
         <button
           onClick={() => setExpanded(v => !v)}
           className="mt-2 text-[11px] font-medium text-purple-400 hover:text-purple-300"
