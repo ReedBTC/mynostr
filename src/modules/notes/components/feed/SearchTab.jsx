@@ -15,12 +15,18 @@ import { isSafeUrl } from '../../../../lib/utils.js'
 import { nip19 } from 'nostr-tools'
 import NoteSearch from './NoteSearch.jsx'
 import AuthorNotesPane from './AuthorNotesPane.jsx'
+import AuthorBookmarksPane from './AuthorBookmarksPane.jsx'
 import NoteCard from './NoteCard.jsx'
 
 export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
   // Mutually exclusive: one of these is set at a time.
   const [pickedAuthor, setPickedAuthor] = useState(initialAuthor || null)
   const [pickedNote,   setPickedNote]   = useState(null) // { id, author? }
+
+  // Author-view mode: which feed to show for the picked author. Resets to
+  // 'notes' on every fresh author pick so the toggle doesn't persist
+  // across unrelated authors.
+  const [authorMode, setAuthorMode] = useState('notes') // 'notes' | 'bookmarks'
 
   // Owner clicked an author elsewhere in Notes (e.g. a NoteCard header) and
   // NotesModule routed us here with the author pre-filled. Ack back so the
@@ -29,6 +35,7 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
     if (initialAuthor) {
       setPickedAuthor(initialAuthor)
       setPickedNote(null)
+      setAuthorMode('notes')
       onInitialAuthorConsumed?.()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -37,6 +44,7 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
   function handlePickAuthor(author) {
     setPickedAuthor(author)
     setPickedNote(null)
+    setAuthorMode('notes')
   }
   function handlePickNote(note) {
     setPickedNote(note)
@@ -45,6 +53,7 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
   function handleClear() {
     setPickedAuthor(null)
     setPickedNote(null)
+    setAuthorMode('notes')
   }
 
   const header = (
@@ -56,12 +65,12 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
             {pickedAuthor && (
               <>
                 {pickedAuthor.picture && isSafeUrl(pickedAuthor.picture) ? (
-                  <img src={pickedAuthor.picture} alt="" className="w-6 h-6 rounded-full object-cover" onError={e => { e.target.style.display = 'none' }} />
+                  <img src={pickedAuthor.picture} alt="" className="w-6 h-6 rounded-full object-cover" referrerPolicy="no-referrer" onError={e => { e.target.style.display = 'none' }} />
                 ) : (
                   <div className="w-6 h-6 rounded-full bg-neutral-700" />
                 )}
                 <p className="text-xs text-neutral-300 truncate">
-                  Notes by <span className="text-neutral-100">{pickedAuthor.name || 'this author'}</span>
+                  <span className="text-neutral-100">{pickedAuthor.name || 'this author'}</span>
                 </p>
               </>
             )}
@@ -69,6 +78,32 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
               <p className="text-xs text-neutral-400 truncate">Pinned note</p>
             )}
           </div>
+          {pickedAuthor && (
+            <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setAuthorMode('notes')}
+                className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                  authorMode === 'notes'
+                    ? 'bg-purple-700 text-white'
+                    : 'text-neutral-400 hover:text-neutral-200'
+                }`}
+              >
+                Notes
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthorMode('bookmarks')}
+                className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                  authorMode === 'bookmarks'
+                    ? 'bg-purple-700 text-white'
+                    : 'text-neutral-400 hover:text-neutral-200'
+                }`}
+              >
+                Bookmarks
+              </button>
+            </div>
+          )}
           <button
             onClick={handleClear}
             className="text-[11px] text-neutral-500 hover:text-neutral-300 underline shrink-0"
@@ -81,10 +116,21 @@ export default function SearchTab({ initialAuthor, onInitialAuthorConsumed }) {
   )
 
   if (pickedAuthor) {
+    const who = pickedAuthor.name || 'this author'
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="max-w-xl w-full mx-auto px-4 pt-4 shrink-0">{header}</div>
-        <AuthorNotesPane pubkey={pickedAuthor.pubkey} emptyMessage="No notes from this author yet." />
+        {authorMode === 'notes' ? (
+          <AuthorNotesPane
+            pubkey={pickedAuthor.pubkey}
+            emptyMessage={`No notes from ${who} yet.`}
+          />
+        ) : (
+          <AuthorBookmarksPane
+            pubkey={pickedAuthor.pubkey}
+            emptyMessage={`${who} hasn’t bookmarked any public notes.`}
+          />
+        )}
       </div>
     )
   }
