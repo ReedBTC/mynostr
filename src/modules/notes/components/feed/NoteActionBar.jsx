@@ -20,6 +20,7 @@ import { getNDK } from '../../../../lib/ndk.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
+import { useUserReactionsContext } from '../../userReactionsContext.jsx'
 import ZapModal from '../../../../components/ZapModal.jsx'
 import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
 
@@ -27,11 +28,15 @@ export default function NoteActionBar({ note, profile }) {
   const isMobile = useIsMobile()
   const { sessionUser } = useOwnerContext()
   const { categories, createCategory, addNote, removeNote, canEdit } = useNoteBookmarksContext()
+  const { likedIds, markLiked, unmarkLiked } = useUserReactionsContext()
 
   const canPublish = !!sessionUser?.pubkey && !sessionUser?.readOnly
 
   // ── Like ──
-  const [liked, setLiked] = useState(false)
+  // Derived from the shared reactions set so card unmount/remount (scroll
+  // away → back) and full reloads don't lose the "Liked" state.
+  const noteIdLower = note?.id?.toLowerCase()
+  const liked = !!noteIdLower && likedIds.has(noteIdLower)
   const [liking, setLiking] = useState(false)
 
   // ── Zap ──
@@ -81,9 +86,11 @@ export default function NoteActionBar({ note, profile }) {
     if (!canPublish || liking || liked) return
     if (!note?.id || !/^[0-9a-f]{64}$/i.test(note.id)) return
     if (!note?.pubkey || !/^[0-9a-f]{64}$/i.test(note.pubkey)) return
-    // Optimistic: flip to "Liked" right away; revert if signing fails.
+    // Optimistic: mark liked in the shared set right away so the heart
+    // flips immediately and any other card showing this note stays in
+    // sync. Revert if signing/publishing fails.
     setLiking(true)
-    setLiked(true)
+    markLiked(note.id)
     try {
       const ndk = getNDK()
       const ev = new NDKEvent(ndk)
@@ -98,7 +105,7 @@ export default function NoteActionBar({ note, profile }) {
       await ev.publish()
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Like failed:', err)
-      if (mountedRef.current) setLiked(false)
+      unmarkLiked(note.id)
     } finally {
       if (mountedRef.current) setLiking(false)
     }

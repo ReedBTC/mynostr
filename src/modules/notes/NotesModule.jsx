@@ -19,6 +19,7 @@ import MyNotesTab from './components/feed/MyNotesTab.jsx'
 import BookmarksTab from './components/feed/BookmarksTab.jsx'
 import SearchTab from './components/feed/SearchTab.jsx'
 import { NoteBookmarksProvider } from './noteBookmarksContext.jsx'
+import { UserReactionsProvider } from './userReactionsContext.jsx'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 
 export default function NotesModule({ user, sessionUser }) {
@@ -53,6 +54,7 @@ export default function NotesModule({ user, sessionUser }) {
 
   return (
     <NoteBookmarksProvider user={sessionUser}>
+    <UserReactionsProvider user={sessionUser}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar ── */}
@@ -101,6 +103,7 @@ export default function NotesModule({ user, sessionUser }) {
         <SearchTab />
       )}
     </div>
+    </UserReactionsProvider>
     </NoteBookmarksProvider>
   )
 }
