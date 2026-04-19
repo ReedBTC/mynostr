@@ -17,9 +17,10 @@
  * once per card unless the child mutates (e.g. an image finishes loading and
  * reflows the card).
  */
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { nip19 } from 'nostr-tools'
 import NotePreview from '../NotePreview.jsx'
+import NoteActionsMenu from './NoteActionsMenu.jsx'
 import { isSafeUrl } from '../../../../lib/utils.js'
 
 const COLLAPSED_PX = 288 // ~18rem — a comfortable preview window
@@ -49,8 +50,20 @@ function extractZapSplits(tags) {
 
 export default function NoteCard({ note, profile }) {
   const bodyRef = useRef(null)
+  const menuRef = useRef(null)
   const [expanded, setExpanded] = useState(false)
   const [canExpand, setCanExpand] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    function onDown(e) {
+      if (!menuRef.current) return
+      if (!menuRef.current.contains(e.target)) setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [menuOpen])
 
   // Measure whether the rendered body exceeds the clamp. We poll briefly on
   // mount to catch late image load reflows — one-shot would miss any image
@@ -97,6 +110,21 @@ export default function NoteCard({ note, profile }) {
         <span className="text-[10px] text-neutral-500 shrink-0" title={new Date((note?.created_at || 0) * 1000).toLocaleString()}>
           {timeAgo(note?.created_at)}
         </span>
+        <div ref={menuRef} className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => setMenuOpen(v => !v)}
+            aria-label="Note actions"
+            className="p-1 -mr-1 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <circle cx="3" cy="8" r="1.4" />
+              <circle cx="8" cy="8" r="1.4" />
+              <circle cx="13" cy="8" r="1.4" />
+            </svg>
+          </button>
+          <NoteActionsMenu open={menuOpen} onClose={() => setMenuOpen(false)} note={note} />
+        </div>
       </header>
 
       {/* Body — clamped until expanded */}
