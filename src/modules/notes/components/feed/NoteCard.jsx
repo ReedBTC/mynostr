@@ -1,0 +1,148 @@
+/**
+ * NoteCard — a kind 1 note rendered as a standalone preview card for the
+ * My Notes / Bookmarks / Search feeds.
+ *
+ * Layout:
+ *   [pfp]  name · @handle         · time
+ *          ┌────────────────────────────┐
+ *          │ clamped preview body       │  ← max-h-72 when tall
+ *          │   (image, text, mentions)  │
+ *          │                            │
+ *          └── gradient fade ───────────┘
+ *          [Show more] (only if body overflows)
+ *          njump link · note id
+ *
+ * We measure body scrollHeight on mount (and on content/ref changes) against
+ * clientHeight to decide whether "Show more" is worth showing. Cheap — runs
+ * once per card unless the child mutates (e.g. an image finishes loading and
+ * reflows the card).
+ */
+import { useLayoutEffect, useRef, useState } from 'react'
+import { nip19 } from 'nostr-tools'
+import NotePreview from '../NotePreview.jsx'
+import { isSafeUrl } from '../../../../lib/utils.js'
+
+const COLLAPSED_PX = 288 // ~18rem — a comfortable preview window
+
+function timeAgo(seconds) {
+  if (!seconds) return ''
+  const diff = Math.max(0, Math.floor(Date.now() / 1000 - seconds))
+  if (diff < 60) return `${diff}s`
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`
+  if (diff < 2592000) return `${Math.floor(diff / 86400)}d`
+  if (diff < 31536000) return `${Math.floor(diff / 2592000)}mo`
+  return `${Math.floor(diff / 31536000)}y`
+}
+
+function extractZapSplits(tags) {
+  if (!tags) return []
+  const out = []
+  for (const t of tags) {
+    if (t[0] !== 'zap' || !t[1]) continue
+    if (!/^[0-9a-fA-F]{64}$/.test(t[1])) continue
+    out.push({ pubkey: t[1].toLowerCase(), relay: t[2] || '', weight: Number(t[3]) || 1 })
+  }
+  const total = out.reduce((s, z) => s + z.weight, 0)
+  return out.map(z => ({ pubkey: z.pubkey, relay: z.relay, pct: total > 0 ? Math.round(z.weight / total * 100) : 0 }))
+}
+
+export default function NoteCard({ note, profile }) {
+  const bodyRef = useRef(null)
+  const [expanded, setExpanded] = useState(false)
+  const [canExpand, setCanExpand] = useState(false)
+
+  // Measure whether the rendered body exceeds the clamp. We poll briefly on
+  // mount to catch late image load reflows — one-shot would miss any image
+  // that hasn't loaded on first paint.
+  useLayoutEffect(() => {
+    if (expanded) return
+    const node = bodyRef.current
+    if (!node) return
+    let cancelled = false
+    const measure = () => {
+      if (cancelled) return
+      setCanExpand(node.scrollHeight > COLLAPSED_PX + 8)
+    }
+    measure()
+    const t1 = setTimeout(measure, 200)
+    const t2 = setTimeout(measure, 800)
+    const t3 = setTimeout(measure, 2000)
+    return () => { cancelled = true; clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
+  }, [note?.id, note?.content, expanded])
+
+  const displayName = profile?.display_name || profile?.name || (note?.pubkey ? nip19.npubEncode(note.pubkey).slice(0, 12) + '…' : 'Anonymous')
+  const handle = profile?.nip05 ? profile.nip05.replace(/^_@/, '') : ''
+  const pic = profile?.picture || profile?.image
+  const nevent = note?.id ? nip19.neventEncode({ id: note.id, author: note.pubkey }) : ''
+  const zapSplits = extractZapSplits(note?.tags)
+
+  return (
+    <article className="bg-neutral-900 border border-neutral-800 rounded-lg p-3">
+      {/* Header */}
+      <header className="flex items-center gap-2 mb-2">
+        {pic && isSafeUrl(pic) ? (
+          <img
+            src={pic}
+            alt=""
+            className="w-8 h-8 rounded-full object-cover shrink-0"
+            onError={e => { e.target.style.display = 'none' }}
+          />
+        ) : (
+          <div className="w-8 h-8 rounded-full bg-neutral-700 shrink-0" />
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-neutral-200 truncate">{displayName}</p>
+          {handle && <p className="text-[10px] text-neutral-500 truncate">{handle}</p>}
+        </div>
+        <span className="text-[10px] text-neutral-500 shrink-0" title={new Date((note?.created_at || 0) * 1000).toLocaleString()}>
+          {timeAgo(note?.created_at)}
+        </span>
+      </header>
+
+      {/* Body — clamped until expanded */}
+      <div className="relative">
+        <div
+          ref={bodyRef}
+          className="relative overflow-hidden"
+          style={expanded ? undefined : { maxHeight: COLLAPSED_PX }}
+        >
+          <NotePreview
+            content={note?.content || ''}
+            zapSplits={zapSplits}
+            authorPubkey={note?.pubkey}
+            compactSplits
+          />
+        </div>
+        {/* Fade overlay hints that more content is hidden */}
+        {!expanded && canExpand && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-neutral-900 to-transparent" />
+        )}
+      </div>
+
+      {/* Show more / less */}
+      {canExpand && (
+        <button
+          onClick={() => setExpanded(v => !v)}
+          className="mt-2 text-[11px] font-medium text-purple-400 hover:text-purple-300"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+
+      {/* Footer — permalink */}
+      {nevent && (
+        <footer className="mt-2 pt-2 border-t border-neutral-800 flex items-center justify-between gap-2">
+          <a
+            href={`https://njump.me/${nevent}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[10px] text-neutral-500 hover:text-purple-400 transition-colors"
+          >
+            Open on njump →
+          </a>
+        </footer>
+      )}
+    </article>
+  )
+}

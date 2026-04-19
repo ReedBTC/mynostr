@@ -1,18 +1,23 @@
 /**
  * NotesModule — Module 2
  *
- * Four modes, mirroring Longform: Write · My Notes · My Bookmarks · Search.
- * Only Write is implemented so far (via NoteComposer); the other three tabs
- * render a "coming soon" placeholder.
+ * Four tabs, mirroring Longform:
+ *   Write         — composer (owner only)
+ *   My Notes      — kind 1 feed for the viewed user (infinite scroll)
+ *   My Bookmarks  — paginated feed of the viewed user's kind 10003 bookmarks
+ *   Search        — author / note dropdown, loads a feed or pins a single note
+ *
+ * Visitors (non-owners) see just Notes · Bookmarks, matching Longform's
+ * Articles · Collection visitor view.
  *
  * The Write pane is always mounted (hidden via CSS) so draft state survives
  * a detour through the other tabs — same pattern LongformModule uses.
- *
- * Visitors (non-owners) see just Notes · Bookmarks, matching Longform's
- * Articles · Collection visitor view. Both are placeholders for now.
  */
 import { useState, useEffect } from 'react'
 import NoteComposer from './components/NoteComposer.jsx'
+import MyNotesTab from './components/feed/MyNotesTab.jsx'
+import BookmarksTab from './components/feed/BookmarksTab.jsx'
+import SearchTab from './components/feed/SearchTab.jsx'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 
 export default function NotesModule({ user, sessionUser }) {
@@ -81,41 +86,18 @@ export default function NotesModule({ user, sessionUser }) {
         </div>
       )}
 
-      {/* ── Placeholder panes for the not-yet-built tabs ── */}
-      {!isWriteActive && (
-        <ComingSoonPane tab={moduleTab} user={user} isOwner={isOwner} />
+      {/* ── Read-mode tabs — feed panes. Unmounted when not active so each
+           tab starts fresh on next visit (cheap; the author/bookmark fetch
+           is cached by Primal's singleton socket anyway). */}
+      {!isWriteActive && moduleTab === 'notes' && (
+        <MyNotesTab user={user} isOwner={isOwner} />
       )}
-    </div>
-  )
-}
-
-function ComingSoonPane({ tab, user, isOwner }) {
-  const displayName = user?.profile?.displayName || user?.profile?.name || 'this user'
-  const copy = {
-    notes: {
-      icon: '📝',
-      title: isOwner ? 'My Notes' : `Notes by ${displayName}`,
-      body: 'A feed of short notes is coming soon.',
-    },
-    bookmarks: {
-      icon: '🔖',
-      title: isOwner ? 'My Bookmarks' : `Bookmarks by ${displayName}`,
-      body: 'Saved notes and a bookmarking workflow are coming soon.',
-    },
-    search: {
-      icon: '🔍',
-      title: 'Search',
-      body: 'Full-text note search across relays is coming soon.',
-    },
-  }[tab] || { icon: '', title: '', body: '' }
-
-  return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-sm mx-auto px-4 py-12 text-center">
-        <div className="text-3xl text-neutral-700 mb-4">{copy.icon}</div>
-        <p className="text-sm text-neutral-300 mb-2">{copy.title}</p>
-        <p className="text-xs text-neutral-600 leading-relaxed">{copy.body}</p>
-      </div>
+      {!isWriteActive && moduleTab === 'bookmarks' && (
+        <BookmarksTab user={user} isOwner={isOwner} />
+      )}
+      {!isWriteActive && moduleTab === 'search' && isOwner && (
+        <SearchTab />
+      )}
     </div>
   )
 }

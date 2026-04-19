@@ -287,6 +287,78 @@ export async function searchArticles(queryStr, until = null, limit = 25) {
   }
 }
 
+// ─── Kind 1 (short notes) helpers ─────────────────────────────────────────────
+
+/**
+ * Split a mixed-kind event payload into notes, profiles, and Primal stats.
+ * Mirrors splitEvents() but keeps kind 1 instead of 30023.
+ */
+function splitNoteEvents(events) {
+  const notes    = []
+  const profiles = new Map()
+  const statsMap = new Map()
+
+  for (const ev of events) {
+    if (ev.kind === 1) {
+      notes.push(ev)
+    } else if (ev.kind === 0) {
+      profiles.set(ev.pubkey, parseProfile(ev))
+    } else if (ev.kind === 10000133) {
+      try {
+        const data = JSON.parse(ev.content)
+        const pubkey = ev.tags?.find(t => t[0] === 'p')?.[1]
+        if (pubkey) {
+          statsMap.set(pubkey, data)
+        } else {
+          for (const [pk, val] of Object.entries(data)) {
+            statsMap.set(pk, typeof val === 'number' ? { followers_count: val } : val)
+          }
+        }
+      } catch {}
+    }
+  }
+
+  notes.sort((a, b) => b.created_at - a.created_at)
+  return { notes, profiles, statsMap }
+}
+
+/**
+ * Fetch short notes (kind 1) authored by a specific pubkey.
+ * Uses Primal's `feed` op with `notes: 'authored'` for a pre-indexed,
+ * chronologically-sorted page. `until` is a unix seconds cursor — pass the
+ * oldest note's created_at to page backward.
+ */
+export async function fetchAuthorNotes(pubkey, until = null, limit = 25) {
+  if (!pubkey) return { notes: [], profiles: new Map() }
+  const params = { pubkey, notes: 'authored', limit }
+  if (until) params.until = until
+  try {
+    const events = await query('feed', params)
+    const { notes, profiles } = splitNoteEvents(events)
+    return { notes, profiles }
+  } catch {
+    return { notes: [], profiles: new Map() }
+  }
+}
+
+/**
+ * Batch-fetch a set of events by id (Primal's `events` op). Used by the
+ * Bookmarks tab to hydrate the e-tag list from a kind 10003 bookmark event.
+ * Primal returns whatever it has cached — callers should be prepared for
+ * fewer events than requested.
+ */
+export async function fetchNotesByIds(ids) {
+  if (!ids?.length) return { notes: [], profiles: new Map() }
+  const unique = [...new Set(ids)]
+  try {
+    const events = await query('events', { event_ids: unique }, 8000)
+    const { notes, profiles } = splitNoteEvents(events)
+    return { notes, profiles }
+  } catch {
+    return { notes: [], profiles: new Map() }
+  }
+}
+
 /**
  * Fetch profiles for a list of pubkeys (hex).
  * Returns a Map<pubkey, { pubkey, name, display_name, picture, ... }>.
