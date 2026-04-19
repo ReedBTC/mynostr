@@ -318,7 +318,97 @@ export default function ArticleReadPanel({
           {date && <span className="flex-shrink-0 text-neutral-700">· {date}</span>}
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        {/* Close — desktop only. On mobile the leading back arrow handles
+            dismissal so we don't show two close controls. Bookmark + ⋯ live
+            on the social action bar below. */}
+        {!isMobile && (
+          <button onClick={onClose}
+            className="flex-shrink-0 text-neutral-600 hover:text-neutral-300 transition-colors text-base leading-none px-1">
+            ✕
+          </button>
+        )}
+      </div>
+
+      {/* ── Social action bar ── */}
+      <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-neutral-800 flex-shrink-0">
+
+        {/* Like */}
+        <button
+          onClick={handleLike}
+          disabled={!canPublish || liking}
+          title={canPublish ? 'Like' : 'Sign in with private key to react'}
+          className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 ${
+            liked
+              ? 'border-red-800 text-red-400'
+              : 'border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300'
+          }`}
+        >
+          {liked ? '❤️' : '🤍'} {liked ? 'Liked' : 'Like'}
+        </button>
+
+        {/* Zap — opens invoice modal; fetches lud16 from kind 0 if not in Primal profile */}
+        <button
+          onClick={handleZapClick}
+          disabled={zapFetching}
+          title={`Zap ${authorName}`}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-amber-800 hover:text-amber-400 disabled:opacity-40 transition-colors"
+        >
+          ⚡ {zapFetching ? 'Finding…' : 'Zap'}
+        </button>
+
+        {/* Comments — coming soon tooltip */}
+        <div className="relative group">
+          <button
+            disabled
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-700 cursor-not-allowed opacity-40"
+          >
+            💬 Comments
+          </button>
+          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+            Coming soon
+          </div>
+        </div>
+
+        {/* Repost */}
+        <div className="relative" ref={repostRef}>
+          {repostDone ? (
+            <span className="text-xs text-neutral-500 px-2">✓ Reposted</span>
+          ) : (
+            <button
+              onClick={() => setRepostOpen(o => !o)}
+              disabled={!canPublish}
+              title={canPublish ? 'Repost' : 'Sign in with private key to repost'}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-green-400 disabled:opacity-40 transition-colors"
+            >
+              🔁 Repost
+            </button>
+          )}
+          {repostOpen && (
+            <div className="absolute left-0 top-full mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-xl z-20 min-w-[170px] py-1">
+              <button
+                onClick={handleRepost}
+                disabled={reposting}
+                className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
+              >
+                🔁 {reposting ? 'Reposting…' : 'Repost'}
+              </button>
+              <div className="relative group/quote">
+                <button
+                  disabled
+                  className="w-full text-left px-3 py-2 text-xs text-neutral-600 cursor-not-allowed"
+                >
+                  💬 Quote
+                </button>
+                <div className="absolute left-full top-0 ml-1 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover/quote:opacity-100 transition-opacity pointer-events-none z-10">
+                  Coming soon (Notes module)
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Right-aligned: bookmark + three-dots menu */}
+        <div className="ml-auto flex items-center gap-1">
           {/* Bookmark button + dropdown */}
           {!readOnly && (
             <div className="relative" ref={listMenuRef}>
@@ -475,94 +565,6 @@ export default function ArticleReadPanel({
               onLoadInEditor={onLoadInEditor}
             />
           </div>
-
-          {/* Close — desktop only. On mobile the leading back arrow handles
-              dismissal so we don't show two close controls. */}
-          {!isMobile && (
-            <button onClick={onClose}
-              className="text-neutral-600 hover:text-neutral-300 transition-colors text-base leading-none px-1 ml-1">
-              ✕
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* ── Social action bar ── */}
-      <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-neutral-800 flex-shrink-0">
-
-        {/* Like */}
-        <button
-          onClick={handleLike}
-          disabled={!canPublish || liking}
-          title={canPublish ? 'Like' : 'Sign in with private key to react'}
-          className={`flex items-center gap-1 text-xs px-2 py-1 rounded border transition-colors disabled:opacity-40 ${
-            liked
-              ? 'border-red-800 text-red-400'
-              : 'border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300'
-          }`}
-        >
-          {liked ? '❤️' : '🤍'} {liked ? 'Liked' : 'Like'}
-        </button>
-
-        {/* Zap — opens invoice modal; fetches lud16 from kind 0 if not in Primal profile */}
-        <button
-          onClick={handleZapClick}
-          disabled={zapFetching}
-          title={`Zap ${authorName}`}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-amber-800 hover:text-amber-400 disabled:opacity-40 transition-colors"
-        >
-          ⚡ {zapFetching ? 'Finding…' : 'Zap'}
-        </button>
-
-        {/* Comments — coming soon tooltip */}
-        <div className="relative group">
-          <button
-            disabled
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-700 cursor-not-allowed opacity-40"
-          >
-            💬 Comments
-          </button>
-          <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-            Coming soon
-          </div>
-        </div>
-
-        {/* Repost */}
-        <div className="relative" ref={repostRef}>
-          {repostDone ? (
-            <span className="text-xs text-neutral-500 px-2">✓ Reposted</span>
-          ) : (
-            <button
-              onClick={() => setRepostOpen(o => !o)}
-              disabled={!canPublish}
-              title={canPublish ? 'Repost' : 'Sign in with private key to repost'}
-              className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-green-400 disabled:opacity-40 transition-colors"
-            >
-              🔁 Repost
-            </button>
-          )}
-          {repostOpen && (
-            <div className="absolute left-0 top-full mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-xl z-20 min-w-[170px] py-1">
-              <button
-                onClick={handleRepost}
-                disabled={reposting}
-                className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 disabled:opacity-40 transition-colors"
-              >
-                🔁 {reposting ? 'Reposting…' : 'Repost'}
-              </button>
-              <div className="relative group/quote">
-                <button
-                  disabled
-                  className="w-full text-left px-3 py-2 text-xs text-neutral-600 cursor-not-allowed"
-                >
-                  💬 Quote
-                </button>
-                <div className="absolute left-full top-0 ml-1 px-2 py-1 text-xs bg-neutral-800 border border-neutral-700 rounded whitespace-nowrap opacity-0 group-hover/quote:opacity-100 transition-opacity pointer-events-none z-10">
-                  Coming soon (Notes module)
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
       </div>
