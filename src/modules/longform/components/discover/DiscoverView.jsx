@@ -7,6 +7,7 @@ import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 // them — the blast radius is display-layer disinformation only.
 import { fetchAuthorLongformFeed } from '../../../../lib/primal.js'
 import { isSafeUrl, getPublishedAt, withTimeout } from '../../../../lib/utils.js'
+import { useReadingLists } from '../../../../lib/useReadingLists.js'
 import ArticleFeed from './ArticleFeed.jsx'
 import ArticleReadPanel from './ArticleReadPanel.jsx'
 import AuthorSearch from './AuthorSearch.jsx'
@@ -97,7 +98,7 @@ function dedupeReplaceable(events) {
   return Array.from(best.values())
 }
 
-export default function DiscoverView({ user, lists, addArticle, createList, removeArticle, moveArticle, deleteList, renameList, reorderLists, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+export default function DiscoverView({ user, lists, addArticle, addArticlesBulk, createList, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, deleteList, renameList, reorderLists, hiddenIds, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
 
   // Below md:, the two-pane layout collapses to one-pane-at-a-time: the feed
   // until an article is picked, then the reader (with a back arrow) until
@@ -127,12 +128,55 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
   const [searchLoading,  setSearchLoading]  = useState(false)
   const isAuthorFeed = feedMode === 'search' || feedMode === 'mine'
 
+  // ── Author view mode (Search pill: their articles vs their bookmarks) ─────
+  // Only meaningful in 'search' with a picked author. Reset on author swap so
+  // the toggle doesn't carry across unrelated authors.
+  const [authorViewMode, setAuthorViewMode] = useState('articles') // 'articles' | 'collection'
+  useEffect(() => { setAuthorViewMode('articles') }, [authorFilter?.pubkey])
+
+  // Read-only fetch of the *searched* author's reading lists. Hook handles
+  // null pubkey by returning empty lists, so we gate the pubkey to only
+  // fetch when the Collection pill is active — avoids pulling 10003/30001/30003
+  // for every searched author who the viewer may never click into.
+  const authorCollectionUser = (
+    feedMode === 'search' && authorViewMode === 'collection' && authorFilter?.pubkey
+      ? { pubkey: authorFilter.pubkey, readOnly: true }
+      : null
+  )
+  const authorCollection = useReadingLists(authorCollectionUser)
+
   // ── Bookmark group management ─────────────────────────────────────────────────
   const [collapsed,  setCollapsed]  = useState({})
+  // Separate collapse map for the author-collection view so one viewer's
+  // idea of "Favorites collapsed" on their own tab doesn't bleed into every
+  // author's collection panel (different lists can share ids like '_bookmarks').
+  const [authorCollapsed, setAuthorCollapsed] = useState({})
+  useEffect(() => { setAuthorCollapsed({}) }, [authorFilter?.pubkey])
   const [checkedIds, setCheckedIds] = useState(new Set())
+  // Manage-groups mode lives here (not in BookmarksPanel) so the toggle
+  // button can render in the Select-all toolbar row above the panel.
+  const [manageMode, setManageMode] = useState(false)
+  const hasManageableGroups = lists.some(l => l.id !== '_bookmarks')
+  // If the last manageable group disappears (e.g., last delete) drop out.
+  useEffect(() => {
+    if (manageMode && !hasManageableGroups) setManageMode(false)
+  }, [manageMode, hasManageableGroups])
 
   // ── Author feed multi-select ──────────────────────────────────────────────────
   const [searchCheckedIds, setSearchCheckedIds] = useState(new Set())
+
+  // Article IDs and bookmark-item aTags live in different ID spaces, so a
+  // selection made in one view has no meaning in the other — clear when
+  // flipping to avoid ghost selections. Ditto the currently-open article.
+  // First-mount skip — otherwise the clear runs before restoreSelectedFromSaved
+  // could land (today that restore is async so we'd race benignly; tomorrow
+  // someone adds a synchronous restore and we'd silently wipe it).
+  const viewToggleFirstMountRef = useRef(true)
+  useEffect(() => {
+    if (viewToggleFirstMountRef.current) { viewToggleFirstMountRef.current = false; return }
+    setSearchCheckedIds(new Set())
+    setSelectedRaw(null)
+  }, [authorViewMode])
 
   // Explicit-search-only helper — anything that should count as "the user
   // searched for this author" goes through here so we persist it.
@@ -187,8 +231,12 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
   const genRef = useRef(0)
 
   // ── Fetch profile for selected article's author (collection mode) ─────────
+  // Also fires when a searched author's Collection pill is active — articles
+  // there can be authored by anyone, so the reader needs profile lookup too.
   useEffect(() => {
-    if (feedMode !== 'collection' || !selected?.pubkey) return
+    const needsProfile = feedMode === 'collection' ||
+      (feedMode === 'search' && authorViewMode === 'collection')
+    if (!needsProfile || !selected?.pubkey) return
     if (collectionProfiles.has(selected.pubkey)) return
     let cancelled = false
     ;(async () => {
@@ -208,7 +256,7 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
       } catch {}
     })()
     return () => { cancelled = true }
-  }, [feedMode, selected?.pubkey]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [feedMode, authorViewMode, selected?.pubkey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load author articles when selected ────────────────────────────────────────
 
@@ -375,9 +423,9 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
 
   // ── Build bookmark articles from reading lists ────────────────────────────────
 
-  function buildBookmarkArticles() {
+  function buildBookmarkArticles(listsToUse = lists) {
     const out = []
-    for (const list of lists) {
+    for (const list of (listsToUse || [])) {
       for (const item of (list.articles || [])) {
         const pub = item.publishedAt || 0
         const tags = [
@@ -407,7 +455,13 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
 
   // ── Computed display articles ──────────────────────────────────────────────────
 
+  // Collection pill view of a searched author flattens *their* lists into
+  // article shapes, so the reader panel + ArticleActionsMenu can render
+  // identically to the owner's Collection tab.
+  const inAuthorCollectionView = feedMode === 'search' && authorViewMode === 'collection' && !!authorFilter
+
   const displayArticles = (() => {
+    if (inAuthorCollectionView) return buildBookmarkArticles(authorCollection.lists)
     if (isAuthorFeed) return searchResults
 
     const items = buildBookmarkArticles()
@@ -421,7 +475,12 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
     })
   })()
 
-  const displayProfiles = isAuthorFeed ? searchProfiles : collectionProfiles
+  // In author-collection view, articles come from many different pubkeys —
+  // reuse collectionProfiles (same cache the owner's Collection tab uses)
+  // so the reader has profile data when the user drills into an article.
+  const displayProfiles = inAuthorCollectionView
+    ? collectionProfiles
+    : (isAuthorFeed ? searchProfiles : collectionProfiles)
 
   // ── Respond to mode changes (feedMode is controlled by parent) ─────────────
   const prevFeedModeRef = useRef(feedMode)
@@ -561,12 +620,40 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
           {isAuthorFeed ? (
             authorFilter ? (
               <>
+                {/* Author/Collection pill — search mode only. 'mine' pins the
+                    viewing user so a "their bookmarks" view would just duplicate
+                    the Collection tab. */}
+                {feedMode === 'search' && (
+                  <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
+                    <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
+                      {[
+                        { key: 'articles',   label: 'Author' },
+                        { key: 'collection', label: 'Collection' },
+                      ].map(opt => (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => setAuthorViewMode(opt.key)}
+                          className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                            authorViewMode === opt.key
+                              ? 'bg-purple-700 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {searchCheckedIds.size > 0 && (
                   <BulkActionBar
                     articles={displayArticles.filter(a => searchCheckedIds.has(a.id))}
                     profiles={displayProfiles}
                     lists={readOnly ? [] : lists}
                     onAddToList={readOnly ? null : addArticle}
+                    onAddManyToList={readOnly ? null : addArticlesBulk}
                     onCreateList={readOnly ? null : createList}
                     onClearSelection={() => setSearchCheckedIds(new Set())}
                   />
@@ -590,28 +677,69 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                     </label>
                   </div>
                 )}
-                <ArticleFeed
-                  articles={displayArticles}
-                  profiles={displayProfiles}
-                  loading={searchLoading}
-                  loadingMore={false}
-                  hasMore={false}
-                  selectedId={selected?.id}
-                  checkedIds={searchCheckedIds}
-                  onSelect={setSelected}
-                  onToggleSelect={(id, checked) => {
-                    setSearchCheckedIds(prev => {
-                      const next = new Set(prev)
-                      checked ? next.add(id) : next.delete(id)
-                      return next
-                    })
-                  }}
-                  onLoadMore={() => {}}
-                  lists={readOnly ? null : lists}
-                  onAddToList={readOnly ? null : addArticle}
-                  onCreateList={readOnly ? null : createList}
-                  onLoadInEditor={onLoadInEditor}
-                />
+
+                {inAuthorCollectionView ? (
+                  authorCollection.loading && authorCollection.lists.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center py-16">
+                      <span className="inline-block w-5 h-5 border-2 border-neutral-500 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  ) : (
+                    <BookmarksPanel
+                      manageMode={false}
+                      lists={authorCollection.lists}
+                      titleQuery=""
+                      collapsed={authorCollapsed}
+                      setCollapsed={setAuthorCollapsed}
+                      selected={selected}
+                      // Don't persist as the last-opened search article — the
+                      // restore path looks in searchResults (author's written
+                      // articles), so a bookmark aTag would never match.
+                      onSelect={(article) => setSelectedRaw(article)}
+                      displayArticles={displayArticles}
+                      checkedIds={searchCheckedIds}
+                      onToggleCheck={(id, checked) => {
+                        setSearchCheckedIds(prev => {
+                          const next = new Set(prev)
+                          checked ? next.add(id) : next.delete(id)
+                          return next
+                        })
+                      }}
+                      addArticle={undefined}
+                      createList={undefined}
+                      deleteList={undefined}
+                      renameList={undefined}
+                      reorderLists={undefined}
+                      hiddenIds={undefined}
+                      hideList={undefined}
+                      unhideList={undefined}
+                      readOnly={true}
+                      onOpenHelp={() => setHelpOpen(true)}
+                    />
+                  )
+                ) : (
+                  <ArticleFeed
+                    articles={displayArticles}
+                    profiles={displayProfiles}
+                    loading={searchLoading}
+                    loadingMore={false}
+                    hasMore={false}
+                    selectedId={selected?.id}
+                    checkedIds={searchCheckedIds}
+                    onSelect={setSelected}
+                    onToggleSelect={(id, checked) => {
+                      setSearchCheckedIds(prev => {
+                        const next = new Set(prev)
+                        checked ? next.add(id) : next.delete(id)
+                        return next
+                      })
+                    }}
+                    onLoadMore={() => {}}
+                    lists={readOnly ? null : lists}
+                    onAddToList={readOnly ? null : addArticle}
+                    onCreateList={readOnly ? null : createList}
+                    onLoadInEditor={onLoadInEditor}
+                  />
+                )}
               </>
             ) : (
               <SearchEmptyState />
@@ -624,32 +752,51 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
                 profiles={new Map()}
                 lists={readOnly ? [] : lists}
                 onAddToList={readOnly ? null : addArticle}
+                onAddManyToList={readOnly ? null : addArticlesBulk}
                 onCreateList={readOnly ? null : createList}
                 onMoveArticle={readOnly ? null : moveArticle}
+                onMoveArticlesBulk={readOnly ? null : moveArticlesBulk}
                 onRemoveArticle={readOnly ? null : removeArticle}
+                onRemoveArticlesBulk={readOnly ? null : removeArticlesBulk}
                 onClearSelection={() => setCheckedIds(new Set())}
               />
             )}
-            {displayArticles.length > 0 && (
+            {(displayArticles.length > 0 || (!readOnly && hasManageableGroups)) && (
               <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
-                <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={displayArticles.length > 0 && displayArticles.every(a => checkedIds.has(a.id))}
-                    onChange={e => {
-                      if (e.target.checked) {
-                        setCheckedIds(new Set(displayArticles.map(a => a.id)))
-                      } else {
-                        setCheckedIds(new Set())
-                      }
-                    }}
-                    className="accent-purple-600 opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity"
-                  />
-                  Select all
-                </label>
+                {displayArticles.length > 0 && (
+                  <label className="flex items-center gap-2 text-xs text-neutral-600 hover:text-neutral-400 cursor-pointer transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={displayArticles.length > 0 && displayArticles.every(a => checkedIds.has(a.id))}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setCheckedIds(new Set(displayArticles.map(a => a.id)))
+                        } else {
+                          setCheckedIds(new Set())
+                        }
+                      }}
+                      className="accent-purple-600 opacity-30 hover:opacity-80 checked:opacity-100 transition-opacity"
+                    />
+                    Select all
+                  </label>
+                )}
+                {!readOnly && hasManageableGroups && (
+                  <button
+                    onClick={() => setManageMode(m => !m)}
+                    className={`ml-auto text-[11px] px-2 py-0.5 rounded border transition-colors ${
+                      manageMode
+                        ? 'bg-neutral-800 border-neutral-600 text-neutral-200'
+                        : 'border-neutral-800 text-neutral-500 hover:text-neutral-300 hover:border-neutral-600'
+                    }`}
+                    title="Rename, hide, or delete groups"
+                  >
+                    {manageMode ? 'Done' : 'Manage groups'}
+                  </button>
+                )}
               </div>
             )}
             <BookmarksPanel
+              manageMode={manageMode}
               lists={lists}
               titleQuery={titleQuery}
               collapsed={collapsed}
@@ -670,6 +817,9 @@ export default function DiscoverView({ user, lists, addArticle, createList, remo
               deleteList={deleteList}
               renameList={renameList}
               reorderLists={reorderLists}
+              hiddenIds={hiddenIds}
+              hideList={hideList}
+              unhideList={unhideList}
               readOnly={readOnly}
               onOpenHelp={() => setHelpOpen(true)}
             />
@@ -788,11 +938,19 @@ function HelpOverlay({ onClose }) {
 
 // ── Bookmarks panel ─────────────────────────────────────────────────────────────
 
-function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, createList, deleteList, renameList, reorderLists, readOnly, onOpenHelp }) {
+function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, createList, deleteList, renameList, reorderLists, hiddenIds, hideList, unhideList, readOnly, onOpenHelp, manageMode }) {
   const [editingId,     setEditingId]     = useState(null)
   const [editTitle,     setEditTitle]     = useState('')
   const [confirmDel,    setConfirmDel]    = useState(null)
   const [itemMenuId,    setItemMenuId]    = useState(null) // aTag of item with open menu
+
+  // Leaving manage mode cancels any in-flight rename/delete prompts so
+  // they don't resurface the next time manage is opened.
+  useEffect(() => {
+    if (manageMode) return
+    if (editingId) setEditingId(null)
+    if (confirmDel) setConfirmDel(null)
+  }, [manageMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close item menu on outside click
   useEffect(() => {
@@ -805,7 +963,11 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
   // Set of visible article IDs (filtered by text query)
   const visibleIds = new Set(displayArticles.map(a => a.id))
 
-  if (!lists.length || lists.every(l => !l.articles?.length)) {
+  // Show onboarding only when the user has zero bookmark categories at
+  // all. Categories that contain only non-longform bookmarks (e.g., kind 1
+  // notes from the Notes module) still render here as empty groups — user
+  // keeps visibility into the same category list across both modules.
+  if (!lists.length) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 gap-4">
         <div className="text-3xl text-neutral-700">📚</div>
@@ -877,6 +1039,13 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
   return (
     <div className="overflow-y-auto flex-1" onClick={handlePanelClick}>
       {lists.map((list, listIndex) => {
+        const isPrimary   = list.id === '_bookmarks'
+        const isHidden    = !!hiddenIds?.has(list.id)
+        // Outside manage mode, suppress hidden groups entirely. We return
+        // null from the map (rather than filtering lists upstream) so that
+        // listIndex stays aligned with the full reorderLists array.
+        if (isHidden && !manageMode) return null
+
         const allItems    = list.articles || []
         // Sort by published_at (or addedAt fallback) desc so the newest
         // article surfaces first, matching the author feed behavior.
@@ -893,9 +1062,11 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
         const isDeleting  = confirmDel === list.id
 
         return (
-          <div key={list.id}>
+          <div key={list.id} className={isHidden ? 'opacity-60' : ''}>
             {/* Group header */}
-            <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-900 border-b border-neutral-800 sticky top-0 z-10">
+            <div className={`flex items-center gap-1 px-2 py-1.5 border-b border-neutral-800 sticky top-0 z-10 ${
+              isHidden ? 'bg-neutral-900/60 border-dashed' : 'bg-neutral-900'
+            }`}>
               <button onClick={() => toggleCollapse(list.id)}
                 className="flex items-center gap-2 flex-1 min-w-0 text-xs font-medium text-neutral-400 hover:text-neutral-200 transition-colors text-left">
                 <span className={`flex-shrink-0 transition-transform text-[10px] ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
@@ -910,7 +1081,7 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                     className="flex-1 bg-neutral-800 border border-neutral-600 rounded px-2 py-0.5 text-xs text-neutral-100 focus:outline-none focus:border-purple-600"
                   />
                 ) : (
-                  <span className="flex-1 truncate">{list.title}</span>
+                  <span className={`flex-1 truncate ${isHidden ? 'text-neutral-500' : ''}`}>{list.title}</span>
                 )}
               </button>
               <span className="text-neutral-700 text-xs flex-shrink-0">
@@ -918,7 +1089,8 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
               </span>
               {!readOnly && !isEditing && !isDeleting && (
                 <>
-                  {/* Group reorder arrows */}
+                  {/* Group reorder arrows — always available, even outside
+                      manage mode, since reordering isn't destructive. */}
                   <button onClick={e => { e.stopPropagation(); reorderLists(listIndex, listIndex - 1) }}
                     disabled={listIndex === 0}
                     className="text-neutral-700 hover:text-neutral-400 disabled:opacity-20 transition-colors px-0.5 text-[10px] flex-shrink-0"
@@ -927,18 +1099,42 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                     disabled={listIndex === lists.length - 1}
                     className="text-neutral-700 hover:text-neutral-400 disabled:opacity-20 transition-colors px-0.5 text-[10px] flex-shrink-0"
                     title="Move group down">▼</button>
-                  <button onClick={e => startEdit(list, e)}
-                    className="text-neutral-700 hover:text-neutral-400 transition-colors px-1 text-xs flex-shrink-0"
-                    title="Rename group">✎</button>
-                  <button onClick={e => handleDeleteClick(list.id, e)}
-                    className="text-neutral-700 hover:text-red-500 transition-colors px-1 text-xs flex-shrink-0"
-                    title="Delete group">✕</button>
+                  {manageMode && !isPrimary && (
+                    <>
+                      <button onClick={e => startEdit(list, e)}
+                        className="text-neutral-700 hover:text-neutral-400 transition-colors px-1 text-xs flex-shrink-0"
+                        title="Rename group">✎</button>
+                      <button
+                        onClick={e => { e.stopPropagation(); (isHidden ? unhideList : hideList)?.(list.id) }}
+                        className="text-neutral-700 hover:text-neutral-300 transition-colors px-1 flex-shrink-0"
+                        title={isHidden ? 'Show in this view' : 'Hide from this view'}
+                        aria-label={isHidden ? `Show ${list.title}` : `Hide ${list.title}`}
+                      >
+                        {isHidden ? (
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                            <path d="M2 2l12 12" strokeLinecap="round" />
+                            <path d="M6.5 4.2A7.4 7.4 0 018 4c4.5 0 7 4 7 4a13 13 0 01-2 2.4M11 11.6A7.4 7.4 0 018 12c-4.5 0-7-4-7-4a13 13 0 012.6-3" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="M6.6 6.6a2 2 0 002.8 2.8" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
+                            <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" strokeLinecap="round" strokeLinejoin="round" />
+                            <circle cx="8" cy="8" r="2" />
+                          </svg>
+                        )}
+                      </button>
+                      <button onClick={e => handleDeleteClick(list.id, e)}
+                        className="text-neutral-700 hover:text-red-500 transition-colors px-1 text-xs flex-shrink-0"
+                        title="Delete group (items move to Ungrouped)">✕</button>
+                    </>
+                  )}
                 </>
               )}
               {isDeleting && (
                 <div className="flex items-center gap-1 flex-shrink-0">
-                  <span className="text-xs text-neutral-500">Delete?</span>
+                  <span className="text-xs text-neutral-500" title="Items in this group will move to Ungrouped">Delete?</span>
                   <button onClick={() => { deleteList(list.id); setConfirmDel(null) }}
+                    title="Items will move to Ungrouped"
                     className="text-xs text-red-500 hover:text-red-400 transition-colors px-1">Yes</button>
                   <button onClick={() => setConfirmDel(null)}
                     className="text-xs text-neutral-600 hover:text-neutral-400 transition-colors px-1">No</button>

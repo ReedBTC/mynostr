@@ -52,7 +52,7 @@ function buildMeta(article) {
  *   onCreateList(name)        — create a new reading list
  *   onClearSelection()
  */
-export default function BulkActionBar({ articles, profiles, lists, onAddToList, onCreateList, onMoveArticle, onRemoveArticle, onClearSelection }) {
+export default function BulkActionBar({ articles, profiles, lists, onAddToList, onAddManyToList, onCreateList, onMoveArticle, onMoveArticlesBulk, onRemoveArticle, onRemoveArticlesBulk, onClearSelection }) {
   const [pendingExport,  setPendingExport]  = useState(null) // null | 'md' | 'epub'
   const [bookmarkOpen,   setBookmarkOpen]   = useState(false)
   const [moveOpen,       setMoveOpen]       = useState(false)
@@ -60,8 +60,9 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
   const [newListName,    setNewListName]    = useState('')
   const [exportStatus,   setExportStatus]   = useState('')   // '' | 'fetching' | 'done' | 'error'
   const [exportError,    setExportError]    = useState('')
-  const [bookmarkStatus, setBookmarkStatus] = useState('')   // '' | 'saving' | 'done'
-  const [moveStatus,     setMoveStatus]     = useState('')   // '' | 'moving' | 'done'
+  const [bookmarkStatus, setBookmarkStatus] = useState('')   // '' | 'saving' | 'done' | 'error'
+  const [moveStatus,     setMoveStatus]     = useState('')   // '' | 'moving' | 'done' | 'error'
+  const [removeStatus,   setRemoveStatus]   = useState('')   // '' | 'removing' | 'error'
   const bookmarkRef = useRef(null)
   const moveRef     = useRef(null)
 
@@ -145,38 +146,131 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
 
   // ── Bookmark handlers ───────────────────────────────────────────────────────
 
+  function buildMetas() {
+    return articles.map(article => ({
+      aTag:      article._aTag || `30023:${article.pubkey}:${getTag(article, 'd')}`,
+      title:     getTag(article, 'title') || 'Untitled',
+      image:     getTag(article, 'image') || '',
+      author:    article._authorName || profiles.get(article.pubkey)?.display_name || '',
+      authorPic: article._authorPic || profiles.get(article.pubkey)?.picture || '',
+      addedAt:   Date.now(),
+    }))
+  }
+
+  // Batch into a single signed kind-10003 publish via onAddManyToList. Falls
+  // back to looping onAddToList so older callers that don't pass the bulk
+  // API still work, but note that path races itself (every addArticle signs
+  // its own replaceable event, last one wins on the relay) and only exists
+  // for graceful degradation — prefer passing onAddManyToList.
+  async function saveMetasTo(listId) {
+    setBookmarkStatus('saving')
+    try {
+      const metas = buildMetas()
+      const ok = onAddManyToList
+        ? await onAddManyToList(listId, metas)
+        : (await Promise.all(metas.map(m => onAddToList(listId, m)))).every(Boolean)
+      if (ok === false) {
+        setBookmarkStatus('error')
+        setTimeout(() => setBookmarkStatus(''), 3000)
+        return
+      }
+      setBookmarkStatus('done')
+      setTimeout(() => setBookmarkStatus(''), 2000)
+    } catch {
+      setBookmarkStatus('error')
+      setTimeout(() => setBookmarkStatus(''), 3000)
+    }
+  }
+
   async function handleAddAllToList(listId) {
     setBookmarkOpen(false)
     setNewListInput(false)
     setNewListName('')
-    setBookmarkStatus('saving')
-    for (const article of articles) {
-      await onAddToList(listId, {
-        aTag:      article._aTag || `30023:${article.pubkey}:${getTag(article, 'd')}`,
-        title:     getTag(article, 'title') || 'Untitled',
-        image:     getTag(article, 'image') || '',
-        author:    article._authorName || profiles.get(article.pubkey)?.display_name || '',
-        authorPic: article._authorPic || profiles.get(article.pubkey)?.picture || '',
-        addedAt:   Date.now(),
-      })
-    }
-    setBookmarkStatus('done')
-    setTimeout(() => setBookmarkStatus(''), 2000)
+    await saveMetasTo(listId)
   }
 
   async function handleCreateAndAddAll() {
     const name = newListName.trim()
     if (!name) return
-    setBookmarkStatus('saving')
+    setBookmarkOpen(false)
+    setNewListInput(false)
     try {
       const list = await onCreateList(name)
-      await handleAddAllToList(list.id)
+      setNewListName('')
+      await saveMetasTo(list.id)
     } catch {
-      setBookmarkStatus('')
+      setBookmarkStatus('error')
+      setTimeout(() => setBookmarkStatus(''), 3000)
     }
   }
 
-  const busy = exportStatus === 'fetching' || bookmarkStatus === 'saving' || moveStatus === 'moving'
+  const busy = exportStatus === 'fetching'
+    || bookmarkStatus === 'saving'
+    || moveStatus === 'moving'
+    || removeStatus === 'removing'
+
+  // Group article aTags by their source list so one publish per source list
+  // replaces N racing publishes that would otherwise overwrite each other.
+  function groupATagsByListId() {
+    const groups = new Map()
+    for (const article of articles) {
+      if (!article._listId) continue
+      const aTag = article._aTag || article.id
+      if (!groups.has(article._listId)) groups.set(article._listId, [])
+      groups.get(article._listId).push(aTag)
+    }
+    return groups
+  }
+
+  async function handleMoveTo(toListId) {
+    setMoveOpen(false)
+    setMoveStatus('moving')
+    try {
+      const groups = groupATagsByListId()
+      let allOk = true
+      for (const [fromListId, aTags] of groups) {
+        if (fromListId === toListId) continue
+        const ok = onMoveArticlesBulk
+          ? await onMoveArticlesBulk(fromListId, toListId, aTags)
+          : (await Promise.all(aTags.map(t => onMoveArticle(fromListId, toListId, t)))).every(Boolean)
+        if (ok === false) allOk = false
+      }
+      if (!allOk) {
+        setMoveStatus('error')
+        setTimeout(() => setMoveStatus(''), 3000)
+        return
+      }
+      setMoveStatus('done')
+      setTimeout(() => setMoveStatus(''), 2000)
+    } catch {
+      setMoveStatus('error')
+      setTimeout(() => setMoveStatus(''), 3000)
+    }
+  }
+
+  async function handleRemove() {
+    setRemoveStatus('removing')
+    try {
+      const groups = groupATagsByListId()
+      let allOk = true
+      for (const [listId, aTags] of groups) {
+        const ok = onRemoveArticlesBulk
+          ? await onRemoveArticlesBulk(listId, aTags)
+          : (await Promise.all(aTags.map(t => onRemoveArticle(listId, t)))).every(Boolean)
+        if (ok === false) allOk = false
+      }
+      if (!allOk) {
+        setRemoveStatus('error')
+        setTimeout(() => setRemoveStatus(''), 3000)
+        return
+      }
+      setRemoveStatus('')
+      onClearSelection()
+    } catch {
+      setRemoveStatus('error')
+      setTimeout(() => setRemoveStatus(''), 3000)
+    }
+  }
 
   return (
     <div className="flex items-center gap-1.5 px-3 py-2 bg-neutral-900 border-b border-neutral-800 flex-shrink-0 flex-wrap">
@@ -222,13 +316,22 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
             <button
               onClick={() => { setBookmarkOpen(o => !o); setNewListInput(false) }}
               disabled={busy}
-              className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:opacity-40 ${
+              className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:opacity-60 inline-flex items-center gap-1 ${
                 bookmarkStatus === 'done'
                   ? 'border-amber-800 text-amber-400'
+                  : bookmarkStatus === 'error'
+                  ? 'border-red-900/60 text-red-400'
                   : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
               }`}
             >
-              {bookmarkStatus === 'done' ? '🔖 Bookmarked' : bookmarkStatus === 'saving' ? '…' : '🔖 Bookmark'}
+              {bookmarkStatus === 'saving' ? (
+                <>
+                  <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                  <span>Saving…</span>
+                </>
+              ) : bookmarkStatus === 'done' ? '🔖 Bookmarked'
+                : bookmarkStatus === 'error' ? '⚠️ Failed'
+                : '🔖 Bookmark'}
             </button>
             {bookmarkOpen && (
               <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
@@ -271,24 +374,25 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
             <button
               onClick={() => { setMoveOpen(o => !o) }}
               disabled={busy}
-              className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
-              {moveStatus === 'done' ? '✓ Moved' : moveStatus === 'moving' ? '…' : 'Move to'}
+              className={`text-xs px-2 py-0.5 rounded border disabled:opacity-60 transition-colors inline-flex items-center gap-1 ${
+                moveStatus === 'error'
+                  ? 'border-red-900/60 text-red-400'
+                  : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
+              }`}>
+              {moveStatus === 'moving' ? (
+                <>
+                  <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                  <span>Moving…</span>
+                </>
+              ) : moveStatus === 'done' ? '✓ Moved'
+                : moveStatus === 'error' ? '⚠️ Failed'
+                : 'Move to'}
             </button>
             {moveOpen && (
               <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
                 {lists.map(list => (
                   <button key={list.id}
-                    onClick={async () => {
-                      setMoveOpen(false)
-                      setMoveStatus('moving')
-                      for (const article of articles) {
-                        if (article._listId && article._listId !== list.id) {
-                          await onMoveArticle(article._listId, list.id, article._aTag || article.id)
-                        }
-                      }
-                      setMoveStatus('done')
-                      setTimeout(() => setMoveStatus(''), 2000)
-                    }}
+                    onClick={() => handleMoveTo(list.id)}
                     className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate">
                     {list.title}
                   </button>
@@ -304,17 +408,15 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
         <>
           <span className="text-neutral-700 mx-0.5 flex-shrink-0">|</span>
           <button
-            onClick={async () => {
-              for (const article of articles) {
-                if (article._listId) {
-                  await onRemoveArticle(article._listId, article._aTag || article.id)
-                }
-              }
-              onClearSelection()
-            }}
+            onClick={handleRemove}
             disabled={busy}
-            className="text-xs px-2 py-0.5 rounded border border-red-900/60 text-red-400 hover:text-red-300 hover:border-red-700 disabled:opacity-40 transition-colors">
-            Remove
+            className="text-xs px-2 py-0.5 rounded border border-red-900/60 text-red-400 hover:text-red-300 hover:border-red-700 disabled:opacity-40 transition-colors inline-flex items-center gap-1">
+            {removeStatus === 'removing' ? (
+              <>
+                <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                <span>Removing…</span>
+              </>
+            ) : removeStatus === 'error' ? '⚠️ Failed' : 'Remove'}
           </button>
         </>
       )}

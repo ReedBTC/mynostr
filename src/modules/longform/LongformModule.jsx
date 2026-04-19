@@ -50,7 +50,14 @@ export default function LongformModule({ user, sessionUser }) {
   const { saveDraft, loadDraft, clearDraft } = useDraft(draftPubkey)
 
   // ── Reading lists ─────────────────────────────────────────────────────────────
-  const { lists, createList, addArticle, removeArticle, moveArticle, deleteList, renameList, reorderLists } = useReadingLists(user)
+  const {
+    lists, createList,
+    addArticle, addArticlesBulk,
+    removeArticle, removeArticlesBulk,
+    moveArticle, moveArticlesBulk,
+    deleteList, renameList, reorderLists,
+    hiddenIds, hideList, unhideList,
+  } = useReadingLists(user)
 
   // If a logged-out visitor somehow lands on the Write tab (e.g. via back
   // button), bounce them to Collection so they don't see a disabled editor.
@@ -225,12 +232,18 @@ export default function LongformModule({ user, sessionUser }) {
           user={user}
           lists={lists}
           addArticle={addArticle}
+          addArticlesBulk={addArticlesBulk}
           createList={createList}
           removeArticle={removeArticle}
+          removeArticlesBulk={removeArticlesBulk}
           moveArticle={moveArticle}
+          moveArticlesBulk={moveArticlesBulk}
           deleteList={deleteList}
           renameList={renameList}
           reorderLists={reorderLists}
+          hiddenIds={hiddenIds}
+          hideList={hideList}
+          unhideList={unhideList}
           onLoadInEditor={isOwner ? handleLoadArticle : null}
           feedMode={moduleTab === 'write' ? 'collection' : moduleTab}
           onFeedModeChange={setModuleTab}
