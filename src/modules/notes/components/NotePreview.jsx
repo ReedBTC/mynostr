@@ -74,7 +74,7 @@ function YouTubeSegment({ videoId, url }) {
         className="w-full h-full rounded-lg"
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
         allowFullScreen
-        sandbox="allow-scripts allow-same-origin allow-presentation"
+        sandbox="allow-scripts allow-same-origin allow-presentation allow-popups allow-popups-to-escape-sandbox"
       />
     </div>
   )
