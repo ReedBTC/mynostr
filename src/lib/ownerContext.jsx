@@ -113,14 +113,30 @@ export function useViewedUser(npubParam, sessionUser) {
     setError(null)
     if (!pubkey) { setViewedUser(null); return }
 
-    // Session user viewing their own page — reuse the hydrated session object.
-    if (sessionUser?.pubkey === pubkey) {
-      setViewedUser(sessionUser)
+    // Session user viewing their own page — reuse the hydrated session object
+    // when it actually carries profile data. If LoginScreen's profile fetch
+    // timed out, the object has a pubkey but no name/image, and the header
+    // would render as "Anonymous + ?" forever. In that case fall through to
+    // the Primal/NDK fetch below and mutate the session object's profile once
+    // the data arrives so downstream modules (which share the reference) see
+    // it too.
+    const sessionHit = sessionUser?.pubkey === pubkey ? sessionUser : null
+    const sessionHasProfile = !!(
+      sessionHit?.profile && (
+        sessionHit.profile.displayName ||
+        sessionHit.profile.name ||
+        sessionHit.profile.image ||
+        sessionHit.profile.picture
+      )
+    )
+    if (sessionHit && sessionHasProfile) {
+      setViewedUser(sessionHit)
       return
     }
+    if (sessionHit) setViewedUser(sessionHit) // show shell while hydrating
 
     // Cache hit — instant.
-    const cached = cacheGet(pubkey)
+    const cached = !sessionHit ? cacheGet(pubkey) : null
     if (cached) { setViewedUser(cached); return }
 
     const token = ++loadTokenRef.current
@@ -167,11 +183,21 @@ export function useViewedUser(npubParam, sessionUser) {
 
       if (loadTokenRef.current !== token) return
 
-      const user = {
-        pubkey,
-        npub: nip19.npubEncode(pubkey),
-        profile: profile || {},
-        readOnly: true,
+      // If this is the session user's own page, preserve their session shape
+      // (readOnly flag, NDK identity fields) and just merge in the freshly
+      // fetched profile. Mutating sessionHit.profile in place means any other
+      // consumer holding the same reference also sees the hydrated profile.
+      let user
+      if (sessionHit) {
+        if (profile) sessionHit.profile = profile
+        user = { ...sessionHit, profile: sessionHit.profile || {} }
+      } else {
+        user = {
+          pubkey,
+          npub: nip19.npubEncode(pubkey),
+          profile: profile || {},
+          readOnly: true,
+        }
       }
       cacheSet(pubkey, user)
       setViewedUser(user)

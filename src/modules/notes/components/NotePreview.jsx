@@ -76,7 +76,7 @@ function YouTubeSegment({ videoId, url }) {
 
 // ─── Main Preview ────────────────────────────────────────────────────────────
 
-export default function NotePreview({ content, zapSplits, authorPubkey }) {
+export default function NotePreview({ content, zapSplits, authorPubkey, compactSplits = false }) {
   const segments = useMemo(() => parseNoteContent(content), [content])
 
   return (
@@ -109,7 +109,7 @@ export default function NotePreview({ content, zapSplits, authorPubkey }) {
       </div>
 
       {/* Zap splits */}
-      <ZapSplitDisplay zapSplits={zapSplits} />
+      <ZapSplitDisplay zapSplits={zapSplits} compact={compactSplits} />
     </div>
   )
 }

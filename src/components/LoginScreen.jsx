@@ -3,6 +3,7 @@ import { NDKNip07Signer, NDKPrivateKeySigner, NDKNip46Signer } from '@nostr-dev-
 import { nip19 } from 'nostr-tools'
 import { QRCodeSVG } from 'qrcode.react'
 import { getNDK, resetNDK, connectAndWait } from '../lib/ndk.js'
+import { fetchProfiles } from '../lib/primal.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 
 // Mobile NIP-46 flows need to survive tab reloads and WebSocket suspensions
@@ -107,14 +108,45 @@ export default function LoginScreen({ onLogin }) {
     }
   }, [qrTrigger]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Profile hydration for the top-right badge. NDK's fetchProfile races the
+  // kind-0 event against a brand-new relay subscription, which can time out
+  // before any relay responds — leaving the badge stuck on "Anonymous". Primal
+  // serves the cached profile in ~100–500ms from a single socket, so we try it
+  // first and only fall back to NDK if nothing came back.
   async function fetchUserProfile(ndk, pubkey) {
     const user = ndk.getUser({ pubkey })
     try {
-      await Promise.race([
-        user.fetchProfile(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+      const map = await Promise.race([
+        fetchProfiles([pubkey]),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
       ])
-    } catch {}
+      const raw = map?.get?.(pubkey)
+      if (raw) {
+        const picture = raw.picture || raw.image
+        user.profile = {
+          name:        raw.name,
+          displayName: raw.display_name || raw.displayName,
+          image:       picture,
+          picture,
+          about:       raw.about,
+          nip05:       raw.nip05,
+          lud06:       raw.lud06,
+          lud16:       raw.lud16,
+          website:     raw.website,
+          banner:      raw.banner,
+        }
+      }
+    } catch {
+      // Primal unavailable — fall through to NDK
+    }
+    if (!user.profile) {
+      try {
+        await Promise.race([
+          user.fetchProfile(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+        ])
+      } catch {}
+    }
     return user
   }
 

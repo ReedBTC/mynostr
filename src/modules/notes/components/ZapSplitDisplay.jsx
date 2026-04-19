@@ -10,7 +10,7 @@ function cacheSet(key, value) {
   profileCache.set(key, value)
 }
 
-export default function ZapSplitDisplay({ zapSplits }) {
+export default function ZapSplitDisplay({ zapSplits, compact = false }) {
   const [profiles, setProfiles] = useState(new Map())
   const mounted = useRef(true)
 
@@ -78,7 +78,9 @@ export default function ZapSplitDisplay({ zapSplits }) {
               ) : (
                 <div className="w-5 h-5 rounded-full bg-neutral-700 flex items-center justify-center text-[9px] text-neutral-400">?</div>
               )}
-              <span className="text-xs text-neutral-400">{name}</span>
+              {!compact && (
+                <span className="text-xs text-neutral-400">{name}</span>
+              )}
               <span className={`text-[10px] font-medium ${colors[i % colors.length]}`}>{z.pct || 0}%</span>
             </div>
           )
