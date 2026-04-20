@@ -20,6 +20,7 @@ import { fetchProfiles } from '../../../lib/primal.js'
 import { extractTags, mergeTags, validateKind1Event } from '../../../lib/noteParser.js'
 import { getNDK } from '../../../lib/ndk.js'
 import { uploadToBlossom } from '../../../lib/blossom.js'
+import { useImageUploadFlow } from '../../../components/ImageUploadConfirm.jsx'
 import { useIsMobile } from '../../../hooks/useIsMobile.js'
 import { parseReplyRefs } from '../../../lib/nip10.js'
 
@@ -81,6 +82,7 @@ export default function NoteComposer({
   const [imageUploading, setImageUploading] = useState(false)
   const [imageError, setImageError] = useState('')
   const imageInputRef = useRef(null)
+  const { requestUpload: requestImageUpload, element: uploadPicker } = useImageUploadFlow()
   const [cursorPos, setCursorPos] = useState(0)
   const [mentionActive, setMentionActive] = useState(false)
   const [importLoading, setImportLoading] = useState(false)
@@ -347,10 +349,12 @@ export default function NoteComposer({
   const handleImageUpload = useCallback(async (file) => {
     if (!file || !file.type.startsWith('image/')) return
     if (imageUploading) return
+    const ready = await requestImageUpload(file)
+    if (!ready) return
     setImageUploading(true)
     setImageError('')
     try {
-      const url = await uploadToBlossom(file)
+      const url = await uploadToBlossom(ready)
       const ta = textareaRef.current
       const insertPos = ta?.selectionStart ?? content.length
       const before = content.slice(0, insertPos)
@@ -370,7 +374,7 @@ export default function NoteComposer({
     } finally {
       setImageUploading(false)
     }
-  }, [content, imageUploading])
+  }, [content, imageUploading, requestImageUpload])
 
   // Handle @mention selection — insert @DisplayName, track mapping
   const handleMentionSelect = useCallback(({ name, pubkey }, start, end) => {
@@ -1190,6 +1194,7 @@ export default function NoteComposer({
           </>
         )}
       </div>
+      {uploadPicker}
     </div>
   )
 }

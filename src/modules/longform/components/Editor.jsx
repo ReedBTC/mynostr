@@ -3,6 +3,7 @@ import MDEditor, { commands } from '@uiw/react-md-editor'
 import { nip19 } from 'nostr-tools'
 import { parseFrontmatter, buildFrontmatter, titleToSlug, getPublishedAtDate, withTimeout } from '../../../lib/utils.js'
 import { uploadToBlossom } from '../../../lib/blossom.js'
+import { useImageUploadFlow } from '../../../components/ImageUploadConfirm.jsx'
 import { exportEpub } from '../../../lib/epub.js'
 import { getNDK, connectAndWait } from '../../../lib/ndk.js'
 import { useIsMobile } from '../../../hooks/useIsMobile.js'
@@ -35,6 +36,7 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
   const contentRef = useRef(content)
   contentRef.current = content
   const uploadingRef = useRef(false)
+  const { requestUpload: requestImageUpload, element: uploadPicker } = useImageUploadFlow()
   // Scopes the image-insert cursor lookup to this editor's DOM subtree so we
   // don't accidentally pick up a textarea from another MDEditor mounted
   // elsewhere in the tree.
@@ -134,11 +136,13 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
   async function insertImageFromFile(file) {
     if (!file || !file.type.startsWith('image/')) return
     if (uploadingRef.current) return
+    const ready = await requestImageUpload(file)
+    if (!ready) return
     uploadingRef.current = true
     setImageUploading(true)
     setImageError('')
     try {
-      const url = await uploadToBlossom(file)
+      const url = await uploadToBlossom(ready)
       const insertion = `![](${url})`
       // Read latest content via ref to avoid stale closure
       const current = contentRef.current
@@ -617,6 +621,7 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
           )}
         </div>
       </div>
+      {uploadPicker}
     </div>
   )
 }

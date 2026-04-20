@@ -1,19 +1,23 @@
 import { useRef, useState } from 'react'
 import { uploadToBlossom } from '../../../lib/blossom.js'
+import { useImageUploadFlow } from '../../../components/ImageUploadConfirm.jsx'
 
 export default function MetadataForm({ metadata, onChange, readOnly }) {
   const coverInputRef = useRef(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const { requestUpload, element: uploadPicker } = useImageUploadFlow()
 
   async function handleCoverUpload(e) {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
+    const ready = await requestUpload(file)
+    if (!ready) return
     setUploading(true)
     setUploadError('')
     try {
-      const url = await uploadToBlossom(file)
+      const url = await uploadToBlossom(ready)
       onChange({ ...metadata, image: url })
     } catch (err) {
       setUploadError(err.message || 'Upload failed.')
@@ -155,6 +159,7 @@ export default function MetadataForm({ metadata, onChange, readOnly }) {
         )}
       </div>
 
+      {uploadPicker}
     </div>
   )
 }
