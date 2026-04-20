@@ -123,13 +123,18 @@ export default function NoteCard({
   }
 
   const clickable = !!onNoteClick
+  // min-w-0 is load-bearing on the selectable path: without it the flex-1
+  // article respects its content's intrinsic width, so a wide image or
+  // embedded note can push the card beyond the feed's max-w-xl frame.
+  // overflow-hidden keeps the rounded corners clean when inner content
+  // (e.g. an unwrapped naddr link) would otherwise poke through.
   const articleClass = [
-    'bg-neutral-900 border rounded-lg p-3 transition-colors',
+    'bg-neutral-900 border rounded-lg p-3 transition-colors overflow-hidden',
     focused
       ? 'border-purple-700'
       : (selectable && selected ? 'border-purple-500' : 'border-neutral-800'),
     clickable ? 'hover:border-neutral-700 cursor-pointer' : '',
-    selectable ? 'flex-1' : '',
+    selectable ? 'flex-1 min-w-0' : '',
   ].filter(Boolean).join(' ')
 
   const articleEl = (
@@ -237,7 +242,7 @@ export default function NoteCard({
 
   if (selectable) {
     return (
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 min-w-0">
         <button
           type="button"
           onClick={() => onToggleSelect?.(note.id)}

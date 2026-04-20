@@ -98,7 +98,7 @@ function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
       <button
         onClick={e => { e.stopPropagation(); onDelete() }}
         title="Delete draft"
-        className="shrink-0 text-neutral-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+        className="shrink-0 text-neutral-500 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-opacity p-1 -m-1"
       >
         <TrashIcon />
       </button>

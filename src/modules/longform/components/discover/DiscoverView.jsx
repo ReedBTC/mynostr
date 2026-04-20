@@ -967,7 +967,10 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
   // all. Categories that contain only non-longform bookmarks (e.g., kind 1
   // notes from the Notes module) still render here as empty groups — user
   // keeps visibility into the same category list across both modules.
-  if (!lists.length) {
+  // Visitors also see the empty-state when every public list is empty,
+  // since the map below filters those rows out.
+  const visitorHasNothing = readOnly && !lists.some(l => (l.articles?.length || 0) > 0)
+  if (!lists.length || visitorHasNothing) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 gap-4">
         <div className="text-3xl text-neutral-700">📚</div>
@@ -1047,6 +1050,10 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
         if (isHidden && !manageMode) return null
 
         const allItems    = list.articles || []
+        // Visitor view: visitors can't manage or hide chips, so an empty
+        // category is just clutter. Owners keep seeing empties so they can
+        // add articles or manually hide the group.
+        if (readOnly && allItems.length === 0) return null
         // Sort by published_at (or addedAt fallback) desc so the newest
         // article surfaces first, matching the author feed behavior.
         const items       = allItems

@@ -34,13 +34,21 @@ import BookmarkChipBar from './BookmarkChipBar.jsx'
 import NotesFeed from './NotesFeed.jsx'
 
 export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick }) {
-  const { categories, loading } = useAuthorBookmarkCategories(pubkey)
+  const { categories: rawCategories, loading } = useAuthorBookmarkCategories(pubkey)
   const {
     categories: ownCategories,
     canEdit,
     bulkMove,
     bulkMoveToNew,
   } = useNoteBookmarksContext()
+
+  // Visitors can't manage chips (no hide / rename / delete), so an empty
+  // category is just clutter. Filter them out so the chip bar only lists
+  // categories that actually contain public notes.
+  const categories = useMemo(
+    () => rawCategories.filter(c => (c.items?.length || 0) > 0),
+    [rawCategories],
+  )
 
   // Default to primary if present, else first custom category. Re-run when
   // the active chip vanishes (category list refetched/changed).
