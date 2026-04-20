@@ -4,15 +4,18 @@ import { formatCount } from '../../lib/utils.js'
 /**
  * ProfileStatsCard — two labeled sections:
  *
- *   POSTS      Notes · Comments · Articles · Events · Market
- *   BOOKMARKS  Notes · Articles · Events · Market
+ *   POSTS             Notes · Comments · Articles · Events · Market
+ *   PUBLIC CURATION   Notes · Articles · Events · Market
+ *
+ * Public Curation = how many items of each kind this user has bookmarked
+ * across their NIP-51 lists, with "N categories" under the count to show
+ * how organized their curation is. Bookmark counting isn't something other
+ * Nostr clients do, so the Public Curation header carries an explainer line
+ * and each cell shows a bookmark-ribbon glyph over the kind icon so the two
+ * sections are distinguishable at a glance.
  *
  * Notes/Comments/Articles cells deep-link into NotesModule and
- * LongformModule; Events + Market are display-only until those modules
- * ship (shown here for completeness). Icons accompany every label so it's
- * always obvious what each number refers to — the old bookmark-icon-only
- * row was too ambiguous.
- *
+ * LongformModule; Events + Market are display-only until those modules ship.
  * Followers/Following live on the profile card above this one.
  */
 export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkCounts, loading }) {
@@ -62,6 +65,7 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       key: 'bm-notes',
       label: 'Notes',
       value: bookmarkCounts?.notes,
+      categories: bookmarkCounts?.noteCategories,
       icon: <NoteIcon />,
       onClick: npub ? () => navigate(`/${npub}/notes`, { state: { initialTab: 'bookmarks' } }) : null,
     },
@@ -69,6 +73,7 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       key: 'bm-articles',
       label: 'Articles',
       value: bookmarkCounts?.articles,
+      categories: bookmarkCounts?.articleCategories,
       icon: <ArticleIcon />,
       onClick: npub ? () => navigate(`/${npub}/longform`, { state: { initialTab: 'collection' } }) : null,
     },
@@ -76,6 +81,7 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       key: 'bm-events',
       label: 'Events',
       value: bookmarkCounts?.events,
+      categories: bookmarkCounts?.eventCategories,
       icon: <EventIcon />,
       onClick: null,
     },
@@ -83,6 +89,7 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       key: 'bm-market',
       label: 'Market',
       value: bookmarkCounts?.listings,
+      categories: bookmarkCounts?.listingCategories,
       icon: <MarketIcon />,
       onClick: null,
     },
@@ -92,24 +99,41 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
     <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
       <Section label="Posts" cells={postCells} loading={loading} />
       <div className="border-t border-neutral-800" />
-      <Section label="Bookmarks" cells={bookmarkCells} loading={loading} />
+      <Section
+        label="Public Curation"
+        sublabel="Categorized Public Bookmarks: Curated Content for All"
+        cells={bookmarkCells}
+        loading={loading}
+        variant="curation"
+      />
     </div>
   )
 }
 
-function Section({ label, cells, loading }) {
+function Section({ label, sublabel, cells, loading, variant }) {
+  const isCuration = variant === 'curation'
   return (
-    <div className="px-4 py-3">
-      <div className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2 font-medium">{label}</div>
+    <div className={`px-4 py-3 ${isCuration ? 'bg-purple-950/10' : ''}`}>
+      <div className="flex items-baseline gap-2 mb-2 flex-wrap">
+        <div className="text-[10px] uppercase tracking-wider text-neutral-400 font-medium flex items-center gap-1.5">
+          {isCuration && <BookmarkIcon className="w-3 h-3 text-purple-400" />}
+          {label}
+        </div>
+        {sublabel && (
+          <div className="text-[10px] text-neutral-500 normal-case tracking-normal">{sublabel}</div>
+        )}
+      </div>
       <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
         {cells.map(c => (
           <StatCell
             key={c.key}
             label={c.label}
             value={c.value}
+            categories={c.categories}
             icon={c.icon}
             loading={loading && c.value == null}
             onClick={c.onClick}
+            variant={variant}
           />
         ))}
       </div>
@@ -117,12 +141,20 @@ function Section({ label, cells, loading }) {
   )
 }
 
-function StatCell({ label, value, icon, loading, onClick }) {
+function StatCell({ label, value, categories, icon, loading, onClick, variant }) {
   const clickable = Boolean(onClick)
+  const isCuration = variant === 'curation'
+  const hasCats = typeof categories === 'number' && categories > 0 && value > 0
+
   const body = (
     <>
       <div className="flex items-center justify-center gap-1.5 text-neutral-400 group-hover:text-purple-300 transition-colors">
-        <span className="w-3.5 h-3.5 inline-flex items-center justify-center">{icon}</span>
+        <span className="relative w-3.5 h-3.5 inline-flex items-center justify-center">
+          {icon}
+          {isCuration && (
+            <BookmarkIcon className="absolute -top-1 -right-1.5 w-2.5 h-2.5 text-purple-400" />
+          )}
+        </span>
         <span className="text-[11px]">{label}</span>
       </div>
       <div className="text-lg sm:text-xl font-semibold text-neutral-100 leading-tight mt-1 tabular-nums">
@@ -132,10 +164,16 @@ function StatCell({ label, value, icon, loading, onClick }) {
           formatCount(value)
         )}
       </div>
+      {isCuration && !loading && (
+        <div className="text-[10px] text-neutral-500 leading-none mt-1 tabular-nums min-h-[1em]">
+          {hasCats ? `${categories} ${categories === 1 ? 'category' : 'categories'}` : ''}
+        </div>
+      )}
     </>
   )
 
-  const base = 'group flex flex-col items-center justify-center py-2.5 px-2 rounded-md border border-neutral-800 bg-neutral-900/40 text-center'
+  const baseBg = isCuration ? 'bg-purple-950/20' : 'bg-neutral-900/40'
+  const base = `group flex flex-col items-center justify-center py-2.5 px-2 rounded-md border border-neutral-800 ${baseBg} text-center`
   if (clickable) {
     return (
       <button
@@ -149,6 +187,14 @@ function StatCell({ label, value, icon, loading, onClick }) {
     )
   }
   return <div className={base}>{body}</div>
+}
+
+function BookmarkIcon({ className = '' }) {
+  return (
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" className={className}>
+      <path d="M4 2.5h8a.5.5 0 01.5.5v11l-4.5-2.5-4.5 2.5V3a.5.5 0 01.5-.5z" />
+    </svg>
+  )
 }
 
 function NoteIcon() {
