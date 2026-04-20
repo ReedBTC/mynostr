@@ -459,9 +459,17 @@ export default function NoteComposer({
           }),
         }
       }
-      return { valid: false, error: 'Expected a note1, nevent1, or naddr1 identifier' }
-    } catch (e) {
-      return { valid: false, error: e.message || 'Invalid identifier' }
+      // Decoded, but not as a note/event/article — almost always an npub or
+      // nprofile pasted by mistake. Be specific so the user knows why.
+      return {
+        valid: false,
+        error: 'This field needs a note ID (note1…, nevent1…, or naddr1…), not a profile or key.',
+      }
+    } catch {
+      return {
+        valid: false,
+        error: 'Paste a note ID to reply or quote — e.g. note1…, nevent1…, or naddr1…',
+      }
     }
   }, [])
 
@@ -717,10 +725,17 @@ export default function NoteComposer({
     publishAt: initial.publishAt || null,
   }), [content, zapSplits, userZapPct, manualTags, mentions, replyToInput, quoteInput, relayOverride, initial.publishAt])
 
+  // Block publish when a reply/quote input has text but doesn't parse as a
+  // note ID. Otherwise the note would go out silently missing its thread
+  // tags — a "reply" that isn't threaded, or a quote that isn't embedded.
+  const hasInvalidReply = Boolean(replyToInput.trim() && !replyToRef.valid)
+  const hasInvalidQuote = Boolean(quoteInput.trim() && !quoteRef.valid)
+
   const publishable = useMemo(() => {
     if (!content.trim()) return null
+    if (hasInvalidReply || hasInvalidQuote) return null
     return { content: expandedContent, tags: finalTags }
-  }, [content, expandedContent, finalTags])
+  }, [content, expandedContent, finalTags, hasInvalidReply, hasInvalidQuote])
 
   // Ref-wrap the callback so identity changes in the parent don't thrash
   // this effect — only real snapshot/publishable changes should emit.
@@ -890,7 +905,10 @@ export default function NoteComposer({
           <>
             {/* Reply-to — above the editor. When valid, the note becomes a
                 NIP-10 reply: the target's author gets a p-tag and any
-                existing thread root is preserved. */}
+                existing thread root is preserved. Border tints track the
+                parse state: neutral when empty, purple when a valid ID is
+                pasted, red when the input is clearly not a note ID (npub,
+                name, arbitrary text). */}
             <div className="mb-1.5">
               <div className="relative flex items-center">
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-neutral-500 uppercase tracking-wide font-semibold pointer-events-none">
@@ -901,8 +919,15 @@ export default function NoteComposer({
                   value={replyToInput}
                   onChange={(e) => setReplyToInput(e.target.value)}
                   placeholder="note1…, nevent1…, or naddr1… to reply to"
-                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg pl-14 pr-7 py-2 sm:py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-purple-600"
+                  className={`w-full bg-neutral-900 border rounded-lg pl-14 pr-7 py-2 sm:py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none ${
+                    !replyToInput.trim()
+                      ? 'border-neutral-800 focus:border-purple-600'
+                      : replyToRef.valid
+                        ? 'border-purple-600'
+                        : 'border-red-700 focus:border-red-600'
+                  }`}
                   aria-label="Reply to note ID"
+                  aria-invalid={Boolean(replyToInput.trim() && !replyToRef.valid)}
                   spellCheck={false}
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -915,9 +940,6 @@ export default function NoteComposer({
                   >×</button>
                 )}
               </div>
-              {replyToInput.trim() && !replyToRef.valid && (
-                <p className="text-[10px] text-red-400 mt-0.5 pl-1">{replyToRef.error || 'Invalid note ID'}</p>
-              )}
               {replyToRef.valid && replyTargetLoading && (
                 <p className="text-[10px] text-neutral-500 italic mt-0.5 pl-1">Loading reply target…</p>
               )}
@@ -997,7 +1019,9 @@ export default function NoteComposer({
 
             {/* Quote — below the editor. The nevent is appended to the
                 published content so every client renders it as an embed,
-                and extractTags() picks it up as a 'mention' e-tag. */}
+                and extractTags() picks it up as a 'mention' e-tag. Border
+                tint mirrors the Reply field — purple on valid parse, red
+                on bad input. */}
             <div className="mt-1.5">
               <div className="relative flex items-center">
                 <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[10px] text-neutral-500 uppercase tracking-wide font-semibold pointer-events-none">
@@ -1008,8 +1032,15 @@ export default function NoteComposer({
                   value={quoteInput}
                   onChange={(e) => setQuoteInput(e.target.value)}
                   placeholder="note1…, nevent1…, or naddr1… to quote"
-                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg pl-14 pr-7 py-2 sm:py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-purple-600"
+                  className={`w-full bg-neutral-900 border rounded-lg pl-14 pr-7 py-2 sm:py-1.5 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none ${
+                    !quoteInput.trim()
+                      ? 'border-neutral-800 focus:border-purple-600'
+                      : quoteRef.valid
+                        ? 'border-purple-600'
+                        : 'border-red-700 focus:border-red-600'
+                  }`}
                   aria-label="Quote note ID"
+                  aria-invalid={Boolean(quoteInput.trim() && !quoteRef.valid)}
                   spellCheck={false}
                   autoCapitalize="off"
                   autoCorrect="off"
@@ -1022,9 +1053,6 @@ export default function NoteComposer({
                   >×</button>
                 )}
               </div>
-              {quoteInput.trim() && !quoteRef.valid && (
-                <p className="text-[10px] text-red-400 mt-0.5 pl-1">{quoteRef.error || 'Invalid note ID'}</p>
-              )}
             </div>
 
             {/* Toolbar row — image upload + zap splits only in Write mode,
@@ -1153,18 +1181,28 @@ export default function NoteComposer({
             <div className="mt-3">
               {!readOnly ? (
                 <>
-                  {zapSplitOver100 && (
-                    <p className="mb-2 text-[11px] text-red-400">
-                      Zap splits total more than 100%. Adjust the splits before publishing.
-                    </p>
-                  )}
                   <button
                     onClick={handlePublish}
-                    disabled={publishing || !content.trim() || zapSplitOver100}
+                    disabled={publishing || !content.trim() || zapSplitOver100 || hasInvalidReply || hasInvalidQuote}
                     className="w-full py-3 sm:py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors"
                   >
                     {publishing ? 'Publishing...' : 'PUBLISH'}
                   </button>
+                  {zapSplitOver100 && (
+                    <p className="mt-2 text-[11px] text-red-400">
+                      Zap splits total more than 100%. Adjust the splits before publishing.
+                    </p>
+                  )}
+                  {hasInvalidReply && (
+                    <p className="mt-2 text-[11px] text-red-400">
+                      Reply field needs a valid note ID (note1…, nevent1…, or naddr1…) — or clear it before publishing.
+                    </p>
+                  )}
+                  {hasInvalidQuote && (
+                    <p className="mt-2 text-[11px] text-red-400">
+                      Quote field needs a valid note ID (note1…, nevent1…, or naddr1…) — or clear it before publishing.
+                    </p>
+                  )}
                 </>
               ) : (
                 <div className="w-full py-2 bg-neutral-800 rounded-lg text-xs text-amber-500 font-medium text-center">
