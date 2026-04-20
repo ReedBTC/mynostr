@@ -1,0 +1,8 @@
+name = "mynostr-relay-info"
+main = "index.js"
+compatibility_date = "2024-09-23"
+
+# No KV, no cron — this worker is stateless and uses the edge Cache API only.
+
+[vars]
+ALLOWED_ORIGINS = "https://mynostr.app"

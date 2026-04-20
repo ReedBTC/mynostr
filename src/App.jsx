@@ -34,7 +34,7 @@ const MarketplaceModule = lazy(() => import('./modules/marketplace/MarketplaceMo
 export const MODULES = [
   { id: 'profile',     label: 'Profile',     icon: '👤', status: 'live', description: 'Kind 0 profile' },
   { id: 'notes',       label: 'Notes',       icon: '📝', status: 'live', description: 'Kind 1 short notes' },
-  { id: 'longform',    label: 'Long Form',   icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
+  { id: 'longform',    label: 'Articles',    icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
   { id: 'events',      label: 'Events',      icon: '📅', status: 'soon', description: 'Kind 31923 events' },
   { id: 'marketplace', label: 'Marketplace', icon: '🛒', status: 'soon', description: 'Kind 30402 listings' },
 ]

@@ -9,6 +9,7 @@ import ProfileEditor from './ProfileEditor.jsx'
 import ProfileStatsCard from './ProfileStatsCard.jsx'
 import ProfileActivityCard from './ProfileActivityCard.jsx'
 import PostingCadenceCard from './PostingCadenceCard.jsx'
+import RelayCard from './RelayCard.jsx'
 
 /**
  * ProfileModule — read view of the viewed user's kind 0 profile, plus an
@@ -323,6 +324,8 @@ function ProfileView({ user, isOwner, onEdit, saveNotice, onDismissSaveNotice, s
           cadence={cadence}
           loading={cadenceLoading}
         />
+
+        <RelayCard pubkey={user?.pubkey} />
       </div>
     </div>
   )

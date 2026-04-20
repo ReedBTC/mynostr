@@ -179,7 +179,7 @@ function StatCell({ label, value, categories, icon, loading, onClick, variant })
       <button
         type="button"
         onClick={onClick}
-        title={`View ${label.toLowerCase()}`}
+        title={isCuration ? `View bookmarked ${label.toLowerCase()}` : `View ${label.toLowerCase()}`}
         className={`${base} hover:border-purple-700/60 hover:bg-purple-950/30 transition-colors focus:outline-none focus:ring-1 focus:ring-purple-600`}
       >
         {body}
