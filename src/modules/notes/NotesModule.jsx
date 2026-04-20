@@ -2,7 +2,8 @@
  * NotesModule — Module 2
  *
  * Four tabs, mirroring Longform:
- *   Write         — composer (owner only)
+ *   Write         — composer (owner only); multi-draft, tray on left desktop
+ *                   and bottom sheet on mobile
  *   My Notes      — kind 1 feed for the viewed user (infinite scroll)
  *   My Bookmarks  — paginated feed of the viewed user's kind 10003 bookmarks
  *   Search        — author / note dropdown, loads a feed or pins a single note
@@ -10,12 +11,13 @@
  * Visitors (non-owners) see just Notes · Bookmarks, matching Longform's
  * Articles · Collection visitor view.
  *
- * The Write pane is always mounted (hidden via CSS) so draft state survives
- * a detour through the other tabs — same pattern LongformModule uses.
+ * The Write pane is always mounted (hidden via CSS) so the draft list +
+ * in-memory composer state survive a detour through the other tabs.
  */
 import { useState, useEffect, useCallback } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import NoteComposer from './components/NoteComposer.jsx'
+import DraftsTray from './components/DraftsTray.jsx'
 import MyNotesTab from './components/feed/MyNotesTab.jsx'
 import BookmarksTab from './components/feed/BookmarksTab.jsx'
 import SearchTab from './components/feed/SearchTab.jsx'
@@ -23,11 +25,14 @@ import { NoteBookmarksProvider } from './noteBookmarksContext.jsx'
 import { UserReactionsProvider } from './userReactionsContext.jsx'
 import { NotesNavigationProvider } from './notesNavigationContext.jsx'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
+import { useNoteDrafts } from '../../lib/useNoteDrafts.js'
+import { useIsMobile } from '../../hooks/useIsMobile.js'
 
 export default function NotesModule({ user, sessionUser }) {
   const { isOwner } = useOwnerContext()
   const location = useLocation()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
 
   const [moduleTab, setModuleTab] = useState(isOwner ? 'write' : 'notes')
   // Author handoff for "click name/pfp → open in Search." Only populated
@@ -35,22 +40,42 @@ export default function NotesModule({ user, sessionUser }) {
   // calls back to clear so re-opening the same author still works.
   const [searchInitialAuthor, setSearchInitialAuthor] = useState(null)
 
-  // Cross-module Comment / Quote deep-link. Any feed (notes, longform) can
-  // push `{ composerPrefill: { replyTo?, quote? } }` into router state when
-  // navigating here; we force the Write tab and hand the payload to the
-  // composer exactly once, then strip it from history so back/forward doesn't
-  // replay the prefill.
-  const [composerPrefill, setComposerPrefill] = useState(null)
+  // Multi-draft state — persisted per-pubkey in localStorage by the hook.
+  // Only meaningful for the page owner (visitors can't publish).
+  const {
+    drafts,
+    currentDraft,
+    currentDraftId,
+    setCurrentDraftId,
+    createDraft,
+    updateDraftWith,
+    deleteDraft,
+    clearDraft,
+    publishOne,
+    publishAll,
+  } = useNoteDrafts(isOwner ? sessionUser?.pubkey : null)
+
+  const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
+
+  // Cross-module Comment / Quote deep-link. Any feed can push
+  // `{ composerPrefill: { replyTo?, quote? } }` into router state when
+  // navigating here; we open a NEW draft (not replace current) seeded
+  // with the prefill, force the Write tab, and strip the state from
+  // history so back/forward doesn't replay the prefill.
   useEffect(() => {
     const pending = location.state?.composerPrefill
     if (!pending) return
     if (!isOwner) return
-    setComposerPrefill(pending)
+    const { replyTo, quote } = pending
+    createDraft({
+      snapshot: {
+        ...(replyTo && { replyToInput: replyTo }),
+        ...(quote && { quoteInput: quote }),
+      },
+    })
     setModuleTab('write')
-    // Drop the state from history so a soft refresh or tab-switch doesn't
-    // re-trigger the prefill.
     navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, isOwner, navigate])
+  }, [location.state, location.pathname, isOwner, createDraft, navigate])
 
   const openAuthorInSearch = useCallback((author) => {
     if (!isOwner || !author?.pubkey) return
@@ -68,6 +93,22 @@ export default function NotesModule({ user, sessionUser }) {
 
   const isWriteActive = moduleTab === 'write' && isOwner
 
+  // Cmd/Ctrl+N for a new draft — only when the Write tab is active and the
+  // user isn't typing inside a form field.
+  useEffect(() => {
+    if (!isWriteActive) return
+    const handler = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'n') return
+      // Let the browser handle the default new-window if modifiers other
+      // than cmd/ctrl are in play (e.g. cmd+shift+n = new private window).
+      if (e.shiftKey || e.altKey) return
+      e.preventDefault()
+      createDraft()
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [isWriteActive, createDraft])
+
   const notesLabel     = isOwner ? 'My Notes'     : 'Notes'
   const bookmarksLabel = isOwner ? 'My Bookmarks' : 'Bookmarks'
 
@@ -82,6 +123,10 @@ export default function NotesModule({ user, sessionUser }) {
         { id: 'notes',     label: notesLabel },
         { id: 'bookmarks', label: bookmarksLabel },
       ]
+
+  const handleSnapshotChange = useCallback((id, patch) => {
+    updateDraftWith(id, (d) => ({ ...d, ...patch }))
+  }, [updateDraftWith])
 
   return (
     <NoteBookmarksProvider user={sessionUser}>
@@ -118,11 +163,41 @@ export default function NotesModule({ user, sessionUser }) {
           className="flex flex-1 overflow-hidden"
           style={{ display: isWriteActive ? 'flex' : 'none' }}
         >
-          <NoteComposer
-            user={user}
-            initialPrefill={composerPrefill}
-            onInitialPrefillConsumed={() => setComposerPrefill(null)}
-          />
+          {!isMobile && (
+            <DraftsTray
+              drafts={drafts}
+              currentDraftId={currentDraftId}
+              onSelectDraft={setCurrentDraftId}
+              onCreateDraft={() => createDraft()}
+              onDeleteDraft={deleteDraft}
+              onPublishAll={publishAll}
+            />
+          )}
+          {currentDraft && (
+            <NoteComposer
+              key={currentDraft.id}
+              user={user}
+              draft={currentDraft}
+              draftCount={drafts.length}
+              onSnapshotChange={(patch) => handleSnapshotChange(currentDraft.id, patch)}
+              onPublish={() => publishOne(currentDraft.id)}
+              onClear={() => clearDraft(currentDraft.id)}
+              onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
+            />
+          )}
+          {isMobile && (
+            <DraftsTray
+              isMobile
+              isMobileOpen={draftsMobileOpen}
+              onMobileClose={() => setDraftsMobileOpen(false)}
+              drafts={drafts}
+              currentDraftId={currentDraftId}
+              onSelectDraft={setCurrentDraftId}
+              onCreateDraft={() => createDraft()}
+              onDeleteDraft={deleteDraft}
+              onPublishAll={publishAll}
+            />
+          )}
         </div>
       )}
 

@@ -291,17 +291,36 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
       <div className="border-b border-neutral-800 flex-shrink-0 relative">
         <div className="w-full max-w-4xl mx-auto px-4 pt-4 pb-2 flex items-center gap-1">
           {isMobile ? (
-            <button
-              ref={menuButtonRef}
-              onClick={() => setMenuOpen(o => !o)}
-              aria-label="Toolbar actions"
-              aria-expanded={menuOpen}
-              className="p-1.5 rounded text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-colors"
-            >
-              <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                <path d="M2 4h12M2 8h12M2 12h12" />
-              </svg>
-            </button>
+            <>
+              <button
+                ref={menuButtonRef}
+                onClick={() => setMenuOpen(o => !o)}
+                aria-label="Toolbar actions"
+                aria-expanded={menuOpen}
+                className="p-1.5 rounded text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-colors"
+              >
+                <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M2 4h12M2 8h12M2 12h12" />
+                </svg>
+              </button>
+              {(() => {
+                const clearEnabled = !readOnly && !!(content || metadata?.title)
+                if (!clearEnabled) return null
+                return (
+                  <button
+                    onClick={handleClearClick}
+                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                      clearPending
+                        ? 'border-red-800 text-red-400 hover:bg-red-950'
+                        : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
+                    }`}
+                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
+                  >
+                    {clearPending ? 'Sure?' : 'Clear'}
+                  </button>
+                )
+              })()}
+            </>
           ) : (
             <>
               {/* Order: Upload → naddr → Drafts → Clear → Export → Write/Preview → Publishing Details */}
@@ -533,32 +552,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
                 </button>
               </>
             )}
-            {(() => {
-              const clearEnabled = !readOnly && !!(content || metadata?.title)
-              return (
-                <>
-                  <div className="border-t border-neutral-800 my-1" />
-                  <button
-                    onClick={() => {
-                      // First click arms "Sure?"; keep menu open so the user can confirm.
-                      // Second click (confirming) actually clears — close the menu.
-                      if (clearPending) setMenuOpen(false)
-                      handleClearClick()
-                    }}
-                    disabled={!clearEnabled}
-                    className={`w-full text-left px-3 py-2.5 text-xs transition-colors ${
-                      !clearEnabled
-                        ? 'text-neutral-700 cursor-not-allowed'
-                        : clearPending
-                          ? 'text-red-400 hover:bg-red-950'
-                          : 'text-neutral-400 hover:text-red-400 hover:bg-neutral-800'
-                    }`}
-                  >
-                    {clearPending ? 'Confirm clear' : 'Clear'}
-                  </button>
-                </>
-              )
-            })()}
           </div>
         )}
       </div>

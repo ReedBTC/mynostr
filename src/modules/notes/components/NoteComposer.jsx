@@ -14,45 +14,75 @@ import NotePreview from './NotePreview.jsx'
 import MentionAutocomplete from './MentionAutocomplete.jsx'
 import EditorMirror from './EditorMirror.jsx'
 import { EmbeddedNoteCard } from './EntityCard.jsx'
+import RelayOverrideSection from './RelayOverrideSection.jsx'
 import { nip19 } from 'nostr-tools'
 import { fetchProfiles } from '../../../lib/primal.js'
 import { extractTags, mergeTags, validateKind1Event } from '../../../lib/noteParser.js'
-import { publishNote } from '../../../lib/publishNote.js'
 import { getNDK } from '../../../lib/ndk.js'
 import { uploadToBlossom } from '../../../lib/blossom.js'
 import { useIsMobile } from '../../../hooks/useIsMobile.js'
 import { parseReplyRefs } from '../../../lib/nip10.js'
 
-// Compact default height — phone-like proportions
-const TEXTAREA_MIN_H = 100
+// Default height — roughly a full phone-screen's worth of composing room
+const TEXTAREA_MIN_H = 200
 
-export default function NoteComposer({ user, initialPrefill, onInitialPrefillConsumed }) {
+/**
+ * Draft-driven composer. Parent owns the draft list (useNoteDrafts hook);
+ * this component mounts with `draft.snapshot` as initial state, then emits
+ * updated {snapshot, publishable} upward via onSnapshotChange on every edit.
+ * Keyed remount (`key={draft.id}` in parent) handles clean state transitions
+ * between drafts — no need to derive state from props after mount.
+ */
+export default function NoteComposer({
+  user,
+  draft,
+  onSnapshotChange,
+  onPublish,
+  onClear,
+  onOpenDraftsMobile,
+  draftCount = 1,
+}) {
   const readOnly = !!user?.readOnly
   const isMobile = useIsMobile()
   const fileRef = useRef(null)
   const [idCopied, setIdCopied] = useState(false)
 
-  // Core state
-  const [content, setContent] = useState('')
-  const [zapSplits, setZapSplits] = useState([])
-  // undefined = auto (catch remainder); number = explicit user pct
-  const [userZapPct, setUserZapPct] = useState(undefined)
-  const [manualTags, setManualTags] = useState([])
+  const initial = draft?.snapshot || {}
+
+  // Core state — seeded once from the draft's snapshot on mount
+  const [content, setContent] = useState(initial.content || '')
+  const [zapSplits, setZapSplits] = useState(initial.zapSplits || [])
+  // undefined = auto (catch remainder); number = explicit user pct.
+  // Snapshot persists null for "explicit absent"; convert on hydrate.
+  const [userZapPct, setUserZapPct] = useState(
+    initial.userZapPct === null || initial.userZapPct === undefined ? undefined : initial.userZapPct
+  )
+  const [manualTags, setManualTags] = useState(initial.manualTags || [])
+  // Mentions: displayName → pubkey. State (not ref) so expandedContent
+  // memo recomputes when we add/remove entries.
+  const [mentions, setMentions] = useState(
+    () => new Map(Object.entries(initial.mentions || {}))
+  )
+  const [relayOverride, setRelayOverride] = useState(
+    initial.relayOverride || { enabled: false, relays: [] }
+  )
+
+  // Publish state is owned by the parent hook (per-draft). Derive locally.
+  const publishing = draft?.status === 'publishing'
+  const publishResult = draft?.status === 'published' ? draft?.publishResult : null
+  const publishError = draft?.publishError || null
 
   // UI state
   const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showRelayOptions, setShowRelayOptions] = useState(false)
   const [previewMode, setPreviewMode] = useState(false)
   const textareaRef = useRef(null)
-  const [publishing, setPublishing] = useState(false)
-  const [publishResult, setPublishResult] = useState(null)
-  const [publishError, setPublishError] = useState(null)
   const [uploadError, setUploadError] = useState(null)
   const [imageUploading, setImageUploading] = useState(false)
   const [imageError, setImageError] = useState('')
   const imageInputRef = useRef(null)
   const [cursorPos, setCursorPos] = useState(0)
   const [mentionActive, setMentionActive] = useState(false)
-  const mentionsMap = useRef(new Map()) // displayName → pubkey
   const [importLoading, setImportLoading] = useState(false)
   const [importError, setImportError] = useState('')
   const importInputRef = useRef(null)
@@ -62,8 +92,8 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
   // Reply / quote threading inputs (text the user types), plus the fetched
   // reply target — needed so we can emit a proper NIP-10 p-tag for the author
   // and preserve the thread's root when replying to a mid-thread note.
-  const [replyToInput, setReplyToInput] = useState('')
-  const [quoteInput, setQuoteInput] = useState('')
+  const [replyToInput, setReplyToInput] = useState(initial.replyToInput || '')
+  const [quoteInput, setQuoteInput] = useState(initial.quoteInput || '')
   const [replyTargetEvent, setReplyTargetEvent] = useState(null)
   const [replyTargetLoading, setReplyTargetLoading] = useState(false)
   const [replyTargetError, setReplyTargetError] = useState('')
@@ -87,19 +117,6 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
     }
   }, [])
 
-  // A sibling surface (a note's Comment/Quote button, a longform article's
-  // action bar) can deep-link into the composer by navigating here with a
-  // prefill payload. We populate the Reply / Quote fields once, then tell
-  // the parent to clear the payload so re-navigating to the same target
-  // still works the next time.
-  useEffect(() => {
-    if (!initialPrefill) return
-    const { replyTo, quote } = initialPrefill
-    if (replyTo) setReplyToInput(replyTo)
-    if (quote)   setQuoteInput(quote)
-    if (replyTo || quote) onInitialPrefillConsumed?.()
-  }, [initialPrefill, onInitialPrefillConsumed])
-
   // Resize textarea to fit content whenever it changes (covers programmatic
   // sets like JSON import). Re-runs when returning from preview mode so the
   // remounted textarea picks up its scrollHeight correctly.
@@ -112,7 +129,7 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
 
   // Shared: load a kind 1 event object into the editor
   const loadEventIntoEditor = useCallback(async (eventObj) => {
-    mentionsMap.current.clear()
+    const nextMentions = new Map()
 
     // Convert nostr:npub1... in content to @DisplayName
     let loadedContent = eventObj.content || ''
@@ -135,19 +152,18 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
             const p = profiles.get(pubkey)
             const name = p?.display_name || p?.name || nip19.npubEncode(pubkey).slice(0, 12)
             let displayName = name
-            if (mentionsMap.current.has(displayName) && mentionsMap.current.get(displayName) !== pubkey) {
+            if (nextMentions.has(displayName) && nextMentions.get(displayName) !== pubkey) {
               displayName = `${name}_${nip19.npubEncode(pubkey).slice(5, 9)}`
             }
-            mentionsMap.current.set(displayName, pubkey)
+            nextMentions.set(displayName, pubkey)
             loadedContent = loadedContent.replaceAll(fullMatch, `@${displayName}`)
           }
         } catch {}
       }
     }
 
+    setMentions(nextMentions)
     setContent(loadedContent)
-    setPublishResult(null)
-    setPublishError(null)
 
     const tags = eventObj.tags || []
     // Normalize all zap weights together (including user's own), then split user out.
@@ -234,10 +250,9 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
     setZapSplits([])
     setUserZapPct(undefined)
     setManualTags([])
-    setPublishResult(null)
-    setPublishError(null)
     setUploadError(null)
     setShowAdvanced(false)
+    setShowRelayOptions(false)
     setPreviewMode(false)
     setImportError('')
     setClearPending(false)
@@ -245,8 +260,11 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
     setQuoteInput('')
     setReplyTargetEvent(null)
     setReplyTargetError('')
-    mentionsMap.current.clear()
-  }, [])
+    setMentions(new Map())
+    setRelayOverride({ enabled: false, relays: [] })
+    // Parent hook clears the draft's status/publishResult/publishError.
+    if (onClear) onClear()
+  }, [onClear])
 
   const handleClearClick = useCallback(() => {
     if (!clearPending) { setClearPending(true); return }
@@ -260,7 +278,8 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
     userZapPct != null ||
     manualTags.length ||
     replyToInput.trim() ||
-    quoteInput.trim()
+    quoteInput.trim() ||
+    relayOverride.enabled
   )
 
   // Import note by ID (note1... or nevent1...)
@@ -357,11 +376,15 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
   const handleMentionSelect = useCallback(({ name, pubkey }, start, end) => {
     // Ensure unique display name in the map
     let displayName = name
-    if (mentionsMap.current.has(displayName) && mentionsMap.current.get(displayName) !== pubkey) {
+    if (mentions.has(displayName) && mentions.get(displayName) !== pubkey) {
       const short = nip19.npubEncode(pubkey).slice(5, 9)
       displayName = `${name}_${short}`
     }
-    mentionsMap.current.set(displayName, pubkey)
+    setMentions(prev => {
+      const next = new Map(prev)
+      next.set(displayName, pubkey)
+      return next
+    })
 
     const token = `@${displayName}`
     const before = content.slice(0, start)
@@ -378,7 +401,7 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
         ta.selectionStart = ta.selectionEnd = newPos
       }
     })
-  }, [content])
+  }, [content, mentions])
 
   // Parse a note1/nevent1/naddr1 string (with or without "nostr:" prefix) to
   // a descriptor used by both the Reply and Quote input fields. For
@@ -519,7 +542,7 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
   // card in any client — and so extractTags() picks it up as an e-tag.
   const expandedContent = useMemo(() => {
     let text = content
-    for (const [name, pubkey] of mentionsMap.current) {
+    for (const [name, pubkey] of mentions) {
       const npub = nip19.npubEncode(pubkey)
       text = text.replaceAll(`@${name}`, `nostr:${npub}`)
     }
@@ -546,7 +569,7 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
       }
     }
     return text
-  }, [content, quoteRef])
+  }, [content, quoteRef, mentions])
 
   // NIP-10 reply tags. If the target is itself a reply, carry its root forward
   // so we don't flatten mid-thread replies into fake top-level replies. Also
@@ -670,23 +693,56 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
   }, [expandedContent, finalTags, user?.pubkey])
 
   const handlePublish = useCallback(async () => {
-    setPublishing(true)
-    setPublishError(null)
-    setPublishResult(null)
+    if (onPublish) await onPublish()
+  }, [onPublish])
 
-    try {
-      const result = await publishNote({ content: expandedContent, tags: finalTags })
-      setPublishResult(result)
-    } catch (e) {
-      setPublishError(e.message || 'Publishing failed')
-    } finally {
-      setPublishing(false)
-    }
-  }, [expandedContent, finalTags])
+  // Snapshot emitted upward to the parent hook so it can persist the draft
+  // and expose `publishable` for Publish-all. Parent hook already debounces
+  // localStorage writes, so this can fire on every change.
+  const snapshot = useMemo(() => ({
+    content,
+    zapSplits,
+    userZapPct: userZapPct === undefined ? null : userZapPct,
+    manualTags,
+    mentions: Object.fromEntries(mentions),
+    replyToInput,
+    replyTarget: null,
+    quoteInput,
+    quoteTarget: null,
+    relayOverride,
+    publishAt: initial.publishAt || null,
+  }), [content, zapSplits, userZapPct, manualTags, mentions, replyToInput, quoteInput, relayOverride, initial.publishAt])
+
+  const publishable = useMemo(() => {
+    if (!content.trim()) return null
+    return { content: expandedContent, tags: finalTags }
+  }, [content, expandedContent, finalTags])
+
+  // Ref-wrap the callback so identity changes in the parent don't thrash
+  // this effect — only real snapshot/publishable changes should emit.
+  const onSnapshotChangeRef = useRef(onSnapshotChange)
+  useEffect(() => { onSnapshotChangeRef.current = onSnapshotChange })
+  useEffect(() => {
+    onSnapshotChangeRef.current?.({ snapshot, publishable })
+  }, [snapshot, publishable])
 
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="max-w-[400px] mx-auto px-4 py-5">
+        {/* Mobile-only drafts chip — desktop gets a persistent left column */}
+        {isMobile && onOpenDraftsMobile && (
+          <button
+            onClick={onOpenDraftsMobile}
+            className="w-full mb-3 flex items-center justify-center gap-1.5 py-2 text-xs text-neutral-400 hover:text-neutral-100 bg-neutral-900 hover:bg-neutral-800 border border-neutral-800 hover:border-neutral-600 rounded-lg transition-colors"
+            aria-label={`Open drafts (${draftCount})`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+              <path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h5.379a1.5 1.5 0 0 1 1.06.44l2.122 2.12A1.5 1.5 0 0 1 13.5 5.62V12.5A1.5 1.5 0 0 1 12 14H4.5A1.5 1.5 0 0 1 3 12.5v-9Z" />
+            </svg>
+            <span>Drafts ({draftCount})</span>
+          </button>
+        )}
+
         {/* Hidden file input */}
         <input
           ref={fileRef}
@@ -876,7 +932,7 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
             {/* Compose (Write mode) — hidden in preview mode. */}
             {!previewMode && (
               <div className="relative bg-neutral-900 rounded-lg">
-                <EditorMirror content={content} mentionNames={[...mentionsMap.current.keys()]} />
+                <EditorMirror content={content} mentionNames={[...mentions.keys()]} />
                 <textarea
                   ref={textareaRef}
                   value={content}
@@ -1020,7 +1076,7 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
                     }`}
                   >
                     <span>⚡</span>
-                    <span>Zap Splits{zapSplitsCount > 0 ? ` (${zapSplitsCount})` : ''}</span>
+                    <span>Splits{zapSplitsCount > 0 ? ` (${zapSplitsCount})` : ''}</span>
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       viewBox="0 0 16 16"
@@ -1029,6 +1085,22 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
                     >
                       <path fillRule="evenodd" d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
                     </svg>
+                  </button>
+
+                  <button
+                    onClick={() => setShowRelayOptions(v => !v)}
+                    title="Advanced options"
+                    aria-label="Advanced options"
+                    className={`flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs transition-colors ${
+                      showRelayOptions
+                        ? 'bg-amber-900/40 text-amber-300 border border-amber-800'
+                        : 'bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700'
+                    }`}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                      <path fillRule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clipRule="evenodd" />
+                    </svg>
+                    {relayOverride.enabled && <span className="text-[10px]">•</span>}
                   </button>
                 </>
               )}
@@ -1105,6 +1177,14 @@ export default function NoteComposer({ user, initialPrefill, onInitialPrefillCon
                 userPubkey={user?.pubkey}
                 userZapPct={userZapPct}
                 onUserZapPctChange={setUserZapPct}
+              />
+            )}
+
+            {/* Advanced (gear) — relay override today; future: more options */}
+            {!previewMode && showRelayOptions && (
+              <RelayOverrideSection
+                relayOverride={relayOverride}
+                onChange={setRelayOverride}
               />
             )}
           </>

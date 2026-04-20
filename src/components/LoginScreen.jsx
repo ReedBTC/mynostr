@@ -3,8 +3,15 @@ import { NDKNip07Signer, NDKPrivateKeySigner, NDKNip46Signer } from '@nostr-dev-
 import { nip19 } from 'nostr-tools'
 import { QRCodeSVG } from 'qrcode.react'
 import { getNDK, resetNDK, connectAndWait } from '../lib/ndk.js'
-import { fetchProfiles } from '../lib/primal.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
+import {
+  saveSession,
+  buildExtensionRecord,
+  buildNpubRecord,
+  buildNip46Record,
+  parseBunkerRelays,
+  fetchUserProfile,
+} from '../lib/sessionPersistence.js'
 
 // Mobile NIP-46 flows need to survive tab reloads and WebSocket suspensions
 // — user taps a signer app, approves, comes back, but the browser tab was
@@ -108,48 +115,6 @@ export default function LoginScreen({ onLogin }) {
     }
   }, [qrTrigger]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Profile hydration for the top-right badge. NDK's fetchProfile races the
-  // kind-0 event against a brand-new relay subscription, which can time out
-  // before any relay responds — leaving the badge stuck on "Anonymous". Primal
-  // serves the cached profile in ~100–500ms from a single socket, so we try it
-  // first and only fall back to NDK if nothing came back.
-  async function fetchUserProfile(ndk, pubkey) {
-    const user = ndk.getUser({ pubkey })
-    try {
-      const map = await Promise.race([
-        fetchProfiles([pubkey]),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
-      ])
-      const raw = map?.get?.(pubkey)
-      if (raw) {
-        const picture = raw.picture || raw.image
-        user.profile = {
-          name:        raw.name,
-          displayName: raw.display_name || raw.displayName,
-          image:       picture,
-          picture,
-          about:       raw.about,
-          nip05:       raw.nip05,
-          lud06:       raw.lud06,
-          lud16:       raw.lud16,
-          website:     raw.website,
-          banner:      raw.banner,
-        }
-      }
-    } catch {
-      // Primal unavailable — fall through to NDK
-    }
-    if (!user.profile) {
-      try {
-        await Promise.race([
-          user.fetchProfile(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-        ])
-      } catch {}
-    }
-    return user
-  }
-
   function cancelActiveQrFlow() {
     if (qrSignerRef.current) {
       qrSignerRef.current.stop()
@@ -201,6 +166,7 @@ export default function LoginScreen({ onLogin }) {
       await connectAndWait(ndk)
       const pubkey = await signer.user()
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
+      saveSession(buildExtensionRecord(pubkey.pubkey))
       onLogin(user)
     } catch (err) {
       if (err.message === '__timeout__') {
@@ -231,6 +197,7 @@ export default function LoginScreen({ onLogin }) {
         await connectAndWait(ndk)
         const user = await fetchUserProfile(ndk, decoded.data)
         user.readOnly = true
+        saveSession(buildNpubRecord(decoded.data))
         onLogin(user)
       } else if (decoded.type === 'nsec') {
         const signer = new NDKPrivateKeySigner(decoded.data)
@@ -238,6 +205,7 @@ export default function LoginScreen({ onLogin }) {
         await connectAndWait(ndk)
         const ndkUser = await signer.user()
         const user = await fetchUserProfile(ndk, ndkUser.pubkey)
+        // nsec is in-memory only — intentionally not persisted.
         onLogin(user)
       } else {
         throw new Error('Input must be an nsec or npub key.')
@@ -400,6 +368,13 @@ export default function LoginScreen({ onLogin }) {
       ndk.signer = signer
       await connectAndWait(ndk)
       const user = await fetchUserProfile(ndk, signer.userPubkey)
+      const nip46Record = buildNip46Record({
+        bunkerPubkey: signer.bunkerPubkey,
+        userPubkey: signer.userPubkey,
+        localSignerPrivkey: signer.localSigner?.privateKey,
+        relays: savedRelays || NC_RELAYS,
+      })
+      if (nip46Record) saveSession(nip46Record)
       clearPendingNip46()
       onLogin(user)
     } catch (err) {
@@ -532,6 +507,13 @@ export default function LoginScreen({ onLogin }) {
       await connectAndWait(ndk)
       const ndkUser = await signer.user()
       const user = await fetchUserProfile(ndk, ndkUser.pubkey)
+      const nip46Record = buildNip46Record({
+        bunkerPubkey: signer.bunkerPubkey,
+        userPubkey: ndkUser.pubkey,
+        localSignerPrivkey: signer.localSigner?.privateKey,
+        relays: parseBunkerRelays(token),
+      })
+      if (nip46Record) saveSession(nip46Record)
       onLogin(user)
     } catch (err) {
       if (err.message === '__timeout__') {

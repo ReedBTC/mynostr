@@ -18,6 +18,7 @@ import {
   clearViewedUserCache,
 } from './lib/ownerContext.jsx'
 import { connectAndWait, getNDK } from './lib/ndk.js'
+import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
 
 // Lazy-load each module so only the active tab's code is fetched
 const LongformModule    = lazy(() => import('./modules/longform/LongformModule.jsx'))
@@ -47,6 +48,37 @@ const DEFAULT_MODULE = 'notes'
 
 export default function App() {
   const [sessionUser, setSessionUser] = useState(null)
+  // `restoring` covers the async auto-resume on boot. Render a spinner during
+  // it rather than flashing the login screen — otherwise a signed-in user
+  // sees LoginScreen for 100–3000ms before auto-login completes.
+  //
+  // Skip restore when the URL is /login: a user who hits that route is
+  // explicitly asking to switch accounts; blocking them behind a spinner
+  // until a possibly-stale bunker connection resolves is hostile.
+  const [restoring, setRestoring] = useState(() => {
+    if (typeof window !== 'undefined' && window.location?.pathname === '/login') return false
+    return !!loadSession()
+  })
+
+  useEffect(() => {
+    if (!restoring) return
+    let cancelled = false
+    ;(async () => {
+      const record = loadSession()
+      if (!record) { if (!cancelled) setRestoring(false); return }
+      try {
+        const user = await restoreSession(record)
+        if (cancelled) return
+        if (user) setSessionUser(user)
+        else clearSession()
+      } catch {
+        if (!cancelled) clearSession()
+      } finally {
+        if (!cancelled) setRestoring(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLogout() {
     // Purge every mynostr_* localStorage entry that the departing session
@@ -73,9 +105,12 @@ export default function App() {
       }
       for (const key of toRemove) localStorage.removeItem(key)
     } catch {}
+    clearSession()
     clearViewedUserCache()
     setSessionUser(null)
   }
+
+  if (restoring) return <FullscreenSpinner />
 
   return (
     <BrowserRouter>
