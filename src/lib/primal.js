@@ -595,7 +595,7 @@ export async function fetchUserZapAggregates(pubkey, { limit = 1000 } = {}) {
  *     capped,                               // true if we ran out of pages first
  *   }
  */
-export async function fetchAuthorPostingCadence(pubkey, { weeks = 52, maxPages = 8, pageLimit = 100 } = {}) {
+export async function fetchAuthorPostingCadence(pubkey, { weeks = 21, maxPages = 8, pageLimit = 200 } = {}) {
   if (!pubkey) return null
   const now    = Math.floor(Date.now() / 1000)
   const cutoff = now - weeks * 7 * 86400
