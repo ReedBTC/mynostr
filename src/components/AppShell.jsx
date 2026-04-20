@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
-import { truncateNpub, isSafeUrl } from '../lib/utils.js'
+import { isSafeUrl } from '../lib/utils.js'
 import { resetNDK } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import { useOwnerContext } from '../lib/ownerContext.jsx'
@@ -89,7 +89,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               </button>
             )}
             <ShareButton variant="icon" />
-            <UserAvatar profile={profile} />
           </div>
         </header>
       ) : (
@@ -134,6 +133,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               <Tab
                 key={mod.id}
                 mod={mod}
+                profile={profile}
                 active={activeModule === mod.id}
                 onClick={() => onModuleChange(mod.id)}
               />
@@ -149,17 +149,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             )}
 
             <ShareButton variant="button" />
-
-            <UserAvatar profile={profile} />
-
-            <div className="leading-tight hidden sm:block">
-              <p className="text-xs text-neutral-300">
-                {profile?.displayName || profile?.name || 'Anonymous'}
-              </p>
-              <p className="text-xs text-neutral-600 font-mono">
-                {truncateNpub(user?.npub || '')}
-              </p>
-            </div>
 
             {sessionUser ? (
               <button
@@ -211,12 +200,16 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
   )
 }
 
-/** Single tab button — active tab has a bottom border highlight, no bottom border on the bar */
-function Tab({ mod, active, onClick }) {
+/** Single tab button — active tab has a bottom border highlight.
+ *  The `profile` tab swaps its icon/label for the viewed user's pfp and
+ *  display name so it reads as "this is the person whose page you're on." */
+function Tab({ mod, profile, active, onClick }) {
+  const isProfile = mod.id === 'profile'
+  const displayName = profile?.displayName || profile?.name || 'Profile'
   return (
     <button
       onClick={onClick}
-      title={mod.description}
+      title={isProfile ? displayName : mod.description}
       aria-current={active ? 'page' : undefined}
       className={`flex items-center gap-1.5 px-3 py-3 text-xs whitespace-nowrap border-b-2 transition-colors ${
         active
@@ -224,27 +217,29 @@ function Tab({ mod, active, onClick }) {
           : 'border-transparent text-neutral-500 hover:text-neutral-200 hover:border-neutral-600'
       } ${mod.status === 'soon' ? 'opacity-50' : ''}`}
     >
-      <span>{mod.icon}</span>
-      <span>{mod.label}</span>
+      {isProfile ? (
+        <>
+          {profile?.image && isSafeUrl(profile.image) ? (
+            <img
+              src={profile.image}
+              alt=""
+              className="w-5 h-5 rounded-full object-cover bg-neutral-800"
+              onError={e => { e.target.style.display = 'none' }}
+            />
+          ) : (
+            <span className="w-5 h-5 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500">
+              ?
+            </span>
+          )}
+          <span className="max-w-[12ch] truncate">{displayName}</span>
+        </>
+      ) : (
+        <>
+          <span>{mod.icon}</span>
+          <span>{mod.label}</span>
+        </>
+      )}
     </button>
   )
 }
 
-/** User avatar circle */
-function UserAvatar({ profile }) {
-  if (profile?.image && isSafeUrl(profile.image)) {
-    return (
-      <img
-        src={profile.image}
-        alt={profile.displayName || 'avatar'}
-        className="w-6 h-6 rounded-full object-cover bg-neutral-800 shrink-0"
-        onError={e => { e.target.style.display = 'none' }}
-      />
-    )
-  }
-  return (
-    <div className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 text-xs shrink-0">
-      ?
-    </div>
-  )
-}

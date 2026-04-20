@@ -143,6 +143,51 @@ export async function copyToClipboard(text) {
   }
 }
 
+// Compact number formatter: 1234 → "1.2k", 12345 → "12k", 1234567 → "1.2M".
+// Returns "—" for null/undefined so callers can render without special-casing.
+export function formatCount(n) {
+  if (n == null) return '—'
+  if (n < 1000)        return String(n)
+  if (n < 10_000)      return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k'
+  if (n < 1_000_000)   return Math.floor(n / 1000) + 'k'
+  if (n < 10_000_000)  return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+  return Math.floor(n / 1_000_000) + 'M'
+}
+
+// Compact sats formatter with comma grouping under 10k for readability.
+export function formatSats(n) {
+  if (n == null) return '—'
+  if (n < 10_000)      return n.toLocaleString()
+  if (n < 1_000_000)   return Math.floor(n / 1000) + 'k'
+  if (n < 10_000_000)  return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (n < 1_000_000_000) return Math.floor(n / 1_000_000) + 'M'
+  return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B'
+}
+
+// Bounded LRU keyed by a string. Re-inserts on get/set so oldest entries
+// drop first. Avoids unbounded module-level Maps accumulating across every
+// profile the user views.
+export function createLRU(max = 50) {
+  const map = new Map()
+  return {
+    get(key) {
+      const v = map.get(key)
+      if (v !== undefined) {
+        map.delete(key)
+        map.set(key, v)
+      }
+      return v
+    },
+    set(key, value) {
+      if (map.has(key)) map.delete(key)
+      map.set(key, value)
+      while (map.size > max) map.delete(map.keys().next().value)
+    },
+    has(key) { return map.has(key) },
+    clear() { map.clear() },
+  }
+}
+
 // Escapes characters that have special meaning in markdown link syntax
 function escapeMarkdownLink(str) {
   return (str || '').replace(/[[\]()]/g, '\\$&')

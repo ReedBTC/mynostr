@@ -86,10 +86,14 @@ export default function MobileNavDrawer({
           </button>
         </div>
 
-        {/* Module list */}
+        {/* Module list — the `profile` row renders the viewed user's pfp +
+            display name in place of the generic icon/label so it reads as
+            "open this person's profile." */}
         <nav className="flex-1 overflow-y-auto py-2" aria-label="Module navigation">
           {MODULES.map(mod => {
             const active = activeModule === mod.id
+            const isProfile = mod.id === 'profile'
+            const displayName = profile?.displayName || profile?.name || 'Profile'
             return (
               <button
                 key={mod.id}
@@ -101,8 +105,28 @@ export default function MobileNavDrawer({
                 } ${mod.status === 'soon' ? 'opacity-50' : ''}`}
                 aria-current={active ? 'page' : undefined}
               >
-                <span className="text-base">{mod.icon}</span>
-                <span>{mod.label}</span>
+                {isProfile ? (
+                  <>
+                    {profile?.image && isSafeUrl(profile.image) ? (
+                      <img
+                        src={profile.image}
+                        alt=""
+                        className="w-6 h-6 rounded-full object-cover bg-neutral-800 shrink-0"
+                        onError={e => { e.target.style.display = 'none' }}
+                      />
+                    ) : (
+                      <span className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 shrink-0">
+                        ?
+                      </span>
+                    )}
+                    <span className="truncate">{displayName}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-base">{mod.icon}</span>
+                    <span>{mod.label}</span>
+                  </>
+                )}
                 {mod.status === 'soon' && (
                   <span className="ml-auto text-xs text-neutral-600">soon</span>
                 )}

@@ -21,27 +21,30 @@ import { connectAndWait, getNDK } from './lib/ndk.js'
 import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
 
 // Lazy-load each module so only the active tab's code is fetched
+const ProfileModule     = lazy(() => import('./modules/profile/ProfileModule.jsx'))
 const LongformModule    = lazy(() => import('./modules/longform/LongformModule.jsx'))
 const NotesModule       = lazy(() => import('./modules/notes/NotesModule.jsx'))
 const EventsModule      = lazy(() => import('./modules/events/EventsModule.jsx'))
 const MarketplaceModule = lazy(() => import('./modules/marketplace/MarketplaceModule.jsx'))
-const StatsModule       = lazy(() => import('./modules/stats/StatsModule.jsx'))
 
-/** All modules in display order. id must match the lazy import above. */
+/** All modules in display order. id must match the lazy import above.
+ *  The `profile` tab renders specially in the top bar — its label slot is
+ *  swapped for the viewed user's pfp + display name, so `icon`/`label` here
+ *  are only fallbacks used by code paths that don't special-case it. */
 export const MODULES = [
+  { id: 'profile',     label: 'Profile',     icon: '👤', status: 'live', description: 'Kind 0 profile' },
   { id: 'notes',       label: 'Notes',       icon: '📝', status: 'live', description: 'Kind 1 short notes' },
   { id: 'longform',    label: 'Long Form',   icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
   { id: 'events',      label: 'Events',      icon: '📅', status: 'soon', description: 'Kind 31923 events' },
   { id: 'marketplace', label: 'Marketplace', icon: '🛒', status: 'soon', description: 'Kind 30402 listings' },
-  { id: 'stats',       label: 'Stats',       icon: '📊', status: 'soon', description: 'Your Nostr analytics' },
 ]
 
 const MODULE_COMPONENTS = {
+  profile:     ProfileModule,
   notes:       NotesModule,
   longform:    LongformModule,
   events:      EventsModule,
   marketplace: MarketplaceModule,
-  stats:       StatsModule,
 }
 
 const DEFAULT_MODULE = 'notes'

@@ -1,0 +1,157 @@
+import { formatCount, formatSats } from '../../lib/utils.js'
+
+/**
+ * ProfileActivityCard — zap + engagement summary for the viewed user.
+ *
+ * Data sources:
+ *   - `stats` (kind 10000105 UserStats): sent totals (total_zap_count,
+ *     total_satszapped), received zap count (content_zap_count),
+ *     time_joined, media_count, relay_count.
+ *   - `zapAggregates` (user_zaps_by_satszapped): total sats received,
+ *     paints in a second pass.
+ *
+ * Layout: header + "since" pill → mirrored balance sheet (zapped/earned)
+ * → zap count bars → media/relays tiles.
+ */
+export default function ProfileActivityCard({ stats, zapAggregates, loading, zapLoading }) {
+  const joined       = stats?.time_joined
+  const satsSent     = stats?.total_satszapped
+  const zapsSent     = stats?.total_zap_count
+  const zapsReceived = stats?.content_zap_count
+
+  const satsReceived = zapAggregates?.satsReceived ?? null
+
+  const maxZaps = Math.max(zapsSent || 0, zapsReceived || 0)
+
+  return (
+    <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
+
+      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
+        <h2 className="text-sm font-semibold text-neutral-200">Activity</h2>
+        <JoinedBadge ts={joined} loading={loading && joined == null} />
+      </div>
+
+      <BalanceSheet
+        satsSent={satsSent}
+        satsReceived={satsReceived}
+        loading={loading && satsSent == null}
+        zapLoading={zapLoading}
+      />
+
+      <div className="px-4 py-4 border-t border-neutral-800 space-y-3">
+        <ZapBar
+          label="Zaps sent"
+          count={zapsSent}
+          max={maxZaps}
+          colorClass="bg-amber-500"
+          loading={loading && zapsSent == null}
+        />
+        <ZapBar
+          label="Zaps received"
+          count={zapsReceived}
+          max={maxZaps}
+          colorClass="bg-emerald-500"
+          loading={loading && zapsReceived == null}
+        />
+      </div>
+    </div>
+  )
+}
+
+function JoinedBadge({ ts, loading }) {
+  if (loading) {
+    return <span className="inline-block w-24 h-3 bg-neutral-800 rounded animate-pulse" />
+  }
+  if (!ts) return <span className="text-[11px] text-neutral-600">—</span>
+  const when = new Date(ts * 1000)
+  const label = when.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+  return (
+    <span className="text-[11px] text-neutral-400">
+      on Nostr since <span className="text-neutral-200">{label}</span>
+    </span>
+  )
+}
+
+function BalanceSheet({ satsSent, satsReceived, loading, zapLoading }) {
+  const left  = satsSent || 0
+  const right = satsReceived || 0
+  const max   = Math.max(left, right)
+  const leftPct  = max > 0 ? (left  / max) * 100 : 0
+  const rightPct = max > 0 ? (right / max) * 100 : 0
+
+  return (
+    <div className="px-4 py-4">
+
+      <div className="flex items-baseline justify-between mb-2 gap-2 text-xs">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-amber-400">⚡</span>
+          <span className="text-neutral-400">Zapped forward</span>
+        </div>
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-neutral-400">Earned</span>
+          <span className="text-emerald-400">💰</span>
+        </div>
+      </div>
+
+      <div className="h-2 relative bg-neutral-900 rounded-full overflow-hidden">
+        <div className="absolute top-0 bottom-0 left-1/2 w-px bg-neutral-700 z-10" />
+        <div
+          className="absolute top-0 bottom-0 bg-amber-500 rounded-l-full transition-all duration-500"
+          style={{ right: '50%', width: `${leftPct / 2}%` }}
+        />
+        <div
+          className="absolute top-0 bottom-0 bg-emerald-500 rounded-r-full transition-all duration-500"
+          style={{ left: '50%', width: `${rightPct / 2}%` }}
+        />
+      </div>
+
+      <div className="flex items-baseline justify-between mt-2 gap-2 text-sm font-semibold tabular-nums">
+        <span className="text-amber-400">
+          {loading ? (
+            <span className="inline-block w-16 h-4 bg-neutral-800 rounded animate-pulse" />
+          ) : satsSent == null ? (
+            <span className="text-neutral-600">—</span>
+          ) : (
+            <>{formatSats(satsSent)} <span className="text-[11px] text-neutral-500 font-normal">sats</span></>
+          )}
+        </span>
+        <span className="text-emerald-400">
+          {zapLoading && satsReceived == null ? (
+            <span className="inline-block w-16 h-4 bg-neutral-800 rounded animate-pulse" />
+          ) : satsReceived == null ? (
+            <span className="text-neutral-600">—</span>
+          ) : (
+            <>{formatSats(satsReceived)} <span className="text-[11px] text-neutral-500 font-normal">sats</span></>
+          )}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function ZapBar({ label, count, max, colorClass, loading }) {
+  const pct = count != null && max > 0 ? Math.max(2, (count / max) * 100) : 0
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1 gap-2">
+        <span className="text-xs font-medium text-neutral-300">{label}</span>
+        <span className="text-xs font-semibold text-neutral-100 tabular-nums">
+          {loading ? (
+            <span className="inline-block w-10 h-3 bg-neutral-800 rounded animate-pulse" />
+          ) : count == null ? (
+            <span className="text-neutral-600">—</span>
+          ) : (
+            formatCount(count)
+          )}
+        </span>
+      </div>
+      <div className="h-2 bg-neutral-900 rounded-full overflow-hidden">
+        <div
+          className={`h-full ${colorClass} transition-all duration-500`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+

@@ -24,6 +24,14 @@ let subIdCounter = 0
 // Pending subscriptions: subId → { chunks, resolve, reject, timer }
 const subs = new Map()
 
+// In-flight request dedup. Primal's server dedupes concurrent identical
+// REQs from the same socket — only the first gets real events; parallel
+// duplicates get an immediate empty EOSE. Under React StrictMode or HMR
+// this shows up as "first load has data, second load overwrites with 0."
+// We dedup at the client by keying active queries on op+params and
+// returning the same promise to every caller until it settles.
+const inflight = new Map() // key → Promise<events[]>
+
 // ─── Connection management ────────────────────────────────────────────────────
 
 function ensureConnected() {
@@ -77,20 +85,39 @@ function ensureConnected() {
   return connPromise
 }
 
+// JSON.stringify with sorted keys so two calls with the same params in a
+// different key order still collide in the inflight dedupe map.
+function stableStringify(v) {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return JSON.stringify(v)
+  const keys = Object.keys(v).sort()
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}'
+}
+
 /** Send one cache query, collect all EVENT responses until EOSE. */
 async function query(op, params, timeoutMs = 8000) {
-  await ensureConnected()
-  const subId = `mn_${++subIdCounter}_${Date.now()}`
+  // Dedup concurrent identical requests. Key order is normalized by
+  // stableStringify so a caller refactor that flips field order can't
+  // silently bypass the dedupe.
+  const key = `${op}:${stableStringify(params)}`
+  const existing = inflight.get(key)
+  if (existing) return existing
 
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      subs.delete(subId)
-      reject(new Error(`Primal "${op}" timed out`))
-    }, timeoutMs)
+  const promise = (async () => {
+    await ensureConnected()
+    const subId = `mn_${++subIdCounter}_${Date.now()}`
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        subs.delete(subId)
+        reject(new Error(`Primal "${op}" timed out`))
+      }, timeoutMs)
+      subs.set(subId, { chunks: [], resolve, reject, timer })
+      ws.send(JSON.stringify(['REQ', subId, { cache: [op, params] }]))
+    })
+  })()
 
-    subs.set(subId, { chunks: [], resolve, reject, timer })
-    ws.send(JSON.stringify(['REQ', subId, { cache: [op, params] }]))
-  })
+  inflight.set(key, promise)
+  promise.finally(() => inflight.delete(key))
+  return promise
 }
 
 // ─── Data helpers ─────────────────────────────────────────────────────────────
@@ -413,6 +440,247 @@ export async function fetchProfiles(pubkeys) {
   } catch {
     return new Map()
   }
+}
+
+/**
+ * Aggregate stats for a single user from Primal's cache.
+ *
+ * Primal exposes a synthetic kind 10000133 event that carries counts Primal
+ * has pre-aggregated: note_count, reply_count, followers_count, follows_count,
+ * long_form_note_count, time_joined, media_count, total_satszapped, …
+ *
+ * Two response shapes exist in the wild:
+ *   1. Flat:  content = { note_count, reply_count, … }           ←  user_profile
+ *   2. Dict:  content = { "<pubkeyHex>": { …flatStats } }        ←  user_infos
+ *   3. Dict:  content = { "<pubkeyHex>": <followers_count> }     ←  user_infos (short)
+ *
+ * We prefer the per-user `user_profile` op but fall back to `user_infos` if
+ * that comes back empty, and we accept any of the three shapes. Returns null
+ * only when Primal has nothing indexed for this pubkey.
+ *
+ * Not using NIP-45 COUNT — Primal's cache returns everything in one round
+ * trip, whereas NIP-45 would need a separate REQ per metric against a relay
+ * that supports it.
+ */
+// Primal's synthetic event kinds, verified against the primal-web-app source:
+//   10000105 "UserStats"           — the full stats object (note_count,
+//                                    reply_count, follows_count, followers_count,
+//                                    long_form_note_count, media_count,
+//                                    total_satszapped, time_joined, …).
+//                                    Returned by the `user_profile` op.
+//   10000133 "UserFollowerCounts"  — follower count only. Returned as a
+//                                    dict { pubkey: count } from `user_infos`,
+//                                    or a bare object from `user_profile`.
+// A previous iteration of this code parsed only 10000133 and treated it as
+// the full stats object, which is why everything except followers rendered
+// "—" — 10000133 never carries the other fields.
+const KIND_USER_STATS           = 10000105
+const KIND_USER_FOLLOWER_COUNTS = 10000133
+
+/**
+ * Aggregate stats for a single user from Primal's cache.
+ *
+ * Calls `user_profile` (preferred — returns the full UserStats event) and
+ * falls back to `user_infos` for just the follower count when user_profile
+ * didn't include one. Merges across both kinds so a partial response from
+ * either op still contributes what it has.
+ *
+ * Fields on a full response (kind 10000105 content):
+ *   note_count, reply_count, follows_count, followers_count,
+ *   long_form_note_count, media_count, total_satszapped, time_joined, …
+ *
+ * Returns null only when Primal has nothing indexed for this pubkey.
+ */
+export async function fetchUserStats(pubkey) {
+  if (!pubkey) return null
+
+  const merged = {}
+
+  const absorb = (events) => {
+    for (const ev of events) {
+      let data
+      try { data = JSON.parse(ev.content) } catch { continue }
+      if (!data || typeof data !== 'object') continue
+
+      if (ev.kind === KIND_USER_STATS) {
+        // Full per-user stats — spread over merged.
+        Object.assign(merged, data)
+        continue
+      }
+
+      if (ev.kind === KIND_USER_FOLLOWER_COUNTS) {
+        // Two shapes: flat { followers_count } or dict { pubkey: count }.
+        if (typeof data.followers_count === 'number') {
+          if (merged.followers_count == null) merged.followers_count = data.followers_count
+        } else if (typeof data[pubkey] === 'number') {
+          if (merged.followers_count == null) merged.followers_count = data[pubkey]
+        } else if (data[pubkey] && typeof data[pubkey] === 'object') {
+          // Defensive — dict of full stats objects. Rare.
+          for (const [k, v] of Object.entries(data[pubkey])) {
+            if (merged[k] == null) merged[k] = v
+          }
+        }
+      }
+    }
+  }
+
+  try { absorb(await query('user_profile', { pubkey }, 6000)) } catch {}
+  if (merged.followers_count == null) {
+    try { absorb(await query('user_infos', { pubkeys: [pubkey] }, 6000)) } catch {}
+  }
+
+  return Object.keys(merged).length > 0 ? merged : null
+}
+
+// Primal's synthetic "ZAP_EVENT" kind. Emitted alongside real zap receipts
+// with amount_sats pre-extracted — we don't need to decode bolt11 ourselves.
+const KIND_ZAP_EVENT = 10000129
+
+/**
+ * Aggregate received-zap totals for a user. Uses `user_zaps_by_satszapped`
+ * which orders by amount desc, so even when we cap the sample the biggest
+ * zaps are always included — totals stay close to exact because zap
+ * amounts are long-tail distributed.
+ *
+ * Returns:
+ *   {
+ *     satsReceived:    sum of amount_sats across received sample
+ *     receivedSample:  count of ZAP_EVENT rows actually parsed
+ *     receivedLimited: true when we hit `limit` and more may exist
+ *   }
+ *
+ * Sent-side totals come from UserStats (total_satszapped), so we don't
+ * fetch them here. Top-N zapper/recipient lists are also out of scope —
+ * bring them back when there's a UI consuming them.
+ */
+export async function fetchUserZapAggregates(pubkey, { limit = 1000 } = {}) {
+  if (!pubkey) return null
+
+  const events = await query('user_zaps_by_satszapped', { receiver: pubkey, limit }, 8000).catch(() => [])
+
+  let total = 0
+  let sample = 0
+  for (const ev of events) {
+    if (ev.kind !== KIND_ZAP_EVENT) continue
+    let data
+    try { data = JSON.parse(ev.content) } catch { continue }
+    const amount = Number(data?.amount_sats) || 0
+    if (amount <= 0) continue
+    total += amount
+    sample += 1
+  }
+
+  return {
+    satsReceived:    total,
+    receivedSample:  sample,
+    receivedLimited: sample >= limit,
+  }
+}
+
+/**
+ * Posting cadence — counts of an author's kind 1 events (notes + replies)
+ * bucketed by local date over a fixed time window (default 52 weeks).
+ *
+ * We include replies so a reply-heavy user still gets a representative
+ * chart. Pagination walks backward via `until` and stops as soon as a page
+ * crosses the cutoff, so sparse posters don't over-fetch. Heavy posters
+ * (more than ~1600 events/year) may hit the page cap before reaching the
+ * cutoff — `capped` flags that case so the UI can show "(indexed)".
+ *
+ * Returns:
+ *   {
+ *     buckets:   Map<"YYYY-MM-DD", count>   (daily, within window only)
+ *     total, oldestTs, newestTs,
+ *     windowWeeks, windowSinceTs,           // the fixed window we queried
+ *     capped,                               // true if we ran out of pages first
+ *   }
+ */
+export async function fetchAuthorPostingCadence(pubkey, { weeks = 52, maxPages = 8, pageLimit = 100 } = {}) {
+  if (!pubkey) return null
+  const now    = Math.floor(Date.now() / 1000)
+  const cutoff = now - weeks * 7 * 86400
+
+  async function paginate(mode) {
+    const events = []
+    let until = null
+    let pages = 0
+    let exhausted = false
+
+    for (let page = 0; page < maxPages; page++) {
+      const params = { pubkey, notes: mode, limit: pageLimit }
+      if (until) params.until = until
+
+      let batch = []
+      try { batch = await query('feed', params, 6000) } catch { break }
+      const kind1s = batch.filter(e => e.kind === 1)
+      if (kind1s.length === 0) { exhausted = true; break }
+      pages++
+
+      let oldestInPage = until || now
+      for (const ev of kind1s) {
+        if (ev.created_at < oldestInPage) oldestInPage = ev.created_at
+        if (ev.created_at >= cutoff) events.push(ev)
+      }
+
+      if (oldestInPage < cutoff) { exhausted = true; break }
+      if (kind1s.length < pageLimit) { exhausted = true; break }
+      until = oldestInPage - 1
+    }
+
+    return { events, pages, exhausted }
+  }
+
+  const [authored, replies] = await Promise.all([
+    paginate('authored'),
+    paginate('replies'),
+  ])
+
+  const seen     = new Set()
+  const buckets  = new Map()
+  let total      = 0
+  let oldestTs   = null
+  let newestTs   = null
+
+  for (const ev of [...authored.events, ...replies.events]) {
+    if (seen.has(ev.id)) continue
+    seen.add(ev.id)
+    if (oldestTs == null || ev.created_at < oldestTs) oldestTs = ev.created_at
+    if (newestTs == null || ev.created_at > newestTs) newestTs = ev.created_at
+    const d = new Date(ev.created_at * 1000)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+    buckets.set(key, (buckets.get(key) || 0) + 1)
+    total++
+  }
+
+  const capped = (!authored.exhausted && authored.pages >= maxPages) ||
+                 (!replies.exhausted  && replies.pages  >= maxPages)
+
+  const result = {
+    buckets, total, oldestTs, newestTs,
+    windowWeeks:   weeks,
+    windowSinceTs: cutoff,
+    capped,
+  }
+
+  // Dev-only probe so the console has a cheap way to inspect what came back.
+  // Guarded so production builds don't expose the viewed pubkey on window.
+  if (import.meta.env?.DEV && typeof window !== 'undefined') {
+    window.__lastCadence = {
+      pubkey,
+      total,
+      windowWeeks: weeks,
+      authoredPages: authored.pages,
+      authoredEvents: authored.events.length,
+      repliesPages: replies.pages,
+      repliesEvents: replies.events.length,
+      oldestTs,
+      newestTs,
+      bucketsSize: buckets.size,
+      capped,
+    }
+  }
+
+  return result
 }
 
 /** Gracefully close the singleton WebSocket (e.g. on logout). */

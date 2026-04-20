@@ -6,14 +6,21 @@
  *   - A local thread-view stack. Clicking a note pushes onto the stack and
  *     renders NoteThreadView; the back button pops one level.
  */
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import AuthorNotesPane from './AuthorNotesPane.jsx'
 import NoteThreadView from './NoteThreadView.jsx'
 
-export default function MyNotesTab({ user, isOwner }) {
+export default function MyNotesTab({ user, isOwner, initialMode, onInitialModeConsumed }) {
   const pubkey = user?.pubkey
   const displayName = user?.profile?.displayName || user?.profile?.name || 'this user'
-  const [mode, setMode] = useState('notes') // 'notes' | 'comments'
+  const [mode, setMode] = useState(initialMode === 'comments' ? 'comments' : 'notes')
+
+  // Consume the one-shot hint from parent so back/forward can't replay it.
+  useEffect(() => {
+    if (initialMode && onInitialModeConsumed) onInitialModeConsumed()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [threadStack, setThreadStack] = useState([]) // array of notes
 
   const openThread   = useCallback(note => setThreadStack(s => [...s, note]), [])

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import Editor from './components/Editor.jsx'
 import MetadataDrawer from './components/MetadataDrawer.jsx'
 import DraftDrawer from './components/DraftDrawer.jsx'
@@ -23,11 +24,22 @@ function defaultSource() {
 
 export default function LongformModule({ user, sessionUser }) {
   const { isOwner } = useOwnerContext()
+  const location = useLocation()
+  const navigate = useNavigate()
 
   // ── Module tab: 'write' | 'collection' | 'search' ─────────────────────────
   // Visitors land on "My Collection" (the viewed user's bookmarks) since
   // Write isn't available to them.
   const [moduleTab, setModuleTab] = useState(isOwner ? 'write' : 'mine')
+
+  // Deep-link hint (e.g. Profile stats cell → "mine" tab). Consumed once
+  // and cleared so back/forward can't replay it.
+  useEffect(() => {
+    const target = location.state?.initialTab
+    if (!target) return
+    setModuleTab(target)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
 
   // ── Write-tab state ───────────────────────────────────────────────────────────
   const [content,    setContent]    = useState('')

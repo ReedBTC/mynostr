@@ -39,6 +39,9 @@ export default function NotesModule({ user, sessionUser }) {
   // when the owner triggers it; SearchTab consumes it once on mount and
   // calls back to clear so re-opening the same author still works.
   const [searchInitialAuthor, setSearchInitialAuthor] = useState(null)
+  // One-shot Notes/Comments mode hint for MyNotesTab, seeded by location.state
+  // before the initialTab effect nulls it out.
+  const [notesInitialMode, setNotesInitialMode] = useState(null)
 
   // Multi-draft state — persisted per-pubkey in localStorage by the hook.
   // Only meaningful for the page owner (visitors can't publish).
@@ -76,6 +79,19 @@ export default function NotesModule({ user, sessionUser }) {
     setModuleTab('write')
     navigate(location.pathname, { replace: true, state: null })
   }, [location.state, location.pathname, isOwner, createDraft, navigate])
+
+  // Cross-module deep-link that requests a specific sub-tab (e.g. Profile's
+  // stats-card cells landing on "notes" instead of the owner's default
+  // "write"). Also forwards an optional `initialMode` to MyNotesTab for
+  // Notes vs Comments landing. Consumed once and cleared so back/forward
+  // can't replay it.
+  useEffect(() => {
+    const target = location.state?.initialTab
+    if (!target) return
+    setModuleTab(target)
+    if (location.state?.initialMode) setNotesInitialMode(location.state.initialMode)
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
 
   const openAuthorInSearch = useCallback((author) => {
     if (!isOwner || !author?.pubkey) return
@@ -205,7 +221,12 @@ export default function NotesModule({ user, sessionUser }) {
            tab starts fresh on next visit (cheap; the author/bookmark fetch
            is cached by Primal's singleton socket anyway). */}
       {!isWriteActive && moduleTab === 'notes' && (
-        <MyNotesTab user={user} isOwner={isOwner} />
+        <MyNotesTab
+          user={user}
+          isOwner={isOwner}
+          initialMode={notesInitialMode}
+          onInitialModeConsumed={() => setNotesInitialMode(null)}
+        />
       )}
       {!isWriteActive && moduleTab === 'bookmarks' && (
         <BookmarksTab user={user} isOwner={isOwner} />
