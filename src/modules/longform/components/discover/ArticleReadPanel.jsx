@@ -5,7 +5,7 @@ import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { isSafeUrl, getPublishedAt } from '../../../../lib/utils.js'
-import { getNDK } from '../../../../lib/ndk.js'
+import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
@@ -201,7 +201,7 @@ export default function ArticleReadPanel({
       ]
       // Only include e tag if we have a real hex event ID
       if (hasRealEventId) ev.tags.unshift(['e', article.id])
-      await ev.sign()
+      await signWithTimeout(ev)
       await ev.publish()
       setLiked(true)
     } catch (err) {
@@ -226,7 +226,7 @@ export default function ArticleReadPanel({
         ['k', '30023'],
       ]
       if (hasRealEventId) ev.tags.unshift(['e', article.id])
-      await ev.sign()
+      await signWithTimeout(ev)
       await ev.publish()
       setRepostDone(true)
       setRepostOpen(false)

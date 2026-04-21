@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, FALLBACK_RELAYS } from '../lib/ndk.js'
+import { getNDK, FALLBACK_RELAYS, signWithTimeout } from '../lib/ndk.js'
 
 const PRESETS = [21, 100, 500, 1000, 5000, 10000]
 
@@ -49,7 +49,7 @@ async function buildZapRequest({ recipientPubkey, targetEvent, aTag, targetKind,
   if (targetEvent?.id) ev.tags.push(['e', targetEvent.id])
   if (targetKind) ev.tags.push(['k', String(targetKind)])
 
-  await ev.sign()
+  await signWithTimeout(ev)
   return JSON.stringify(ev.rawEvent())
 }
 

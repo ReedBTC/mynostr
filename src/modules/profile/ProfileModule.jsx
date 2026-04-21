@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react'
+import { nip19 } from 'nostr-tools'
 import { copyToClipboard, isSafeUrl, truncateNpub, formatCount, createLRU } from '../../lib/utils.js'
-import { useOwnerContext } from '../../lib/ownerContext.jsx'
+import { useOwnerContext, OwnerProvider } from '../../lib/ownerContext.jsx'
 import { fetchAggregateUserStats } from '../../lib/userStats.js'
 import { fetchUserContentCounts } from '../../lib/userContentCounts.js'
 import { fetchUserBookmarkCounts } from '../../lib/userBookmarkCounts.js'
-import { fetchUserZapAggregates, fetchAuthorPostingCadence } from '../../lib/primal.js'
+import { fetchProfiles, fetchUserZapAggregates, fetchAuthorPostingCadence } from '../../lib/primal.js'
+import UserSearch from '../../components/UserSearch.jsx'
 import ProfileEditor from './ProfileEditor.jsx'
 import ProfileStatsCard from './ProfileStatsCard.jsx'
 import ProfileActivityCard from './ProfileActivityCard.jsx'
 import PostingCadenceCard from './PostingCadenceCard.jsx'
 import RelayCard from './RelayCard.jsx'
+import DmRelayCard from './DmRelayCard.jsx'
 
 /**
  * ProfileModule — read view of the viewed user's kind 0 profile, plus an
@@ -18,10 +21,16 @@ import RelayCard from './RelayCard.jsx'
  * object (mutating in place so every other consumer that holds the same
  * reference sees the fresh data) and bump a render counter to repaint.
  *
+ * Preview mode: picking a user from the in-module UserSearch switches what's
+ * rendered to that user's profile *without changing the URL* — same idea as
+ * Longform's author-preview. A local OwnerProvider override ensures every
+ * descendant (including RelayCard/DmRelayCard) sees isOwner=false while
+ * previewing, so no Edit buttons appear on the other user's cards. A Back
+ * bar at the top clears the preview and returns to your own profile.
+ *
  * Stats (note/reply/follower counts from Primal) and content counts
  * (articles/events/listings from relays) are fetched once at the module
- * level and passed down — the profile card renders follower/following
- * inline, the stats card renders the rest.
+ * level and passed down.
  */
 
 // Module-level caches so switching tabs away and back doesn't re-hammer
@@ -34,81 +43,104 @@ const ZAP_AGGREGATES_CACHE  = createLRU(50)
 const CADENCE_CACHE         = createLRU(50)
 
 export default function ProfileModule({ user }) {
-  const { isOwner } = useOwnerContext()
+  const { isOwner: ownerOfUrl, sessionUser } = useOwnerContext()
   const [mode, setMode] = useState('view')   // 'view' | 'edit'
   const [, forceRender] = useState(0)
   // Transient banner shown on the view after a save that only landed on
   // fallback relays. Cleared on edit-entry or manual dismiss.
   const [saveNotice, setSaveNotice] = useState(null)
 
-  const pubkey = user?.pubkey
+  // Preview overlay — local-only view of some other user's profile. Doesn't
+  // change the URL or OwnerContext at the app level; we fork the context
+  // below so children render in read-only mode while preview is active.
+  const [previewUser, setPreviewUser] = useState(null)
 
-  const [stats, setStats] = useState(() => (pubkey ? STATS_CACHE.get(pubkey) : null) || null)
-  const [contentCounts, setContentCounts] = useState(() => (pubkey ? COUNTS_CACHE.get(pubkey) : null) || null)
-  const [bookmarkCounts, setBookmarkCounts] = useState(() => (pubkey ? BOOKMARK_COUNTS_CACHE.get(pubkey) : null) || null)
-  const [zapAggregates, setZapAggregates] = useState(() => (pubkey ? ZAP_AGGREGATES_CACHE.get(pubkey) : null) || null)
-  const [cadence, setCadence] = useState(() => (pubkey ? CADENCE_CACHE.get(pubkey) : null) || null)
+  // Effective user to render. URL user by default; the preview when active.
+  const viewingUser   = previewUser || user
+  const viewingPubkey = viewingUser?.pubkey
+
+  // Only treat the session as the owner when *not* previewing — even if the
+  // previewed user happens to be the session user, we still hide edit
+  // affordances so the preview path has one clear surface.
+  const effectiveIsOwner = ownerOfUrl && !previewUser
+
+  const [stats, setStats] = useState(() => (viewingPubkey ? STATS_CACHE.get(viewingPubkey) : null) || null)
+  const [contentCounts, setContentCounts] = useState(() => (viewingPubkey ? COUNTS_CACHE.get(viewingPubkey) : null) || null)
+  const [bookmarkCounts, setBookmarkCounts] = useState(() => (viewingPubkey ? BOOKMARK_COUNTS_CACHE.get(viewingPubkey) : null) || null)
+  const [zapAggregates, setZapAggregates] = useState(() => (viewingPubkey ? ZAP_AGGREGATES_CACHE.get(viewingPubkey) : null) || null)
+  const [cadence, setCadence] = useState(() => (viewingPubkey ? CADENCE_CACHE.get(viewingPubkey) : null) || null)
   const [loading, setLoading] = useState(!stats || !contentCounts || !bookmarkCounts)
   const [zapLoading, setZapLoading] = useState(!zapAggregates)
   const [cadenceLoading, setCadenceLoading] = useState(!cadence)
 
+  // When the preview target changes, seed the per-user state from cache
+  // immediately — otherwise we'd show the previous user's numbers for a
+  // beat while the new fetch runs.
   useEffect(() => {
-    if (!pubkey) return
+    if (!viewingPubkey) return
+    setStats(STATS_CACHE.get(viewingPubkey) || null)
+    setContentCounts(COUNTS_CACHE.get(viewingPubkey) || null)
+    setBookmarkCounts(BOOKMARK_COUNTS_CACHE.get(viewingPubkey) || null)
+    setZapAggregates(ZAP_AGGREGATES_CACHE.get(viewingPubkey) || null)
+    setCadence(CADENCE_CACHE.get(viewingPubkey) || null)
+  }, [viewingPubkey])
+
+  useEffect(() => {
+    if (!viewingPubkey) return
     let cancelled = false
     setLoading(true)
     setZapLoading(true)
     setCadenceLoading(true)
     ;(async () => {
       const [s, c, b] = await Promise.all([
-        fetchAggregateUserStats(pubkey),
-        fetchUserContentCounts(pubkey),
-        fetchUserBookmarkCounts(pubkey),
+        fetchAggregateUserStats(viewingPubkey),
+        fetchUserContentCounts(viewingPubkey),
+        fetchUserBookmarkCounts(viewingPubkey),
       ])
       if (cancelled) return
-      if (s) { STATS_CACHE.set(pubkey, s);  setStats(s) }
-      if (c) { COUNTS_CACHE.set(pubkey, c); setContentCounts(c) }
-      if (b) { BOOKMARK_COUNTS_CACHE.set(pubkey, b); setBookmarkCounts(b) }
+      if (s) { STATS_CACHE.set(viewingPubkey, s);  setStats(s) }
+      if (c) { COUNTS_CACHE.set(viewingPubkey, c); setContentCounts(c) }
+      if (b) { BOOKMARK_COUNTS_CACHE.set(viewingPubkey, b); setBookmarkCounts(b) }
       setLoading(false)
     })()
     // Zap aggregates run independently — they're slower (fetch up to 1k
     // zap events per direction) and we don't want them blocking the
     // faster stats/counts from rendering.
     ;(async () => {
-      const z = await fetchUserZapAggregates(pubkey).catch(() => null)
+      const z = await fetchUserZapAggregates(viewingPubkey).catch(() => null)
       if (cancelled) return
       // Guard: an all-zero response almost always means Primal dedupe'd a
       // concurrent REQ and gave us empty EOSE. Never let that overwrite a
       // previously good result (either in memory or in cache).
       const hasData = z && z.receivedSample > 0
-      if (hasData) { ZAP_AGGREGATES_CACHE.set(pubkey, z); setZapAggregates(z) }
+      if (hasData) { ZAP_AGGREGATES_CACHE.set(viewingPubkey, z); setZapAggregates(z) }
       setZapLoading(false)
     })()
     // Posting cadence — also slower (paginates up to 5 pages of kind 1
     // events). Runs independently from stats/zaps for the same reason.
     ;(async () => {
-      const c = await fetchAuthorPostingCadence(pubkey).catch(() => null)
+      const c = await fetchAuthorPostingCadence(viewingPubkey).catch(() => null)
       if (cancelled) return
       if (c && c.buckets && c.buckets.size > 0) {
-        CADENCE_CACHE.set(pubkey, c)
+        CADENCE_CACHE.set(viewingPubkey, c)
         setCadence(c)
       } else if (c) {
         // Zero posts in window is a valid result, but only save it if we
         // didn't already have a better cached value (same dedup-safety
         // philosophy as the zap aggregates guard above).
-        if (!CADENCE_CACHE.has(pubkey)) {
-          CADENCE_CACHE.set(pubkey, c)
+        if (!CADENCE_CACHE.has(viewingPubkey)) {
+          CADENCE_CACHE.set(viewingPubkey, c)
           setCadence(c)
         }
       }
       setCadenceLoading(false)
     })()
     return () => { cancelled = true }
-  }, [pubkey])
+  }, [viewingPubkey])
 
   function handleSaved(content, meta) {
-    // content is the raw NIP-01 kind 0 content JSON we just published.
-    // Normalize into our in-memory camelCase shape and merge over the
-    // existing profile so downstream readers see the update.
+    // Save path only reachable for the URL-owner with no preview active;
+    // mutate the app-level `user.profile` so every consumer sees the update.
     if (user) {
       user.profile = {
         ...(user.profile || {}),
@@ -129,7 +161,61 @@ export default function ProfileModule({ user }) {
     forceRender(n => n + 1)
   }
 
-  if (mode === 'edit' && isOwner) {
+  function handlePickAuthor(author) {
+    if (!author?.pubkey) return
+    // Picking yourself from search = back out of any preview, no overlay.
+    if (author.pubkey === user?.pubkey) { setPreviewUser(null); return }
+
+    // Force view mode — edit is URL-owner-only, so a preview would be stuck
+    // behind it otherwise.
+    setMode('view')
+
+    // Show a minimal shell instantly using the search-result metadata so
+    // the header doesn't flash empty while we fetch the full kind 0.
+    const shellUser = {
+      pubkey: author.pubkey,
+      npub: nip19.npubEncode(author.pubkey),
+      profile: {
+        name: author.name,
+        displayName: author.name,
+        image: author.picture,
+        picture: author.picture,
+      },
+      readOnly: true,
+    }
+    setPreviewUser(shellUser)
+
+    // Background-fetch the full kind 0 and merge in banner/about/website/etc.
+    // Guard against races: only apply if the preview is still this target.
+    fetchProfiles([author.pubkey]).then(map => {
+      const raw = map.get(author.pubkey)
+      if (!raw) return
+      setPreviewUser(prev => {
+        if (!prev || prev.pubkey !== author.pubkey) return prev
+        return {
+          ...prev,
+          profile: {
+            name:        raw.name,
+            displayName: raw.display_name || raw.displayName,
+            image:       raw.picture || raw.image,
+            picture:     raw.picture || raw.image,
+            about:       raw.about,
+            nip05:       raw.nip05,
+            lud06:       raw.lud06,
+            lud16:       raw.lud16,
+            website:     raw.website,
+            banner:      raw.banner,
+          },
+        }
+      })
+    }).catch(() => {})
+  }
+
+  function closePreview() {
+    setPreviewUser(null)
+  }
+
+  if (mode === 'edit' && effectiveIsOwner) {
     return (
       <ProfileEditor
         user={user}
@@ -139,11 +225,15 @@ export default function ProfileModule({ user }) {
     )
   }
 
-  return (
+  const view = (
     <ProfileView
-      user={user}
-      isOwner={isOwner}
+      user={viewingUser}
+      isOwner={effectiveIsOwner}
+      loggedIn={!!sessionUser}
+      previewing={!!previewUser}
       onEdit={() => { setSaveNotice(null); setMode('edit') }}
+      onPickAuthor={handlePickAuthor}
+      onClosePreview={closePreview}
       saveNotice={saveNotice}
       onDismissSaveNotice={() => setSaveNotice(null)}
       stats={stats}
@@ -156,9 +246,22 @@ export default function ProfileModule({ user }) {
       loading={loading}
     />
   )
+
+  // When previewing, fork OwnerContext so descendants (RelayCard etc.) see
+  // the previewed user as the viewedUser and isOwner=false. Non-preview
+  // path passes through unchanged — the app-level provider already has the
+  // right values.
+  if (previewUser) {
+    return (
+      <OwnerProvider sessionUser={sessionUser} viewedUser={previewUser}>
+        {view}
+      </OwnerProvider>
+    )
+  }
+  return view
 }
 
-function ProfileView({ user, isOwner, onEdit, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, cadence, cadenceLoading, loading }) {
+function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, cadence, cadenceLoading, loading }) {
   const profile = user?.profile || {}
   const displayName = profile.displayName || profile.name || 'Anonymous'
   const handle = profile.nip05 || (profile.name ? `@${profile.name}` : null)
@@ -179,6 +282,28 @@ function ProfileView({ user, isOwner, onEdit, saveNotice, onDismissSaveNotice, s
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-xl mx-auto w-full px-4 py-4 space-y-4">
+
+        {loggedIn && (
+          <UserSearch
+            onPickAuthor={onPickAuthor}
+            placeholder="Find another user…"
+          />
+        )}
+
+        {previewing && (
+          <button
+            type="button"
+            onClick={onClosePreview}
+            className="w-full flex items-center gap-2 px-3 py-2 border border-neutral-800 bg-neutral-950 hover:bg-neutral-900 rounded-lg text-xs text-neutral-300 transition-colors focus:outline-none focus:ring-1 focus:ring-purple-600"
+            title="Close this profile and return to your own"
+          >
+            <span className="text-neutral-500">←</span>
+            <span>Back to your profile</span>
+            <span className="ml-auto text-[10px] text-neutral-500 truncate">
+              viewing {displayName}
+            </span>
+          </button>
+        )}
 
         {saveNotice && (
           <div className="flex items-start gap-2 border border-amber-900/60 bg-amber-950/30 rounded-lg px-3 py-2 text-xs text-amber-200">
@@ -326,6 +451,8 @@ function ProfileView({ user, isOwner, onEdit, saveNotice, onDismissSaveNotice, s
         />
 
         <RelayCard pubkey={user?.pubkey} />
+
+        <DmRelayCard pubkey={user?.pubkey} />
       </div>
     </div>
   )
@@ -345,4 +472,3 @@ function FollowStat({ label, value, loading }) {
     </span>
   )
 }
-

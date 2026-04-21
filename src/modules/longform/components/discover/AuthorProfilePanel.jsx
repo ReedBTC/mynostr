@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK } from '../../../../lib/ndk.js'
+import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
 
@@ -60,7 +60,7 @@ export default function AuthorProfilePanel({ profile, pubkey, user, onAuthorClic
 
       event.tags = newTags
       event.content = ''
-      await event.sign()
+      await signWithTimeout(event)
       await event.publish()
 
       setContacts(newTags)

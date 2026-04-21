@@ -1,8 +1,9 @@
-import { NDKNip07Signer, NDKNip46Signer } from '@nostr-dev-kit/ndk'
+import { NDKNip07Signer } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, resetNDK, connectAndWait } from './ndk.js'
 import { fetchProfiles } from './primal.js'
 import { sanitizeRelayUrls } from './publishNote.js'
+import { restoreFromSession } from './nip46Signer.js'
 
 // Validate a 64-char hex pubkey. Used on restore to refuse garbage from a
 // corrupted localStorage record before handing it to NDK.
@@ -18,8 +19,11 @@ function isHex64(s) {
 // Record shape by method:
 //   extension   — { method, pubkey, npub }
 //   npub        — { method, pubkey, npub }  (read-only)
-//   nip46       — { method, pubkey, npub, bunkerPubkey, userPubkey,
-//                   localSignerPrivkey, relays }
+//   nip46       — { method, pubkey, npub, clientSecret, bunkerPointer,
+//                   userPubkey }
+//     clientSecret  — hex of the Uint8Array local signer key
+//     bunkerPointer — { pubkey, relays: string[], secret: string|null }
+//     userPubkey    — the authoritative user pubkey the bunker signs with
 //
 // nsec logins are deliberately NOT persisted — the LoginScreen warns the key
 // is in-memory only, matching the default stance of Primal / Iris / Snort.
@@ -144,34 +148,35 @@ export async function restoreSession(record) {
   }
 
   if (record.method === 'nip46') {
-    const { bunkerPubkey, userPubkey, localSignerPrivkey, relays } = record
-    if (!isHex64(bunkerPubkey) || !isHex64(userPubkey)) return null
-    if (typeof localSignerPrivkey !== 'string' || !/^[0-9a-f]{64}$/i.test(localSignerPrivkey)) return null
-    const safeRelays = sanitizeRelayUrls(relays)
+    const { clientSecret, bunkerPointer, userPubkey } = record
+    if (!isHex64(userPubkey)) return null
+    if (typeof clientSecret !== 'string' || !/^[0-9a-f]{64}$/i.test(clientSecret)) return null
+    if (!bunkerPointer || !isHex64(bunkerPointer.pubkey)) return null
+    const safeRelays = sanitizeRelayUrls(bunkerPointer.relays)
     if (safeRelays.length === 0) return null
     try {
-      const signer = new NDKNip46Signer(
-        ndk, bunkerPubkey, localSignerPrivkey, safeRelays,
-        { name: 'MyNostr', url: 'https://mynostr.app' }
-      )
-      // The remote signer already approved this localSigner in a prior
-      // session, so wire up userPubkey / _user directly rather than
-      // re-running the nostrconnect handshake. Kick off blockUntilReady()
-      // in a time-boxed race so the RPC subscription comes online before
-      // the first sign request; if it hangs (bunker offline), proceed
-      // anyway — a later sign attempt will surface the failure.
-      //
-      // NOTE: `signer._user` is a private NDK internal (leading _).
-      // LoginScreen's post-handshake path relies on the same field, so
-      // both restore and fresh-login must move together across NDK
-      // upgrades. Currently pinned to @nostr-dev-kit/ndk ^2 (2.18.x).
-      signer.userPubkey = userPubkey
-      signer._user = ndk.getUser({ pubkey: userPubkey })
+      // Rebuild the bunker signer with the saved handshake material — same
+      // local secret + same bunker pointer, so the bunker recognizes us
+      // without the user re-approving. We skip the connect() RPC on restore
+      // (reference clients do the same); if the bunker's session has since
+      // expired it will surface on the first sign() call with a bounded
+      // signWithTimeout error, which is the right place for that failure.
+      const signer = restoreFromSession({
+        ndk,
+        clientSecret,
+        bunkerPointer: { ...bunkerPointer, relays: safeRelays },
+        userPubkey,
+        onAuthUrl: (url) => {
+          try {
+            const parsed = new URL(url)
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return
+            if (typeof window !== 'undefined') {
+              window.open(url, '_blank', 'noopener,noreferrer')
+            }
+          } catch {}
+        },
+      })
       ndk.signer = signer
-      await Promise.race([
-        signer.blockUntilReady().catch(() => {}),
-        new Promise(r => setTimeout(r, 5000)),
-      ])
       await connectAndWait(ndk)
       return await fetchUserProfile(ndk, userPubkey)
     } catch {
@@ -192,28 +197,20 @@ export function buildNpubRecord(pubkey) {
   return { method: 'npub', pubkey, npub: nip19.npubEncode(pubkey) }
 }
 
-export function buildNip46Record({ bunkerPubkey, userPubkey, localSignerPrivkey, relays }) {
-  if (!bunkerPubkey || !userPubkey || !localSignerPrivkey || !relays?.length) return null
+export function buildNip46Record({ clientSecret, bunkerPointer, userPubkey }) {
+  if (!clientSecret || !userPubkey || !bunkerPointer?.pubkey || !bunkerPointer?.relays?.length) {
+    return null
+  }
   return {
     method: 'nip46',
     pubkey: userPubkey,
     npub: nip19.npubEncode(userPubkey),
-    bunkerPubkey,
+    clientSecret,
+    bunkerPointer: {
+      pubkey: bunkerPointer.pubkey,
+      relays: bunkerPointer.relays,
+      secret: bunkerPointer.secret ?? null,
+    },
     userPubkey,
-    localSignerPrivkey,
-    relays,
-  }
-}
-
-// Parse the relay list out of a bunker:// connection string. NDK stores it
-// internally after parsing, but the accessor is private, so we keep our own
-// parse for the save path. `new URL('bunker://abc?relay=wss://x')` works in
-// modern browsers even for non-standard schemes.
-export function parseBunkerRelays(token) {
-  try {
-    const url = new URL(token)
-    return url.searchParams.getAll('relay')
-  } catch {
-    return []
   }
 }

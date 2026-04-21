@@ -1,4 +1,4 @@
-import { getNDK } from './ndk.js'
+import { getNDK, signWithTimeout } from './ndk.js'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 
 const BLOSSOM_SERVER = 'https://blossom.primal.net'
@@ -26,7 +26,7 @@ async function buildAuthEvent(fileHash) {
     ['x', fileHash],
     ['expiration', String(expiration)],
   ]
-  await event.sign()
+  await signWithTimeout(event)
   return JSON.stringify(await event.toNostrEvent())
 }
 

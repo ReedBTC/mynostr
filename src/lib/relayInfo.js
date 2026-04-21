@@ -11,7 +11,8 @@
  * Failed fetches (CORS refusal, timeout, 404, parse error) cache a {_error}
  * sentinel briefly so we don't hammer a flaky relay in a tight render loop.
  */
-import { getNDK, connectAndWait } from './ndk.js'
+import { NDKEvent } from '@nostr-dev-kit/ndk'
+import { getNDK, connectAndWait, signWithTimeout, FALLBACK_RELAYS } from './ndk.js'
 import { createLRU } from './utils.js'
 
 const NIP11_CACHE   = createLRU(100)
@@ -127,15 +128,17 @@ async function fetchDirect(relayUrl, timeoutMs) {
  * lists that still carry a JSON relay blob in `.content` — common for
  * long-time Nostr users who pre-date NIP-65 and never migrated.
  *
- * Returns a normalized array `[{ url, read, write }]`. A relay listed only
- * as a read-marker has `read=true/write=false` and vice versa; a relay with
- * no marker is treated as both (the NIP-65 default).
+ * Returns `{ relays, source }` where relays is a normalized array
+ * `[{ url, read, write }]` and source is one of:
+ *   - 'nip65'  — user has a kind 10002 event (modern, preferred)
+ *   - 'kind3'  — user only has legacy kind 3 relay blob, should upgrade
+ *   - 'none'   — genuinely new account, no relay list at all
  *
- * Returns `[]` only if both sources are missing — genuinely new accounts
- * that have never published either event.
+ * Consumers use `source` to show an upgrade banner for kind 3 users and a
+ * "create a list" prompt for none users.
  */
 export async function fetchUserRelayList(pubkey) {
-  if (!pubkey) return []
+  if (!pubkey) return { relays: [], source: 'none' }
   const ndk = getNDK()
   try {
     await connectAndWait(ndk, 3000)
@@ -147,12 +150,165 @@ export async function fetchUserRelayList(pubkey) {
       ndk.fetchEvent({ kinds: [3],     authors: [pubkey] }).catch(() => null),
     ])
 
-    if (list10002) return parseKind10002(list10002)
-    if (list3)     return parseKind3Content(list3)
-    return []
+    if (list10002) return { relays: parseKind10002(list10002), source: 'nip65' }
+    if (list3)     return { relays: parseKind3Content(list3), source: 'kind3' }
+    return { relays: [], source: 'none' }
   } catch {
-    return []
+    return { relays: [], source: 'none' }
   }
+}
+
+/**
+ * Publish a NIP-65 kind 10002 relay list for the signed-in user.
+ *
+ * @param {object} params
+ * @param {Array<{url:string, read:boolean, write:boolean}>} params.relays
+ * @returns {Promise<{relays: string[]}>} relays that acknowledged the publish
+ *
+ * Behavior notes:
+ *  - Tags follow NIP-65: `["r", url]` when both read+write, otherwise
+ *    `["r", url, "read"]` or `["r", url, "write"]`. A relay with neither
+ *    flag is skipped (would be dead weight in the list).
+ *  - Publishes to the user's current write relays PLUS the fallback relays,
+ *    so a user fixing a broken list doesn't rely on the broken list's
+ *    writes to propagate the fix. Relays silently dedupe.
+ *  - Replaceable event — the newest kind 10002 wins per author on each
+ *    relay, so clients reading from the publish set will see the new list.
+ */
+export async function publishRelayList({ relays }) {
+  const ndk = getNDK()
+  if (!ndk?.signer) throw new Error('Not signed in')
+  if (!Array.isArray(relays)) throw new Error('relays must be an array')
+
+  const tags = []
+  for (const r of relays) {
+    const url = normalizeRelayUrl(r?.url)
+    if (!url) continue
+    if (r.read && r.write)       tags.push(['r', url])
+    else if (r.write)            tags.push(['r', url, 'write'])
+    else if (r.read)             tags.push(['r', url, 'read'])
+    // neither flag → skip (user effectively removed the relay)
+  }
+
+  const event = new NDKEvent(ndk)
+  event.kind = 10002
+  event.content = ''
+  event.created_at = Math.floor(Date.now() / 1000)
+  event.tags = tags
+
+  // Publish to the current write relays + fallbacks. We intentionally also
+  // hit fallbacks so a user whose write relays are broken still propagates
+  // the repair to third-party clients.
+  await connectAndWait(ndk, 3000)
+  await signWithTimeout(event)
+  const publishedTo = await event.publish()
+  const confirmed = Array.from(publishedTo).map(r => r.url).filter(Boolean)
+  return { relays: confirmed.length ? confirmed : [...FALLBACK_RELAYS] }
+}
+
+/**
+ * Fetch the user's NIP-17 DM relay list (kind 10050). This is a separate
+ * event from the main relay list because DM relays have different criteria:
+ * they need to accept encrypted gift-wrap events (kind 1059), not have
+ * auth-required blocks, and ideally filter spam. Kind 10050 is just a flat
+ * list of relay URLs — no read/write markers, since DM relays are inboxes.
+ *
+ * Returns `{ relays: string[], source: 'nip17' | 'none' }`.
+ */
+export async function fetchUserDmRelays(pubkey) {
+  if (!pubkey) return { relays: [], source: 'none' }
+  const ndk = getNDK()
+  try {
+    await connectAndWait(ndk, 3000)
+    const ev = await ndk.fetchEvent({ kinds: [10050], authors: [pubkey] }).catch(() => null)
+    if (!ev) return { relays: [], source: 'none' }
+    const seen = new Set()
+    const relays = []
+    for (const tag of ev.tags || []) {
+      if (tag[0] !== 'relay' || !tag[1]) continue
+      const url = normalizeRelayUrl(tag[1])
+      if (!url || seen.has(url)) continue
+      seen.add(url)
+      relays.push(url)
+    }
+    return { relays, source: 'nip17' }
+  } catch {
+    return { relays: [], source: 'none' }
+  }
+}
+
+/**
+ * Publish a NIP-17 kind 10050 DM relay list.
+ *
+ * @param {object} params
+ * @param {string[]} params.relays — plain URL list (no read/write markers)
+ * @returns {Promise<{relays: string[]}>}
+ */
+export async function publishDmRelayList({ relays }) {
+  const ndk = getNDK()
+  if (!ndk?.signer) throw new Error('Not signed in')
+  if (!Array.isArray(relays)) throw new Error('relays must be an array')
+
+  const seen = new Set()
+  const tags = []
+  for (const raw of relays) {
+    const url = normalizeRelayUrl(raw)
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    tags.push(['relay', url])
+  }
+
+  const event = new NDKEvent(ndk)
+  event.kind = 10050
+  event.content = ''
+  event.created_at = Math.floor(Date.now() / 1000)
+  event.tags = tags
+
+  await connectAndWait(ndk, 3000)
+  await signWithTimeout(event)
+  const publishedTo = await event.publish()
+  const confirmed = Array.from(publishedTo).map(r => r.url).filter(Boolean)
+  return { relays: confirmed.length ? confirmed : [...FALLBACK_RELAYS] }
+}
+
+/**
+ * Suggest DM relay candidates for a user who hasn't published kind 10050
+ * yet. Prefers the user's own kind 10002 write relays (since those relays
+ * already accept writes from strangers trying to reach them) filtered to
+ * exclude auth-gated and write-restricted relays that wouldn't let DMs
+ * through. Falls back to generic well-known relays if nothing qualifies.
+ *
+ * @param {Array<{url:string,write:boolean}>} writeList — user's kind 10002
+ * @param {Object<string, object>} infoByUrl — NIP-11 info map keyed by url
+ * @returns {string[]} up to 3 suggested URLs
+ */
+export function suggestDmRelays(writeList, infoByUrl) {
+  const FALLBACK = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net']
+  const candidates = []
+  for (const r of writeList || []) {
+    if (!r?.write) continue
+    const info = infoByUrl?.[r.url]
+    const lim = info?.limitation || {}
+    // Skip relays that would silently refuse incoming DMs — the sender
+    // (some other user) won't be able to write a kind 1059 to them.
+    if (lim.auth_required || lim.restricted_writes) continue
+    // If NIP-11 fetch failed we don't know — include them optimistically;
+    // a plain unreachable-looking relay that actually serves Nostr fine
+    // is more common than a silently-broken one.
+    candidates.push({
+      url: r.url,
+      paid: Boolean(info && (info.payments_url || lim.payment_required || (info.fees && Object.keys(info.fees).length))),
+      maxLen: Number(lim.max_message_length) || 0,
+    })
+  }
+  // Prefer paid (less DM spam) then generous max length.
+  candidates.sort((a, b) => {
+    if (a.paid !== b.paid) return a.paid ? -1 : 1
+    return b.maxLen - a.maxLen
+  })
+  const picked = candidates.slice(0, 3).map(c => c.url)
+  if (picked.length) return picked
+  return FALLBACK.slice(0, 3)
 }
 
 // NIP-65: each "r" tag is ["r", "<wss url>"] or ["r", "<wss url>", "read"|"write"].

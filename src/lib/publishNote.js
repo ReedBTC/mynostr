@@ -4,7 +4,7 @@
  */
 import { NDKEvent, NDKRelaySet } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { getNDK, FALLBACK_RELAYS } from './ndk.js'
+import { getNDK, FALLBACK_RELAYS, signWithTimeout } from './ndk.js'
 
 // Only trust wss://host… URLs. Rejects anything non-TLS-WS so a stray
 // "https://..." or cleartext "ws://" paste in Advanced → Relays can't be
@@ -65,7 +65,7 @@ export async function publishNote({ content, tags, relayOverride = null }) {
     }
   }
 
-  await event.sign()
+  await signWithTimeout(event)
   const publishedTo = explicitRelaySet
     ? await event.publish(explicitRelaySet)
     : await event.publish()

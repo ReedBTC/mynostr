@@ -28,7 +28,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK } from './ndk.js'
+import { getNDK, signWithTimeout } from './ndk.js'
 
 // Fetch the freshest kind 10003 event from relays. Used immediately
 // before publishing the primary bookmark list so any data the longform
@@ -358,7 +358,7 @@ export function useNoteBookmarks(user) {
         const mergedContent = [...cat.items, ...(cat.otherContentItems || [])]
         event.content = JSON.stringify(mergedContent)
       }
-      await event.sign()
+      await signWithTimeout(event)
       await event.publish()
       return true
     } catch {
@@ -674,7 +674,7 @@ export function useNoteBookmarks(user) {
       event.kind = sourceKind
       event.tags = [['d', categoryId]]
       event.content = ''
-      await event.sign()
+      await signWithTimeout(event)
       await event.publish()
     } catch {}
   }, [readOnly, pubkey, publishCategory])

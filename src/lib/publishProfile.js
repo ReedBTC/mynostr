@@ -8,7 +8,7 @@
  * (bot, zapService, custom, etc.) survive.
  */
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, FALLBACK_RELAYS } from './ndk.js'
+import { getNDK, FALLBACK_RELAYS, signWithTimeout } from './ndk.js'
 
 // Per-field length caps. These match the UI's maxLength on ProfileEditor
 // inputs but are enforced here too so any caller (scripts, future forms)
@@ -86,7 +86,7 @@ export async function publishProfile({ pubkey, edits }) {
     }
   } catch {}
 
-  await event.sign()
+  await signWithTimeout(event)
   const publishedTo = await event.publish()
   const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
   const relays = confirmedRelays.length ? confirmedRelays : relayUrls

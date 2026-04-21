@@ -1,39 +1,50 @@
 import { useState, useEffect, useRef } from 'react'
-import { NDKNip07Signer, NDKPrivateKeySigner, NDKNip46Signer } from '@nostr-dev-kit/ndk'
+import { NDKNip07Signer, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
+import { createNostrConnectURI } from 'nostr-tools/nip46'
 import { QRCodeSVG } from 'qrcode.react'
 import { getNDK, resetNDK, connectAndWait } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
+import {
+  connectViaBunkerUrl,
+  connectViaNostrConnectUri,
+  generateSecretKey,
+  getPublicKey,
+  bytesToHex,
+  hexToBytes,
+} from '../lib/nip46Signer.js'
 import {
   saveSession,
   buildExtensionRecord,
   buildNpubRecord,
   buildNip46Record,
-  parseBunkerRelays,
   fetchUserProfile,
 } from '../lib/sessionPersistence.js'
 
 // Mobile NIP-46 flows need to survive tab reloads and WebSocket suspensions
 // — user taps a signer app, approves, comes back, but the browser tab was
-// reaped or the relay socket was suspended while they were away, so the fresh
-// subscription has a different localSigner pubkey in its #p filter and never
-// sees the response event the signer already published.
+// reaped or the relay socket was suspended while they were away. If we
+// generate a fresh local secret on every mount, the bunker's reply (sent to
+// the old #p filter) is invisible to the new subscription.
 //
-// We can't use NDK's toPayload() mid-flow — it throws when userPubkey/
-// bunkerPubkey aren't set yet (which is exactly our situation). Persist the
-// raw internals instead: localSigner privkey and the nostrconnect URI
-// (contains the secret, relay, and local pubkey). On restore, build a new
-// signer with the SAME localSigner and overwrite nostrConnectSecret /
-// nostrConnectUri so both the relay subscription filter and the secret check
-// line up with the event already sitting in the relay.
+// Persist enough to rebuild the SAME nostrconnect URI: the client secret
+// (hex) and the URI string itself (which carries the shared secret, relays,
+// and client pubkey). On restore, reuse both so the bunker's already-
+// published response event arrives at a filter that matches.
+//
+// sessionStorage (not localStorage) because the clientSecret is the hex
+// secret key of the ephemeral identity and the URI query-string carries the
+// handshake secret — both sensitive and only needed for the duration of the
+// in-flight login. sessionStorage dies with the tab, which is the right
+// lifetime.
 const PENDING_NIP46_KEY = 'mynostr_pending_nip46'
 const PENDING_NIP46_MAX_AGE_MS = 10 * 60 * 1000
 
 function savePendingNip46(state) {
   try {
-    if (!state?.localSignerPrivkey || !state?.nostrConnectUri) return
-    localStorage.setItem(PENDING_NIP46_KEY, JSON.stringify({
-      localSignerPrivkey: state.localSignerPrivkey,
+    if (!state?.clientSecret || !state?.nostrConnectUri) return
+    sessionStorage.setItem(PENDING_NIP46_KEY, JSON.stringify({
+      clientSecret: state.clientSecret,
       nostrConnectUri: state.nostrConnectUri,
       createdAt: Date.now(),
     }))
@@ -42,12 +53,12 @@ function savePendingNip46(state) {
 
 function loadPendingNip46() {
   try {
-    const raw = localStorage.getItem(PENDING_NIP46_KEY)
+    const raw = sessionStorage.getItem(PENDING_NIP46_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
-    if (!parsed?.localSignerPrivkey || !parsed?.nostrConnectUri) return null
+    if (!parsed?.clientSecret || !parsed?.nostrConnectUri) return null
     if (Date.now() - Number(parsed.createdAt) > PENDING_NIP46_MAX_AGE_MS) {
-      localStorage.removeItem(PENDING_NIP46_KEY)
+      sessionStorage.removeItem(PENDING_NIP46_KEY)
       return null
     }
     return parsed
@@ -57,7 +68,7 @@ function loadPendingNip46() {
 }
 
 function clearPendingNip46() {
-  try { localStorage.removeItem(PENDING_NIP46_KEY) } catch {}
+  try { sessionStorage.removeItem(PENDING_NIP46_KEY) } catch {}
 }
 
 export default function LoginScreen({ onLogin }) {
@@ -109,7 +120,7 @@ export default function LoginScreen({ onLogin }) {
     if (qrTrigger === 'mobile' || qrTrigger === 'qr') startQrFlow()
     return () => {
       if (qrSignerRef.current) {
-        qrSignerRef.current.stop()
+        try { qrSignerRef.current.abort?.() } catch {}
         qrSignerRef.current = null
       }
     }
@@ -117,7 +128,7 @@ export default function LoginScreen({ onLogin }) {
 
   function cancelActiveQrFlow() {
     if (qrSignerRef.current) {
-      qrSignerRef.current.stop()
+      try { qrSignerRef.current.abort?.() } catch {}
       qrSignerRef.current = null
     }
     setQrWaiting(false)
@@ -220,7 +231,8 @@ export default function LoginScreen({ onLogin }) {
 
   function switchNcTab(tab) {
     if (qrSignerRef.current) {
-      qrSignerRef.current.stop()
+      try { qrSignerRef.current.abort?.() } catch {}
+      try { qrSignerRef.current.close?.() } catch {}
       qrSignerRef.current = null
     }
     setQrUri(null)
@@ -233,152 +245,103 @@ export default function LoginScreen({ onLogin }) {
   async function startQrFlow() {
     setError('')
     setQrWaiting(true)
+    // AbortController acts as the cancel handle for this flow. When the user
+    // switches tabs or remounts, we abort the underlying fromURI subscription
+    // so it doesn't keep running in the background.
+    const aborter = new AbortController()
+    const handle = { abort: () => aborter.abort(), close: () => aborter.abort() }
+    qrSignerRef.current = handle
     try {
       const ndk = getNDK()
       // Make sure app-wide relays are connected so post-login fetches work.
-      // The signer itself gets a *dedicated* relay pool (see below) so it
-      // doesn't matter whether this succeeds.
+      // The bunker's own pool is separate — this is only for the subsequent
+      // fetchProfiles call.
       await connectAndWait(ndk)
 
       // Different signers publish the connect response to different relays:
-      // Primal publishes to relay.primal.net, Amber tends toward relay.nsec.app
-      // or relay.damus.io. A single-relay URI leaves one of them stranded.
-      // We advertise all three in the nostrconnect URI *and* subscribe to all
-      // three, so whichever relay the signer picks, we'll see the event.
+      // Primal → relay.primal.net, nsec.app → relay.nsec.app, Amber is varied.
+      // Advertise all three in the URI and subscribe to all three so whichever
+      // relay the signer picks, we'll see the response event.
       const NC_RELAYS = [
         'wss://relay.nsec.app',
         'wss://relay.primal.net',
         'wss://relay.damus.io',
       ]
 
+      // Reuse the saved secret + URI if we published one recently — on mobile,
+      // the tab may have been reaped while the user was in the signer app, and
+      // a fresh URI would leave the bunker's reply unanswered at the relay.
+      let clientSecretKey
+      let clientSecret
+      let nostrConnectUri
       const pending = loadPendingNip46()
-      let signer = null
-      let savedUri = null
-      let savedSecret = null
-      let savedPrivkey = null
-      let savedRelays = null
       if (pending) {
         try {
-          const parsedUri = new URL(pending.nostrConnectUri)
-          const uriRelays = parsedUri.searchParams.getAll('relay')
-          const s = parsedUri.searchParams.get('secret')
-          if (uriRelays.length && s) {
-            savedUri = pending.nostrConnectUri
-            savedSecret = s
-            savedPrivkey = pending.localSignerPrivkey
-            savedRelays = uriRelays
-          }
+          clientSecretKey = hexToBytes(pending.clientSecret)
+          clientSecret = pending.clientSecret
+          nostrConnectUri = pending.nostrConnectUri
         } catch {
-          // corrupted persisted state — fall through
+          clearPendingNip46()
         }
-        if (!savedUri) clearPendingNip46()
       }
-
-      if (savedUri) {
-        // Restore: reuse the same localSigner privkey so the #p filter
-        // matches the already-published event, and overwrite the
-        // auto-generated secret/URI so the secret check lines up too.
-        signer = new NDKNip46Signer(ndk, undefined, savedPrivkey, savedRelays, {
+      if (!clientSecretKey) {
+        clientSecretKey = generateSecretKey()
+        clientSecret = bytesToHex(clientSecretKey)
+        const clientPubkey = getPublicKey(clientSecretKey)
+        const secretBytes = new Uint8Array(16)
+        crypto.getRandomValues(secretBytes)
+        const secret = bytesToHex(secretBytes)
+        nostrConnectUri = createNostrConnectURI({
+          clientPubkey,
+          relays: NC_RELAYS,
+          secret,
           name: 'MyNostr',
           url: 'https://mynostr.app',
         })
-        signer.nostrConnectSecret = savedSecret
-        signer.nostrConnectUri = savedUri
-      } else {
-        // Fresh flow: construct with multi-relay support, then rebuild the
-        // URI with all relay params. NDK's generator only emits the first.
-        signer = new NDKNip46Signer(ndk, undefined, undefined, NC_RELAYS, {
-          name: 'MyNostr',
-          url: 'https://mynostr.app',
-        })
-        const localPubkey = signer.localSigner.pubkey
-        const sec = signer.nostrConnectSecret
-        const params = [
-          `name=${encodeURIComponent('MyNostr')}`,
-          `url=${encodeURIComponent('https://mynostr.app')}`,
-          `secret=${encodeURIComponent(sec)}`,
-          ...NC_RELAYS.map(r => `relay=${encodeURIComponent(r)}`),
-        ]
-        signer.nostrConnectUri = `nostrconnect://${localPubkey}?${params.join('&')}`
-        savePendingNip46({
-          localSignerPrivkey: signer.localSigner.privateKey,
-          nostrConnectUri: signer.nostrConnectUri,
-        })
+        savePendingNip46({ clientSecret, nostrConnectUri })
       }
-      qrSignerRef.current = signer
-      const secret = signer.nostrConnectSecret
-      setQrUri(signer.nostrConnectUri)
+      setQrUri(nostrConnectUri)
 
-      await new Promise((resolve, reject) => {
-        let done = false
-
-        async function finish(pubkeyHex) {
-          if (done) return
-          done = true
-          signer.rpc.off('request', onRequest)
-          signer.rpc.off('response', onResponse)
+      const signer = await connectViaNostrConnectUri({
+        ndk,
+        connectionUri: nostrConnectUri,
+        clientSecretKey,
+        signal: aborter.signal,
+        onAuthUrl: (url) => {
           try {
-            signer.userPubkey = pubkeyHex
-            signer._user = ndk.getUser({ pubkey: pubkeyHex })
-            resolve()
-          } catch (e) {
-            reject(e)
-          }
-        }
-
-        // The inbound event's pubkey is the BUNKER's signing key, which for
-        // nsec.app / some Amber setups is NOT the user's pubkey. Always ask
-        // the bunker explicitly via getPublicKey to learn the real user key.
-        async function resolveUserPubkey(bunkerSigningPubkey) {
-          signer.bunkerPubkey = bunkerSigningPubkey
-          signer.userPubkey = null
-          return signer.getPublicKey().catch(() => bunkerSigningPubkey)
-        }
-
-        async function onRequest(req) {
-          if (req.method !== 'connect') return
-          if (req.params?.[0] !== secret) return
-          const actualPubkey = await resolveUserPubkey(req.event.pubkey)
-          await finish(actualPubkey)
-        }
-
-        async function onResponse(res) {
-          if (res.result !== secret) return
-          const actualPubkey = await resolveUserPubkey(res.event.pubkey)
-          await finish(actualPubkey)
-        }
-
-        signer.rpc.on('request', onRequest)
-        signer.rpc.on('response', onResponse)
-
-        signer.blockUntilReady().catch((err) => {
-          if (done) return
-          if (qrSignerRef.current === null) return
-          done = true
-          signer.rpc.off('request', onRequest)
-          signer.rpc.off('response', onResponse)
-          reject(err)
-        })
+            const parsed = new URL(url)
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return
+            if (!isMobile) {
+              window.open(url, '_blank', 'width=600,height=700,noopener,noreferrer')
+            }
+            setAuthUrl(url)
+          } catch {}
+        },
+        timeoutMs: 300000,
       })
 
-      if (qrSignerRef.current === null) return
+      // If the flow was cancelled while we were waiting, bail quietly.
+      if (qrSignerRef.current !== handle) {
+        try { await signer.close() } catch {}
+        return
+      }
+      qrSignerRef.current = signer
 
       setQrWaiting(false)
       setLoading(true)
       ndk.signer = signer
       await connectAndWait(ndk)
-      const user = await fetchUserProfile(ndk, signer.userPubkey)
+      const user = await fetchUserProfile(ndk, signer.pubkey)
       const nip46Record = buildNip46Record({
-        bunkerPubkey: signer.bunkerPubkey,
-        userPubkey: signer.userPubkey,
-        localSignerPrivkey: signer.localSigner?.privateKey,
-        relays: savedRelays || NC_RELAYS,
+        clientSecret,
+        bunkerPointer: signer.bunkerPointer,
+        userPubkey: signer.pubkey,
       })
       if (nip46Record) saveSession(nip46Record)
       clearPendingNip46()
       onLogin(user)
     } catch (err) {
-      if (qrSignerRef.current === null) return
+      if (qrSignerRef.current !== handle) return
       setQrWaiting(false)
       setError('QR login failed: ' + (err.message || 'unknown error'))
     } finally {
@@ -388,7 +351,8 @@ export default function LoginScreen({ onLogin }) {
 
   function cancelQrFlow() {
     if (qrSignerRef.current) {
-      qrSignerRef.current.stop()
+      try { qrSignerRef.current.abort?.() } catch {}
+      try { qrSignerRef.current.close?.() } catch {}
       qrSignerRef.current = null
     }
     setQrUri(null)
@@ -397,44 +361,6 @@ export default function LoginScreen({ onLogin }) {
     clearPendingNip46()
     startQrFlow()
   }
-
-  // When the user comes back from a signer app, re-subscribe to the relay so
-  // the response event (already published by the signer) gets delivered.
-  // Mobile browsers are inconsistent about which event fires on return:
-  //   - visibilitychange: the main one, but unreliable on iOS when coming
-  //     back from a custom-scheme handoff
-  //   - pageshow: fires on bfcache restore, used on some iOS Safari paths
-  //     in place of a normal visibility transition
-  //   - focus: backup for the rare case both of the above miss
-  // A 15s interval acts as a last-resort retry — covers browsers where none
-  // of the wakeup events fire, and cases where the relay took longer than
-  // our first subscription attempt to replay the historical response event.
-  useEffect(() => {
-    if (!qrWaiting) return
-    let lastRestart = Date.now()
-    function restart() {
-      if (!qrSignerRef.current) return
-      const now = Date.now()
-      if (now - lastRestart < 1000) return
-      lastRestart = now
-      qrSignerRef.current.stop()
-      qrSignerRef.current = null
-      startQrFlow()
-    }
-    function onVisible() {
-      if (document.visibilityState === 'visible') restart()
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('pageshow', restart)
-    window.addEventListener('focus', restart)
-    const interval = setInterval(restart, 15000)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('pageshow', restart)
-      window.removeEventListener('focus', restart)
-      clearInterval(interval)
-    }
-  }, [qrWaiting]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function copyQrUri() {
     if (!qrUri) return
@@ -466,65 +392,57 @@ export default function LoginScreen({ onLogin }) {
       return
     }
     setLoading(true)
-    // If the bunker requests web approval (authUrl) we know it's alive and
-    // just waiting for the user — extend the timeout to give them time to tap.
-    // On mobile, window.open from an async callback is blocked, so we surface
-    // the URL in the UI; on desktop we also try to pop it up.
-    let timeoutId = null
-    let rejectTimeout = null
     let authRequested = false
+    // Generate a fresh client secret for this login. Saved on success so
+    // later reloads re-authenticate silently without user re-approval.
+    const clientSecretKey = generateSecretKey()
+    const clientSecret = bytesToHex(clientSecretKey)
     try {
       resetNDK()
       const ndk = getNDK()
-      const signer = NDKNip46Signer.bunker(ndk, token)
-      signer.on('authUrl', (url) => {
-        authRequested = true
-        if (timeoutId) clearTimeout(timeoutId)
-        if (rejectTimeout) {
-          timeoutId = setTimeout(() => rejectTimeout(new Error('__timeout__')), 180000)
-        }
-        let safe = null
-        try {
-          const parsed = new URL(url)
-          if (parsed.protocol === 'https:' || parsed.protocol === 'http:') safe = url
-        } catch {}
-        if (!safe) return
-        setAuthUrl(safe)
-        if (!isMobile) {
-          // noopener,noreferrer — bunker-supplied URL; strip the opener handle
-          // so the approval page can't navigate our tab via window.opener.
-          try { window.open(safe, '_blank', 'width=600,height=700,noopener,noreferrer') } catch {}
-        }
+      const signer = await connectViaBunkerUrl({
+        ndk,
+        bunkerUrl: token,
+        clientSecretKey,
+        clientSecret,
+        onAuthUrl: (url) => {
+          authRequested = true
+          try {
+            const parsed = new URL(url)
+            if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return
+            setAuthUrl(url)
+            if (!isMobile) {
+              // noopener,noreferrer — bunker-supplied URL; strip the opener
+              // handle so the approval page can't navigate our tab.
+              try { window.open(url, '_blank', 'width=600,height=700,noopener,noreferrer') } catch {}
+            }
+          } catch {}
+        },
+        // Long ceiling because auth_url flows can legitimately take the
+        // user ~minutes to approve. signWithTimeout still bounds post-login
+        // sign calls at 20s, so this only affects the initial handshake.
+        timeoutMs: 180000,
       })
       ndk.signer = signer
-      await Promise.race([
-        signer.blockUntilReady(),
-        new Promise((_, reject) => {
-          rejectTimeout = reject
-          timeoutId = setTimeout(() => reject(new Error('__timeout__')), 30000)
-        }),
-      ])
       await connectAndWait(ndk)
-      const ndkUser = await signer.user()
-      const user = await fetchUserProfile(ndk, ndkUser.pubkey)
+      const user = await fetchUserProfile(ndk, signer.pubkey)
       const nip46Record = buildNip46Record({
-        bunkerPubkey: signer.bunkerPubkey,
-        userPubkey: ndkUser.pubkey,
-        localSignerPrivkey: signer.localSigner?.privateKey,
-        relays: parseBunkerRelays(token),
+        clientSecret,
+        bunkerPointer: signer.bunkerPointer,
+        userPubkey: signer.pubkey,
       })
       if (nip46Record) saveSession(nip46Record)
       onLogin(user)
     } catch (err) {
-      if (err.message === '__timeout__') {
+      const msg = err?.message || 'unknown error'
+      if (/timeout|did not/i.test(msg)) {
         setError(authRequested
-          ? 'Bunker requested approval but never completed. Tap the approval link above, then wait for your signer to connect.'
+          ? 'Bunker requested approval but never completed. Tap the approval link above, then try again.'
           : 'Bunker did not respond in time. Check that the connection string is valid and the bunker is online.')
       } else {
-        setError('Bunker login failed: ' + (err.message || 'unknown error'))
+        setError('Bunker login failed: ' + msg)
       }
     } finally {
-      if (timeoutId) clearTimeout(timeoutId)
       setLoading(false)
       setBunkerValue('')
       setAuthUrl(null)

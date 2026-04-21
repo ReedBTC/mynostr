@@ -80,7 +80,11 @@ export default function PostingCadenceCard({ cadence, loading }) {
             <span className="inline-block w-24 h-3 bg-neutral-800 rounded animate-pulse" />
           ) : total > 0 ? (
             <>
-              <span className="text-neutral-200 font-medium">{total}</span> notes
+              {total / (windowWeeks * 7) < 0.5 ? (
+                <><span className="text-neutral-200 font-medium">&lt;1</span> note/day</>
+              ) : (
+                <><span className="text-neutral-200 font-medium">~{Math.round(total / (windowWeeks * 7))}</span> notes/day</>
+              )}
               {cadence?.capped && <span className="text-neutral-600"> (partial)</span>}
             </>
           ) : (

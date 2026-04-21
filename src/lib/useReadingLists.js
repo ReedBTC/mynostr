@@ -18,7 +18,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK } from './ndk.js'
+import { getNDK, signWithTimeout } from './ndk.js'
 
 // Per-pubkey cache so viewing multiple authors on the same machine doesn't
 // leak one person's enriched bookmarks into another's display.
@@ -515,7 +515,7 @@ export function useReadingLists(user) {
           const mergedContent = [...list.articles, ...(list.otherContentItems || [])]
           event.content = JSON.stringify(mergedContent)
         }
-        await event.sign()
+        await signWithTimeout(event)
         await event.publish()
         published = true
       } catch {
@@ -675,7 +675,7 @@ export function useReadingLists(user) {
         event.kind    = sourceKind
         event.tags    = [['d', listId]]
         event.content = ''
-        await event.sign()
+        await signWithTimeout(event)
         await event.publish()
       } catch {}
     }

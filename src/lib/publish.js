@@ -1,6 +1,6 @@
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { getNDK, FALLBACK_RELAYS } from './ndk.js'
+import { getNDK, signWithTimeout, FALLBACK_RELAYS } from './ndk.js'
 import { titleToSlug, toUnixTimestamp, parseDateString, buildAttributionLine } from './utils.js'
 
 /**
@@ -62,7 +62,7 @@ export async function publishArticle({ content, metadata, source }) {
   }
 
   // Sign and publish — NDK returns a Set of relays that acknowledged the event
-  await event.sign()
+  await signWithTimeout(event)
   const publishedTo = await event.publish()
   const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
 
@@ -131,7 +131,7 @@ export async function publishDraft({ content, metadata, source }) {
     if (writeRelays?.length) relayUrls = writeRelays
   } catch {}
 
-  await event.sign()
+  await signWithTimeout(event)
   const publishedTo = await event.publish()
   const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
   const relays = confirmedRelays.length ? confirmedRelays : relayUrls

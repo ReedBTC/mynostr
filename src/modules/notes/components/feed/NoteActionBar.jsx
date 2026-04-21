@@ -18,7 +18,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { getNDK } from '../../../../lib/ndk.js'
+import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
@@ -121,7 +121,7 @@ export default function NoteActionBar({ note, profile }) {
         ['p', note.pubkey],
         ['k', '1'],
       ]
-      await ev.sign()
+      await signWithTimeout(ev)
       await ev.publish()
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Like failed:', err)
@@ -149,7 +149,7 @@ export default function NoteActionBar({ note, profile }) {
         ['e', note.id],
         ['p', note.pubkey],
       ]
-      await ev.sign()
+      await signWithTimeout(ev)
       await ev.publish()
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Repost failed:', err)

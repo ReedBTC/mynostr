@@ -1,70 +1,154 @@
 /**
  * RelayCard — per-user relay dashboard shown under the posting cadence chart.
  *
- * Loads the user's kind 10002 relay list (read/write), then fetches each
- * relay's NIP-11 info document in parallel and renders:
+ * Loads the user's relay list (NIP-65 kind 10002, falling back to legacy
+ * kind 3), fetches each relay's NIP-11 info document in parallel, and
+ * renders columns that are both user-meaningful and actually declared in
+ * the wild:
  *
- *   Desktop: table with columns Name · R/W · Status · Software · flags · NIPs
+ *   Desktop: Relay · Use · Auth · Search · Vanish · Software
  *   Mobile:  stacked cards with the same fields reflowed
  *
- * NIP columns flag support for five user-facing capabilities (articles,
- * events, market, right-to-vanish, search). Each column header carries a
- * ? tooltip that works on hover (desktop) and click (mobile). A collapsible
- * FAQ at the bottom teaches the concepts most users don't know about relays.
+ * When the logged-in user is viewing their own profile, an Edit button
+ * flips the table into a per-row edit mode (W/R toggles + delete + add-new
+ * input) and a Save button publishes a fresh kind 10002. Saving is also
+ * the upgrade path for users on legacy kind 3 — an amber banner prompts
+ * them, and the same Save path replaces their kind 3 with NIP-65.
  */
 import { useEffect, useRef, useState } from 'react'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
-import { fetchNip11, fetchUserRelayList } from '../../lib/relayInfo.js'
+import { useOwnerContext } from '../../lib/ownerContext.jsx'
+import {
+  fetchNip11,
+  fetchUserRelayList,
+  publishRelayList,
+  normalizeRelayUrl,
+} from '../../lib/relayInfo.js'
 import RelayFAQ from './RelayFAQ.jsx'
+import { useRelayCopier, CopyButton } from './useRelayCopier.jsx'
 
-// NIP columns we surface as checkmark/dash. Order matches the header row.
-// Keep this list tight — mobile width is the limiting factor.
-const NIP_COLUMNS = [
-  { nip: 23, name: 'Articles',        desc: 'NIP-23 — Long-form articles (kind 30023). Required for publishing & reading full posts with titles, cover images, and markdown.' },
-  { nip: 52, name: 'Events',          desc: 'NIP-52 — Calendar events (kind 31922/31923). Needed to publish and discover dated events.' },
-  { nip: 99, name: 'Market',          desc: 'NIP-99 — Classified listings (kind 30402). Used by marketplace clients to list and buy items.' },
-  { nip: 62, name: 'Right to Vanish', desc: 'NIP-62 — Request to vanish (kind 62). Relays that support this MUST permanently delete your events when asked. Compare to NIP-09 which is only a best-effort "SHOULD delete".' },
-  { nip: 50, name: 'Search',          desc: 'NIP-50 — Full-text search. Relays without NIP-50 can only filter by author, tag, or kind — they cannot answer keyword queries.' },
+const FEATURES = [
+  {
+    key:   'auth',
+    label: 'Auth',
+    title: 'Auth — private or gated relay',
+    desc:  'The relay requires NIP-42 authentication or restricts writes to an allowlist, meaning you may not be able to read or post here without permission. When you do have access, your client signs the auth challenge automatically.',
+    check: info => {
+      if (!info || info._error) return null
+      const lim = info.limitation
+      if (!lim || typeof lim !== 'object') return false
+      return Boolean(lim.auth_required || lim.restricted_writes)
+    },
+  },
+  {
+    key:   'search',
+    label: 'Search',
+    title: 'Search — NIP-50 full-text',
+    desc:  'The relay indexes event content for keyword search. Relays without NIP-50 can only filter by author, tag, or kind — they cannot answer "find me every event that mentions X". Useful if you want to grep your own history.',
+    check: info => supportsNip(info, 50),
+  },
+  {
+    key:   'vanish',
+    label: 'Vanish',
+    title: 'Vanish — NIP-62 right to delete',
+    desc:  'The relay commits to permanently deleting every event tied to your pubkey when you request it. Most relays do not declare NIP-62 — they only support NIP-09, which is a polite SHOULD-delete that relays can ignore. If right-to-delete matters to you, prefer Vanish relays.',
+    check: info => supportsNip(info, 62),
+  },
 ]
 
-// Short human name for a relay URL. Uses NIP-11 `name` if present, else the
-// host portion of the URL (wss://relay.damus.io → relay.damus.io).
-function displayName(url, info) {
-  if (info?.name && typeof info.name === 'string') return info.name.slice(0, 40)
-  try { return new URL(url).host } catch { return url }
-}
-
-// NIP support is reported as an array of numbers in NIP-11. Cross-check
-// against both the top-level supported_nips and any aliases relays sometimes
-// use (strings, decimal numbers, etc.).
 function supportsNip(info, nip) {
-  if (!info || info._error) return null // unknown
+  if (!info || info._error) return null
   const list = Array.isArray(info.supported_nips) ? info.supported_nips : null
   if (!list) return null
   return list.some(n => Number(n) === nip)
 }
 
+const KNOWN_SOFTWARE = [
+  { match: 'strfry',         label: 'strfry'    },
+  { match: 'khatru',         label: 'khatru'    },
+  { match: 'nostream',       label: 'nostream'  },
+  { match: 'nostr-rs-relay', label: 'nostr-rs'  },
+  { match: 'ditto',          label: 'ditto'     },
+  { match: 'citrine',        label: 'citrine'   },
+  { match: 'nosflare',       label: 'nosflare'  },
+  { match: 'rnostr',         label: 'rnostr'    },
+  { match: 'akasha',         label: 'akasha'    },
+  { match: 'relayer',        label: 'relayer'   },
+  { match: 'nostrpony',      label: 'nostrpony' },
+  { match: 'satellite',      label: 'satellite' },
+]
+
+function relaySoftware(info) {
+  if (!info || info._error) return null
+  const sw = info.software
+  if (typeof sw !== 'string' || !sw) return null
+  const lower = sw.toLowerCase()
+  for (const k of KNOWN_SOFTWARE) {
+    if (lower.includes(k.match)) return k.label
+  }
+  const stripped = lower.replace(/\.git$/, '')
+  const parts = stripped.split('/').filter(Boolean)
+  return (parts[parts.length - 1] || lower).slice(0, 10)
+}
+
+function displayName(url, info) {
+  if (info?.name && typeof info.name === 'string') return info.name.slice(0, 40)
+  try { return new URL(url).host } catch { return url }
+}
+
+// Accept user input like "relay.damus.io", "wss://relay.damus.io", or a full
+// URL with a path. Returns the normalized wss URL on success, or an error.
+function validateRelayInput(raw) {
+  const trimmed = (raw || '').trim()
+  if (!trimmed) return { error: 'Enter a relay URL.' }
+  let candidate = trimmed
+  if (!/^wss?:\/\//i.test(candidate)) candidate = 'wss://' + candidate
+  try {
+    const u = new URL(candidate)
+    if (u.protocol !== 'wss:' && u.protocol !== 'ws:') {
+      return { error: 'Relay URLs must start with wss://' }
+    }
+    if (!u.host || !u.host.includes('.')) {
+      return { error: 'Relay host looks wrong.' }
+    }
+    return { url: normalizeRelayUrl(candidate) }
+  } catch {
+    return { error: 'Not a valid URL.' }
+  }
+}
+
 export default function RelayCard({ pubkey }) {
   const isMobile = useIsMobile()
+  const { isOwner } = useOwnerContext()
+  const copier = useRelayCopier({ kind: 'main' })
   const [relays, setRelays] = useState([])
+  const [source, setSource] = useState('none')
   const [loading, setLoading] = useState(true)
-  const [infoByUrl, setInfoByUrl] = useState({}) // url -> NIP-11 or {_error}
+  const [infoByUrl, setInfoByUrl] = useState({})
+  const [mode, setMode] = useState('view')     // 'view' | 'edit'
+  const [draft, setDraft] = useState([])        // local edits before save
+  const [addInput, setAddInput] = useState('')
+  const [addError, setAddError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saveNotice, setSaveNotice] = useState(null)
 
   // Load the user's relay list whenever the viewed pubkey changes, then
-  // fan out NIP-11 fetches in parallel. Failures are individual — one bad
-  // relay doesn't block the rest.
+  // fan out NIP-11 fetches in parallel. One bad relay doesn't block the rest.
   useEffect(() => {
-    if (!pubkey) { setRelays([]); setLoading(false); return }
+    if (!pubkey) { setRelays([]); setSource('none'); setLoading(false); return }
     let cancelled = false
     setLoading(true)
     setInfoByUrl({})
+    setMode('view')
+    setSaveNotice(null)
+    setSaveError('')
     ;(async () => {
-      const list = await fetchUserRelayList(pubkey)
+      const { relays: list, source: src } = await fetchUserRelayList(pubkey)
       if (cancelled) return
       setRelays(list)
+      setSource(src)
       setLoading(false)
-      // Kick off NIP-11 fetches. Update state per-relay as each resolves
-      // so the first ones paint fast even if one is slow.
       for (const r of list) {
         fetchNip11(r.url).then(info => {
           if (cancelled) return
@@ -75,8 +159,82 @@ export default function RelayCard({ pubkey }) {
     return () => { cancelled = true }
   }, [pubkey])
 
+  function enterEdit() {
+    // Deep-copy into draft so toggling W/R flags doesn't mutate the live list
+    setDraft(relays.map(r => ({ url: r.url, read: !!r.read, write: !!r.write })))
+    setAddInput('')
+    setAddError('')
+    setSaveError('')
+    setSaveNotice(null)
+    setMode('edit')
+  }
+
+  function cancelEdit() {
+    setMode('view')
+    setAddInput('')
+    setAddError('')
+    setSaveError('')
+  }
+
+  function toggleRW(url, key) {
+    setDraft(d => d.map(r => r.url === url ? { ...r, [key]: !r[key] } : r))
+  }
+  function removeRelay(url) {
+    setDraft(d => d.filter(r => r.url !== url))
+  }
+  function addRelay() {
+    const v = validateRelayInput(addInput)
+    if (v.error) { setAddError(v.error); return }
+    if (draft.some(r => r.url === v.url)) {
+      setAddError('That relay is already in the list.')
+      return
+    }
+    setDraft(d => [...d, { url: v.url, read: true, write: true }])
+    setAddInput('')
+    setAddError('')
+  }
+
+  async function handleSave() {
+    if (saving) return
+    // At least one read+write pair is required to avoid publishing a useless
+    // list. Users who really want zero relays should just not have a list.
+    const keep = draft.filter(r => r.read || r.write)
+    if (keep.length === 0) {
+      setSaveError('Keep at least one relay with read or write enabled.')
+      return
+    }
+    setSaving(true)
+    setSaveError('')
+    try {
+      const { relays: confirmedTo } = await publishRelayList({ relays: keep })
+      // Optimistically adopt the new list as the source of truth and fetch
+      // NIP-11 for any newly-added relays.
+      setRelays(keep)
+      setSource('nip65')
+      setMode('view')
+      setSaveNotice({
+        kind: 'ok',
+        msg: `Relay list published to ${confirmedTo.length} relay${confirmedTo.length === 1 ? '' : 's'}.`,
+      })
+      // Kick NIP-11 fetches for any new URLs we don't already have info for
+      for (const r of keep) {
+        if (!infoByUrl[r.url]) {
+          fetchNip11(r.url).then(info => {
+            setInfoByUrl(prev => ({ ...prev, [r.url]: info }))
+          })
+        }
+      }
+    } catch (e) {
+      setSaveError(e?.message || 'Publish failed. Check your signer and try again.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const readCount  = relays.filter(r => r.read).length
   const writeCount = relays.filter(r => r.write).length
+  const emptyForOwner = !loading && relays.length === 0 && isOwner
+  const inEdit = mode === 'edit'
 
   return (
     <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
@@ -87,35 +245,119 @@ export default function RelayCard({ pubkey }) {
             where their notes live
           </span>
         </div>
-        <span className="text-[11px] text-neutral-500 whitespace-nowrap">
-          {loading ? (
-            <span className="inline-block w-24 h-3 bg-neutral-800 rounded animate-pulse" />
-          ) : relays.length > 0 ? (
-            <>
-              <span className="text-neutral-200 font-medium">{writeCount}</span> write
-              <span className="mx-1.5 text-neutral-700">·</span>
-              <span className="text-neutral-200 font-medium">{readCount}</span> read
-            </>
-          ) : (
-            <span className="text-neutral-600">No relay list published</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-neutral-500 whitespace-nowrap">
+            {loading ? (
+              <span className="inline-block w-24 h-3 bg-neutral-800 rounded animate-pulse" />
+            ) : relays.length > 0 ? (
+              <>
+                <span className="text-neutral-200 font-medium">{writeCount}</span> write
+                <span className="mx-1.5 text-neutral-700">·</span>
+                <span className="text-neutral-200 font-medium">{readCount}</span> read
+              </>
+            ) : (
+              <span className="text-neutral-600">No relay list published</span>
+            )}
+          </span>
+          {isOwner && !loading && !inEdit && relays.length > 0 && (
+            <button
+              type="button"
+              onClick={enterEdit}
+              className="text-[11px] px-2 py-1 rounded border border-neutral-700 text-neutral-300 hover:bg-neutral-900 hover:border-purple-700/60 hover:text-purple-200 transition-colors focus:outline-none focus:ring-1 focus:ring-purple-600"
+            >
+              Edit
+            </button>
           )}
-        </span>
+        </div>
       </div>
+
+      {source === 'kind3' && !inEdit && !loading && (
+        <UpgradeBanner onUpgrade={enterEdit} />
+      )}
+      {saveNotice && (
+        <div className="px-4 py-2 text-[11px] text-green-300 bg-green-950/30 border-b border-green-900/60 flex items-center justify-between gap-3">
+          <span>{saveNotice.msg}</span>
+          <button
+            type="button"
+            onClick={() => setSaveNotice(null)}
+            className="text-green-500 hover:text-green-300 text-xs"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {loading ? (
         <RelaySkeleton />
+      ) : inEdit ? (
+        <EditList
+          draft={draft}
+          addInput={addInput}
+          addError={addError}
+          saveError={saveError}
+          saving={saving}
+          source={source}
+          onToggleRW={toggleRW}
+          onRemove={removeRelay}
+          onAddChange={v => { setAddInput(v); setAddError('') }}
+          onAdd={addRelay}
+          onSave={handleSave}
+          onCancel={cancelEdit}
+        />
+      ) : emptyForOwner ? (
+        <EmptyOwnerPrompt onStart={() => { setDraft([]); setMode('edit') }} />
       ) : relays.length === 0 ? (
         <div className="p-4 text-xs text-neutral-500">
           This user hasn't published a kind 10002 relay list, so we can't show which
           relays they use. Their notes may still reach anyone on the network — see the FAQ below.
         </div>
       ) : isMobile ? (
-        <MobileList relays={relays} infoByUrl={infoByUrl} />
+        <MobileList relays={relays} infoByUrl={infoByUrl} copier={copier} />
       ) : (
-        <DesktopTable relays={relays} infoByUrl={infoByUrl} />
+        <DesktopTable relays={relays} infoByUrl={infoByUrl} copier={copier} />
       )}
 
       <RelayFAQ />
+      {copier.modalElement}
+    </div>
+  )
+}
+
+function UpgradeBanner({ onUpgrade }) {
+  return (
+    <div className="px-4 py-2.5 text-[11px] text-amber-200 bg-amber-950/30 border-b border-amber-900/60 flex items-center justify-between gap-3">
+      <span>
+        <span className="font-semibold">Legacy relay list.</span>{' '}
+        Your relays are stored in the old kind 3 contact-list format. Modern
+        clients (and this one) prefer NIP-65 (kind 10002). Upgrading keeps your
+        current list and makes it visible to more clients.
+      </span>
+      <button
+        type="button"
+        onClick={onUpgrade}
+        className="shrink-0 text-[11px] px-2 py-1 rounded border border-amber-700/70 text-amber-100 hover:bg-amber-900/40 focus:outline-none focus:ring-1 focus:ring-amber-600"
+      >
+        Upgrade →
+      </button>
+    </div>
+  )
+}
+
+function EmptyOwnerPrompt({ onStart }) {
+  return (
+    <div className="p-5 text-center">
+      <div className="text-[13px] text-neutral-200 mb-1">You haven't published a relay list yet.</div>
+      <div className="text-[11px] text-neutral-500 mb-3">
+        Without a relay list, other clients guess where to find your notes.
+        Publishing one lets everyone discover you reliably.
+      </div>
+      <button
+        type="button"
+        onClick={onStart}
+        className="text-[12px] px-3 py-1.5 rounded border border-purple-700 bg-purple-950/40 text-purple-200 hover:bg-purple-900/60 focus:outline-none focus:ring-1 focus:ring-purple-600"
+      >
+        Create a relay list
+      </button>
     </div>
   )
 }
@@ -143,16 +385,29 @@ function RWBadge({ read, write }) {
   )
 }
 
-function NipCell({ supports }) {
-  if (supports === null || supports === undefined) {
-    return <span className="text-neutral-700 tabular-nums">—</span>
+function FeatureCell({ value }) {
+  if (value === null || value === undefined) {
+    return <span className="text-neutral-700 tabular-nums" aria-label="unknown">—</span>
   }
-  return supports
-    ? <span className="text-green-400" aria-label="supported">✓</span>
-    : <span className="text-neutral-700" aria-label="not supported">–</span>
+  return value
+    ? <span className="text-green-400" aria-label="yes">✓</span>
+    : <span className="text-neutral-700" aria-label="no">–</span>
 }
 
-// Colored dot only. Title carries the longform explanation for hover/A11y.
+function SoftwareCell({ info }) {
+  const sw = relaySoftware(info)
+  if (info?._error) return <span className="text-neutral-700">—</span>
+  if (!sw) return <span className="text-neutral-600 italic text-[10px]">unknown</span>
+  const hoverBody = typeof info?.software === 'string'
+    ? info.software
+    : 'Relay software declared in NIP-11. See the FAQ for what each stack implies.'
+  return (
+    <HoverTip label={`Software — ${sw}`} body={hoverBody}>
+      <span className="text-neutral-300 font-mono text-[10px] cursor-help block truncate">{sw}</span>
+    </HoverTip>
+  )
+}
+
 function StatusDot({ info }) {
   let cls = 'bg-neutral-600 animate-pulse'
   let title = 'Checking relay…'
@@ -188,31 +443,34 @@ function PaidBadge({ info }) {
   )
 }
 
-function DesktopTable({ relays, infoByUrl }) {
+function DesktopTable({ relays, infoByUrl, copier }) {
   return (
     <table className="w-full text-[10px] table-fixed">
       <colgroup>
         <col style={{ width: '180px' }} />
         <col />
-        {NIP_COLUMNS.map(c => <col key={c.nip} style={{ width: '36px' }} />)}
+        {FEATURES.map(f => <col key={f.key} style={{ width: '46px' }} />)}
+        <col style={{ width: '76px' }} />
       </colgroup>
       <thead className="text-[10px] uppercase tracking-wider text-neutral-500">
         <tr className="border-b border-neutral-800">
           <th className="text-left  font-medium px-2 py-1.5">Relay</th>
           <th className="text-left  font-medium px-1.5 py-1.5">Use</th>
-          <th colSpan={NIP_COLUMNS.length} className="text-center font-medium px-1 py-1.5 border-l border-neutral-800">
-            NIP
-          </th>
-        </tr>
-        <tr className="border-b border-neutral-800 text-neutral-400">
-          <th colSpan={2} />
-          {NIP_COLUMNS.map(c => (
-            <th key={c.nip} className="px-1 py-1 font-medium border-l border-neutral-900 text-center">
-              <HoverTip label={`NIP-${c.nip} — ${c.name}`} body={c.desc}>
-                <span className="tabular-nums cursor-help underline decoration-dotted decoration-neutral-600 underline-offset-2">{c.nip}</span>
+          {FEATURES.map(f => (
+            <th key={f.key} className="px-1 py-1.5 font-medium border-l border-neutral-900 text-center">
+              <HoverTip label={f.title} body={f.desc}>
+                <span className="cursor-help underline decoration-dotted decoration-neutral-600 underline-offset-2">{f.label}</span>
               </HoverTip>
             </th>
           ))}
+          <th className="px-1 py-1.5 font-medium border-l border-neutral-900 text-center">
+            <HoverTip
+              label="Software — relay codebase"
+              body="Which relay software the operator runs. Different stacks have different strengths — see the FAQ for a breakdown of strfry, khatru, nostream, ditto, and the rest."
+            >
+              <span className="cursor-help underline decoration-dotted decoration-neutral-600 underline-offset-2">Software</span>
+            </HoverTip>
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -233,13 +491,17 @@ function DesktopTable({ relays, infoByUrl }) {
                   <StatusDot info={info} />
                   <RWBadge read={r.read} write={r.write} />
                   <PaidBadge info={info} />
+                  <CopyButton url={r.url} read={r.read} write={r.write} {...copier} />
                 </span>
               </td>
-              {NIP_COLUMNS.map(c => (
-                <td key={c.nip} className="px-1 py-1.5 text-center border-l border-neutral-900 tabular-nums">
-                  <NipCell supports={supportsNip(info, c.nip)} />
+              {FEATURES.map(f => (
+                <td key={f.key} className="px-1 py-1.5 text-center border-l border-neutral-900 tabular-nums">
+                  <FeatureCell value={f.check(info)} />
                 </td>
               ))}
+              <td className="px-1.5 py-1.5 border-l border-neutral-900">
+                <SoftwareCell info={info} />
+              </td>
             </tr>
           )
         })}
@@ -248,11 +510,12 @@ function DesktopTable({ relays, infoByUrl }) {
   )
 }
 
-function MobileList({ relays, infoByUrl }) {
+function MobileList({ relays, infoByUrl, copier }) {
   return (
     <div className="divide-y divide-neutral-900">
       {relays.map(r => {
         const info = infoByUrl[r.url]
+        const sw = relaySoftware(info)
         return (
           <div key={r.url} className="px-3 py-2.5 space-y-1.5">
             <div className="flex items-start justify-between gap-2 min-w-0">
@@ -268,22 +531,172 @@ function MobileList({ relays, infoByUrl }) {
                 <PaidBadge info={info} />
                 <StatusDot info={info} />
                 <RWBadge read={r.read} write={r.write} />
+                <CopyButton url={r.url} read={r.read} write={r.write} {...copier} />
               </div>
             </div>
             <div className="flex items-center gap-1 overflow-x-auto -mx-1 px-1">
-              <span className="text-[10px] uppercase tracking-wider text-neutral-500 shrink-0 mr-1">NIP</span>
-              {NIP_COLUMNS.map(c => (
-                <HoverTip key={c.nip} label={`NIP-${c.nip} — ${c.name}`} body={c.desc}>
+              {FEATURES.map(f => (
+                <HoverTip key={f.key} label={f.title} body={f.desc}>
                   <span className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 cursor-help">
-                    <span className="text-[10px] text-neutral-400 tabular-nums">{c.nip}</span>
-                    <NipCell supports={supportsNip(info, c.nip)} />
+                    <span className="text-[10px] text-neutral-400">{f.label}</span>
+                    <FeatureCell value={f.check(info)} />
                   </span>
                 </HoverTip>
               ))}
+              {sw && (
+                <HoverTip
+                  label={`Software — ${sw}`}
+                  body={typeof info?.software === 'string' ? info.software : 'Relay codebase.'}
+                >
+                  <span className="shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded bg-neutral-900 border border-neutral-800 cursor-help">
+                    <span className="text-[10px] text-neutral-400">SW</span>
+                    <span className="text-[10px] font-mono text-neutral-300">{sw}</span>
+                  </span>
+                </HoverTip>
+              )}
             </div>
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * EditList — the inline editor shown when mode === 'edit'. Each row is a
+ * relay URL with W/R checkboxes and a trash button. Below the rows is a
+ * text input to add a new relay, and at the bottom Save / Cancel buttons.
+ *
+ * Validation, error reporting, and the publish call live in the parent so
+ * the component can stay dumb (and re-used cleanly).
+ */
+function EditList({
+  draft, addInput, addError, saveError, saving, source,
+  onToggleRW, onRemove, onAddChange, onAdd, onSave, onCancel,
+}) {
+  function handleAddKey(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      onAdd()
+    }
+  }
+
+  return (
+    <div className="p-3 space-y-3">
+      {source === 'kind3' && (
+        <div className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-900/60 rounded px-2.5 py-1.5">
+          Saving here will publish your list as NIP-65 (kind 10002) — that's the upgrade.
+        </div>
+      )}
+
+      <div className="border border-neutral-800 rounded overflow-hidden">
+        <table className="w-full text-[11px]">
+          <thead className="text-[10px] uppercase tracking-wider text-neutral-500 bg-neutral-900/40">
+            <tr className="border-b border-neutral-800">
+              <th className="text-left font-medium px-2 py-1.5">Relay</th>
+              <th className="font-medium px-1.5 py-1.5 text-center w-12">Write</th>
+              <th className="font-medium px-1.5 py-1.5 text-center w-12">Read</th>
+              <th className="font-medium px-1.5 py-1.5 text-center w-10"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {draft.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-4 text-center text-neutral-500 text-[11px]">
+                  Your list is empty — add at least one relay below.
+                </td>
+              </tr>
+            )}
+            {draft.map(r => (
+              <tr key={r.url} className="border-b border-neutral-900 last:border-b-0">
+                <td className="px-2 py-1.5 overflow-hidden">
+                  <div className="text-neutral-200 text-[11px] truncate leading-tight font-mono" title={r.url}>
+                    {r.url}
+                  </div>
+                </td>
+                <td className="px-1.5 py-1.5 text-center">
+                  <input
+                    type="checkbox"
+                    checked={r.write}
+                    onChange={() => onToggleRW(r.url, 'write')}
+                    className="accent-purple-600"
+                    aria-label="Write to this relay"
+                  />
+                </td>
+                <td className="px-1.5 py-1.5 text-center">
+                  <input
+                    type="checkbox"
+                    checked={r.read}
+                    onChange={() => onToggleRW(r.url, 'read')}
+                    className="accent-purple-600"
+                    aria-label="Read from this relay"
+                  />
+                </td>
+                <td className="px-1.5 py-1.5 text-center">
+                  <button
+                    type="button"
+                    onClick={() => onRemove(r.url)}
+                    title="Remove this relay"
+                    className="text-neutral-500 hover:text-rose-400 text-sm leading-none focus:outline-none"
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={addInput}
+              onChange={e => onAddChange(e.target.value)}
+              onKeyDown={handleAddKey}
+              placeholder="wss://relay.example.com"
+              className="flex-1 min-w-0 bg-neutral-900 border border-neutral-700 rounded px-2 py-1.5 text-[12px] text-neutral-200 font-mono placeholder:text-neutral-600 focus:outline-none focus:border-purple-600"
+            />
+            <button
+              type="button"
+              onClick={onAdd}
+              className="text-[11px] px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:border-purple-700/60 hover:text-purple-200 focus:outline-none focus:ring-1 focus:ring-purple-600"
+            >
+              Add
+            </button>
+          </div>
+          {addError && (
+            <div className="text-[10px] text-rose-400 mt-1">{addError}</div>
+          )}
+        </div>
+      </div>
+
+      {saveError && (
+        <div className="text-[11px] text-rose-300 bg-rose-950/30 border border-rose-900/60 rounded px-2.5 py-1.5">
+          {saveError}
+        </div>
+      )}
+
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          className="text-[12px] px-3 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:bg-neutral-900 focus:outline-none focus:ring-1 focus:ring-neutral-600 disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={saving}
+          className="text-[12px] px-3 py-1.5 rounded border border-purple-700 bg-purple-950/40 text-purple-200 hover:bg-purple-900/60 focus:outline-none focus:ring-1 focus:ring-purple-600 disabled:opacity-50"
+        >
+          {saving ? 'Publishing…' : 'Save & publish'}
+        </button>
+      </div>
     </div>
   )
 }
