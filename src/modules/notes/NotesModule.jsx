@@ -198,6 +198,7 @@ export default function NotesModule({ user, sessionUser }) {
               onSnapshotChange={(patch) => handleSnapshotChange(currentDraft.id, patch)}
               onPublish={() => publishOne(currentDraft.id)}
               onClear={() => clearDraft(currentDraft.id)}
+              onAckPublished={() => deleteDraft(currentDraft.id)}
               onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
             />
           )}

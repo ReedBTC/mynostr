@@ -907,17 +907,26 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
             ? selected ? 'flex-1 w-full' : 'hidden'
             : 'flex-1'
         }`}>
-          {selected ? (
+          {selected ? (() => {
+            // When viewing another author's Collection, `selected._listId` points
+            // at *their* list — the viewer doesn't own it, so Move/Remove would
+            // fail against the publish path. Strip the foreign-list markers so
+            // the panel renders as a non-bookmarked item (Copy/Add To only).
+            const isOwnBookmark = !!selected?._listId && lists?.some(l => l.id === selected._listId)
+            const panelArticle = !readOnly && selected?._listId && !isOwnBookmark
+              ? { ...selected, _listId: undefined, _listTitle: undefined, _privacy: undefined }
+              : selected
+            return (
             <ArticleReadPanel
               key={selected.id}
-              article={selected}
+              article={panelArticle}
               profile={displayProfiles.get(selected.pubkey)}
               lists={readOnly ? null : lists}
               onAddToList={readOnly ? null : addArticle}
               onCreateList={readOnly ? null : createList}
-              onMoveArticle={readOnly ? null : moveArticle}
-              onMovePrivacy={readOnly ? null : movePrivacy}
-              onRemoveFromList={!readOnly && selected?._listId ? removeArticle : undefined}
+              onMoveArticle={readOnly || !isOwnBookmark ? null : moveArticle}
+              onMovePrivacy={readOnly || !isOwnBookmark ? null : movePrivacy}
+              onRemoveFromList={!readOnly && isOwnBookmark ? removeArticle : undefined}
               defaultPrivacy={privacyView}
               onLoadInEditor={onLoadInEditor}
               onClose={() => setSelected(null)}
@@ -930,7 +939,8 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
               user={user}
               isMobile={isMobile}
             />
-          ) : (
+            )
+          })() : (
             <div className="flex-1 flex items-center justify-center">
               <p className="text-xs text-neutral-700">Select an article to read</p>
             </div>

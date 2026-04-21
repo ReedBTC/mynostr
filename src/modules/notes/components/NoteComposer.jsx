@@ -40,6 +40,7 @@ export default function NoteComposer({
   onSnapshotChange,
   onPublish,
   onClear,
+  onAckPublished,
   onOpenDraftsMobile,
   draftCount = 1,
 }) {
@@ -895,7 +896,16 @@ export default function NoteComposer({
               </p>
             </div>
             <button
-              onClick={handleClear}
+              onClick={() => {
+                // Remove the just-published draft from the tray rather than
+                // resetting it in place — a lingering "Published" entry made
+                // the tray read as "old draft + new draft" after acking, when
+                // the user's intent was simply to start fresh. Falls back to
+                // handleClear if the parent didn't wire onAckPublished, so
+                // the button still does *something* in older callers.
+                if (onAckPublished) onAckPublished()
+                else handleClear()
+              }}
               className="mt-3 w-full py-2 bg-purple-600 hover:bg-purple-500 rounded-lg text-xs text-white font-medium transition-colors"
             >
               New Note

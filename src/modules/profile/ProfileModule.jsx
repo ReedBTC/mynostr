@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { nip19 } from 'nostr-tools'
 import { copyToClipboard, isSafeUrl, truncateNpub, formatCount, createLRU } from '../../lib/utils.js'
 import { useOwnerContext, OwnerProvider } from '../../lib/ownerContext.jsx'
@@ -72,6 +72,12 @@ export default function ProfileModule({ user }) {
   const [loading, setLoading] = useState(!stats || !contentCounts || !bookmarkCounts)
   const [zapLoading, setZapLoading] = useState(!zapAggregates)
   const [cadenceLoading, setCadenceLoading] = useState(!cadence)
+  // Bumped by PostingCadenceCard's refresh button. Forces the cadence fetch
+  // effect to re-run without also re-running the stats/zaps fetches above,
+  // which are on a separate useEffect. Primal's paginated kind-1 fetch
+  // occasionally returns early (missing weeks), so the card needs a way
+  // to refetch without a full page reload.
+  const [cadenceNonce, setCadenceNonce] = useState(0)
 
   // When the preview target changes, seed the per-user state from cache
   // immediately — otherwise we'd show the previous user's numbers for a
@@ -90,7 +96,6 @@ export default function ProfileModule({ user }) {
     let cancelled = false
     setLoading(true)
     setZapLoading(true)
-    setCadenceLoading(true)
     ;(async () => {
       const [s, c, b] = await Promise.all([
         fetchAggregateUserStats(viewingPubkey),
@@ -116,8 +121,16 @@ export default function ProfileModule({ user }) {
       if (hasData) { ZAP_AGGREGATES_CACHE.set(viewingPubkey, z); setZapAggregates(z) }
       setZapLoading(false)
     })()
-    // Posting cadence — also slower (paginates up to 5 pages of kind 1
-    // events). Runs independently from stats/zaps for the same reason.
+    return () => { cancelled = true }
+  }, [viewingPubkey])
+
+  // Posting cadence — separate effect so the refresh button can force a
+  // refetch by bumping cadenceNonce without also re-running stats/zaps.
+  // Slower path (paginates up to 5 pages of kind 1 events).
+  useEffect(() => {
+    if (!viewingPubkey) return
+    let cancelled = false
+    setCadenceLoading(true)
     ;(async () => {
       const c = await fetchAuthorPostingCadence(viewingPubkey).catch(() => null)
       if (cancelled) return
@@ -136,6 +149,18 @@ export default function ProfileModule({ user }) {
       setCadenceLoading(false)
     })()
     return () => { cancelled = true }
+  }, [viewingPubkey, cadenceNonce])
+
+  const refreshCadence = useCallback(() => {
+    if (!viewingPubkey) return
+    // Drop the cached value so a partial result can't re-show on a later
+    // visit, and flip loading on *synchronously* — the effect's own
+    // setCadenceLoading(true) only runs post-render, which caused a
+    // one-frame "not loading" flash where feedback was absent. Keep the
+    // old cadence visible but dimmed so the chart doesn't flash empty.
+    CADENCE_CACHE.delete(viewingPubkey)
+    setCadenceLoading(true)
+    setCadenceNonce(n => n + 1)
   }, [viewingPubkey])
 
   function handleSaved(content, meta) {
@@ -243,6 +268,7 @@ export default function ProfileModule({ user }) {
       zapLoading={zapLoading}
       cadence={cadence}
       cadenceLoading={cadenceLoading}
+      onRefreshCadence={refreshCadence}
       loading={loading}
     />
   )
@@ -261,7 +287,7 @@ export default function ProfileModule({ user }) {
   return view
 }
 
-function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, cadence, cadenceLoading, loading }) {
+function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, cadence, cadenceLoading, onRefreshCadence, loading }) {
   const profile = user?.profile || {}
   const displayName = profile.displayName || profile.name || 'Anonymous'
   const handle = profile.nip05 || (profile.name ? `@${profile.name}` : null)
@@ -448,6 +474,7 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
         <PostingCadenceCard
           cadence={cadence}
           loading={cadenceLoading}
+          onRefresh={onRefreshCadence}
         />
 
         <RelayCard pubkey={user?.pubkey} />

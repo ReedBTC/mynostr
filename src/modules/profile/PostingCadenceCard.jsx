@@ -51,7 +51,7 @@ function buildWeeks(buckets, windowWeeks) {
   return result
 }
 
-export default function PostingCadenceCard({ cadence, loading }) {
+export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
   const windowWeeks = cadence?.windowWeeks || 52
   const weeks    = buildWeeks(cadence?.buckets, windowWeeks)
   const total    = cadence?.total  || 0
@@ -75,25 +75,54 @@ export default function PostingCadenceCard({ cadence, loading }) {
           <h2 className="text-sm font-semibold text-neutral-200">Posting cadence</h2>
           <span className="text-[10px] text-neutral-500 whitespace-nowrap">notes per week · past {windowWeeks} weeks</span>
         </div>
-        <span className="text-[11px] text-neutral-500 whitespace-nowrap">
-          {loading && !cadence ? (
-            <span className="inline-block w-24 h-3 bg-neutral-800 rounded animate-pulse" />
-          ) : total > 0 ? (
-            <>
-              {total / (windowWeeks * 7) < 0.5 ? (
-                <><span className="text-neutral-200 font-medium">&lt;1</span> note/day</>
-              ) : (
-                <><span className="text-neutral-200 font-medium">~{Math.round(total / (windowWeeks * 7))}</span> notes/day</>
-              )}
-              {cadence?.capped && <span className="text-neutral-600"> (partial)</span>}
-            </>
-          ) : (
-            <span className="text-neutral-600">No posts in window</span>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[11px] whitespace-nowrap">
+            {loading ? (
+              <span className="text-purple-300 inline-flex items-center gap-1.5">
+                <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                Refreshing…
+              </span>
+            ) : total > 0 ? (
+              <span className="text-neutral-500">
+                {total / (windowWeeks * 7) < 0.5 ? (
+                  <><span className="text-neutral-200 font-medium">&lt;1</span> note/day</>
+                ) : (
+                  <><span className="text-neutral-200 font-medium">~{Math.round(total / (windowWeeks * 7))}</span> notes/day</>
+                )}
+                {cadence?.capped && <span className="text-neutral-600"> (partial)</span>}
+              </span>
+            ) : (
+              <span className="text-neutral-600">No posts in window</span>
+            )}
+          </span>
+          {onRefresh && (
+            <button
+              onClick={onRefresh}
+              disabled={loading}
+              aria-label="Refresh posting cadence"
+              title="Refresh — Primal's paginated fetch sometimes returns partial history"
+              className={`${loading ? 'text-purple-300' : 'text-neutral-500 hover:text-neutral-200'} disabled:cursor-not-allowed transition-colors p-1 -m-1`}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={loading ? 'animate-spin' : ''}
+              >
+                <path d="M21 12a9 9 0 1 1-3-6.7" />
+                <polyline points="21 3 21 9 15 9" />
+              </svg>
+            </button>
           )}
-        </span>
+        </div>
       </div>
 
-      <div className="px-4 py-4">
+      <div className={`px-4 py-4 relative transition-opacity ${loading && cadence ? 'opacity-40' : ''}`}>
         {loading && !cadence ? (
           <ChartSkeleton />
         ) : (
