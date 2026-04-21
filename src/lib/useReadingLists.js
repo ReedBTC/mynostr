@@ -33,15 +33,17 @@ import {
   encryptPrivateTagArray,
   decryptPrivateTagArray,
 } from './privateItems.js'
+import {
+  makeTombstoneStore,
+  makeHiddenStore,
+  fetchLatestPrimary,
+  isTombstone,
+  seedTombstonesFromEvents,
+} from './bookmarkStorage.js'
 
 // Per-pubkey cache so viewing multiple authors on the same machine doesn't
 // leak one person's enriched bookmarks into another's display.
 const STORAGE_KEY_PREFIX = 'mynostr_reading_lists:'
-
-// Client-side per-pubkey list of hidden category ids, split by privacy view
-// (see hiddenStorageKey helpers). Hiding is a view-only preference; the
-// underlying events still exist on relays.
-const HIDDEN_STORAGE_KEY_PREFIX = 'mynostr_reading_hidden:'
 
 // The kind-10003 primary list has this synthetic id everywhere in the app.
 export const PRIMARY_LIST_ID = '_bookmarks'
@@ -53,10 +55,37 @@ function storageKeyFor(pubkey) {
   return pubkey ? `${STORAGE_KEY_PREFIX}${pubkey}` : null
 }
 
+// Sanity-check a cached list entry before letting it round-trip through
+// publishList. Another script on the same origin (or a buggy future
+// revision) could in theory corrupt our localStorage blob; any shape
+// mismatch should be dropped rather than silently flowing back into a
+// publish. Matches the validation used by useNoteBookmarks.
+function isValidCachedList(l) {
+  if (!l || typeof l !== 'object') return false
+  if (typeof l.id !== 'string' || !l.id) return false
+  if (typeof l.title !== 'string') return false
+  return true
+}
+function sanitizeCachedList(l) {
+  const articles = Array.isArray(l.articles)
+    ? l.articles.filter(a => a && typeof a.aTag === 'string' && a.aTag.includes(':'))
+    : []
+  const otherContentItems = Array.isArray(l.otherContentItems)
+    ? l.otherContentItems.filter(it => it && typeof it === 'object')
+    : []
+  const extraTags = Array.isArray(l.extraTags)
+    ? l.extraTags.filter(t => Array.isArray(t) && typeof t[0] === 'string')
+    : []
+  return { ...l, articles, otherContentItems, extraTags, privateArticles: [] }
+}
 function loadFromStorage(pubkey) {
   const key = storageKeyFor(pubkey)
   if (!key) return []
-  try { return JSON.parse(localStorage.getItem(key) || '[]') } catch { return [] }
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || '[]')
+    if (!Array.isArray(raw)) return []
+    return raw.filter(isValidCachedList).map(sanitizeCachedList)
+  } catch { return [] }
 }
 
 function saveToStorage(pubkey, lists) {
@@ -74,107 +103,16 @@ function saveToStorage(pubkey, lists) {
   } catch {}
 }
 
-// Per-pubkey hidden chips, split by privacy view. Same shape as
-// useNoteBookmarks: `{ public: string[], private: string[] }`. A pre-split
-// bare array migrates into the public bucket so previously-hidden lists
-// don't pop back into view.
-function hiddenStorageKeyFor(pubkey) {
-  return pubkey ? `${HIDDEN_STORAGE_KEY_PREFIX}${pubkey}` : null
-}
-
-function loadHiddenFromStorage(pubkey) {
-  const key = hiddenStorageKeyFor(pubkey)
-  const empty = { public: [], private: [] }
-  if (!key) return empty
-  try {
-    const raw = JSON.parse(localStorage.getItem(key) || 'null')
-    if (Array.isArray(raw)) {
-      return { public: raw.filter(id => typeof id === 'string'), private: [] }
-    }
-    if (raw && typeof raw === 'object') {
-      return {
-        public:  Array.isArray(raw.public)  ? raw.public .filter(id => typeof id === 'string') : [],
-        private: Array.isArray(raw.private) ? raw.private.filter(id => typeof id === 'string') : [],
-      }
-    }
-    return empty
-  } catch { return empty }
-}
-
-function saveHiddenToStorage(pubkey, hiddenByView) {
-  const key = hiddenStorageKeyFor(pubkey)
-  if (!key) return
-  try {
-    localStorage.setItem(key, JSON.stringify({
-      public:  [...(hiddenByView.public  || [])],
-      private: [...(hiddenByView.private || [])],
-    }))
-  } catch {}
-}
-
-// Tombstone log — per-pubkey `listId → created_at` map. Written when
-// deleteList's tombstone publish lands; read on load so a stale fallback
-// relay can't resurrect a deleted list by returning the pre-tombstone event.
-// Mirrors the tombstone log in useNoteBookmarks.
-const TOMBSTONE_KEY_PREFIX = 'mynostr_reading_tombstones:'
-function tombstoneKeyFor(pubkey) {
-  return pubkey ? `${TOMBSTONE_KEY_PREFIX}${pubkey}` : null
-}
-function loadTombstones(pubkey) {
-  const key = tombstoneKeyFor(pubkey)
-  if (!key) return {}
-  try {
-    const raw = JSON.parse(localStorage.getItem(key) || 'null')
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-    const out = {}
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof k === 'string' && Number.isFinite(v)) out[k] = v
-    }
-    return out
-  } catch { return {} }
-}
-function saveTombstone(pubkey, listId, createdAt) {
-  const key = tombstoneKeyFor(pubkey)
-  if (!key || !listId) return
-  try {
-    const current = loadTombstones(pubkey)
-    const stamp = Number.isFinite(createdAt) ? createdAt : Math.floor(Date.now() / 1000)
-    current[listId] = Math.max(current[listId] || 0, stamp)
-    localStorage.setItem(key, JSON.stringify(current))
-  } catch {}
-}
-
-// ── Cross-module concurrency ──────────────────────────────────────────────────
-//
-// Notes + Longform both read/write the user's single kind 10003 event.
-// Each module owns a slice of that event (longform: `a`-tags + aTag items
-// in content; notes: `e`-tags + id items in content + any NIP-51
-// ciphertext in content). A naive publish-from-in-memory-snapshot races
-// the other module and can silently clobber its data.
-//
-// fetchLatestPrimary fetches the freshest 10003 from relays immediately
-// before publishing, so we can pick the *current* slice the other module
-// owns and merge it into our new event. If the fetch fails (offline,
-// timeout), callers fall back to their cached `extraTags` /
-// `otherContentItems` — no worse than the pre-fix behavior.
-
-async function fetchLatestPrimary(pubkey) {
-  if (!pubkey) return null
-  try {
-    const ndk = getNDK()
-    const events = await Promise.race([
-      ndk.fetchEvents({ kinds: [10003], authors: [pubkey] }),
-      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-    ])
-    let fresh = null
-    for (const ev of events) {
-      if (!fresh || (ev.created_at || 0) > (fresh.created_at || 0)) fresh = ev
-    }
-    return fresh
-  } catch {
-    return null
-  }
-}
+// Shared helpers from bookmarkStorage.js:
+//   - Tombstone store: per-pubkey `listId → created_at` map. Written when
+//     deleteList's tombstone publish lands; read on load so a stale
+//     fallback relay can't resurrect a deleted list.
+//   - Hidden store: per-pubkey chip hide preferences split by privacy view.
+//   - fetchLatestPrimary: cross-module concurrency — refetches the freshest
+//     kind 10003 immediately before publishing so we don't silently clobber
+//     data the notes module wrote since our load.
+const { load: loadTombstones, save: saveTombstone } = makeTombstoneStore('mynostr_reading_tombstones:')
+const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenStore('mynostr_reading_hidden:')
 
 // ── Nostr event helpers ───────────────────────────────────────────────────────
 
@@ -186,17 +124,12 @@ function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
 }
 
-// A category published with only a d-tag and empty content is a tombstone —
-// our deleteList path writes exactly that shape. Don't surface it.
-function isTombstone(event) {
-  if (event.kind !== 30001 && event.kind !== 30003) return false
-  const tags = event.tags || []
-  const onlyDTag = tags.length === 1 && tags[0]?.[0] === 'd'
-  return onlyDTag && (!event.content || event.content === '')
-}
-
 // Build a minimal article stub from a bare aTag. Enrichment fills in
-// title/image/author later.
+// title/image/author later. `addedAt` of 0 is a deliberate signal from
+// callers that no client-side bookmark timestamp is available — the
+// downstream sort falls through to `publishedAt` in that case. Coercing
+// only a null/undefined input to `Date.now()` lets 0 pass through
+// unmodified (the pre-fix `|| Date.now()` silently turned 0 into "now").
 function stubFromATag(aTag, addedAt) {
   return {
     aTag,
@@ -204,7 +137,7 @@ function stubFromATag(aTag, addedAt) {
     image: '',
     author: '',
     tTags: [],
-    addedAt: addedAt || Date.now(),
+    addedAt: addedAt != null ? addedAt : Date.now(),
   }
 }
 
@@ -281,8 +214,10 @@ function eventToList(event) {
 
 // ── Background enrichment ───────────────────────────────────────────────────
 // Fetches kind 30023 events for bookmark items missing metadata, then fetches
-// kind 0 profiles for the authors. Updates items in-place and returns true if
-// any items were enriched.
+// kind 0 profiles for the authors. Returns a Map<aTag, newItem> of enriched
+// replacements (null if nothing needed enriching). The caller swaps items in
+// via setLists so enrichment is immutable end-to-end — if this mutated items
+// in place, a future React.memo keyed on article props wouldn't invalidate.
 //
 // Operates on both buckets (public articles + private articles) — private
 // items need the same title/image/author pass; enrichment looks up public
@@ -321,7 +256,7 @@ async function enrichBookmarkItems(lists) {
     }
   }
 
-  if (needsArticle.length === 0 && needsProfile.length === 0) return false
+  if (needsArticle.length === 0 && needsProfile.length === 0) return null
 
   // Group article-needing items by author for batched queries
   const byAuthor = new Map()
@@ -370,42 +305,45 @@ async function enrichBookmarkItems(lists) {
     } catch {}
   }
 
-  // Enrich bare-tag items (title + image + author + pic)
-  let enriched = false
+  // Build replacement items keyed by aTag. Each is a new object — callers
+  // swap by reference so React reconciliation sees a change.
+  const enrichedMap = new Map()
+
   for (const item of needsArticle) {
     const pubkey = item.aTag.split(':')[1]
     const ev = articleMap.get(item.aTag)
     const profile = profileMap.get(pubkey)
-
+    if (!ev && !profile) continue
+    const next = { ...item }
     if (ev) {
-      item.title = getTag(ev, 'title') || item.title
-      item.image = getTag(ev, 'image') || item.image
-      item.tTags = ev.tags?.filter(t => t[0] === 't').map(t => t[1]) || item.tTags || []
+      next.title = getTag(ev, 'title') || next.title
+      next.image = getTag(ev, 'image') || next.image
+      next.tTags = ev.tags?.filter(t => t[0] === 't').map(t => t[1]) || next.tTags || []
       const pub = parseInt(getTag(ev, 'published_at'))
-      if (!item.publishedAt) {
-        item.publishedAt = !isNaN(pub) && pub ? pub : (ev.created_at || 0)
+      if (!next.publishedAt) {
+        next.publishedAt = !isNaN(pub) && pub ? pub : (ev.created_at || 0)
       }
     }
     if (profile) {
       const name = profile.display_name || profile.name || ''
-      if (name) item.author = name
-      if (profile.picture) item.authorPic = profile.picture
+      if (name) next.author = name
+      if (profile.picture) next.authorPic = profile.picture
     }
-    if (ev || profile) enriched = true
+    enrichedMap.set(item.aTag, next)
   }
 
-  // Enrich profile-only items (author name + pic)
   for (const item of needsProfile) {
     const pubkey = item.aTag.split(':')[1]
     const profile = profileMap.get(pubkey)
     if (!profile) continue
+    const next = { ...item }
     const name = profile.display_name || profile.name || ''
-    if (name && isHexLike(item.author)) item.author = name
-    if (profile.picture && !item.authorPic) item.authorPic = profile.picture
-    enriched = true
+    if (name && isHexLike(next.author)) next.author = name
+    if (profile.picture && !next.authorPic) next.authorPic = profile.picture
+    enrichedMap.set(item.aTag, next)
   }
 
-  return enriched
+  return enrichedMap.size > 0 ? enrichedMap : null
 }
 
 // Decrypt a list's privateCiphertext blob into article stubs. Returns an
@@ -424,10 +362,12 @@ async function decryptPrivateArticles(ciphertext, ndk) {
     const aKind = aTag.split(':')[0]
     if (aKind !== '30023' && aKind !== '30078') continue
     seen.add(aTag)
-    // addedAt unknown for private items (no event-time fallback to leak);
-    // use current time so newly-decrypted items sort sensibly. Gets
-    // replaced on subsequent mutations with a real timestamp.
-    out.push(stubFromATag(aTag, Date.now()))
+    // `addedAt` is not preserved through the encrypted blob (we only store
+    // `['a', aTag]` to keep the payload minimal and interop-friendly), so
+    // leave it at 0. The downstream sort in DiscoverView falls through to
+    // `publishedAt` (the article's own `published_at` tag) when `addedAt`
+    // is missing, which is the "sort by created at" behavior we want.
+    out.push(stubFromATag(aTag, 0))
   }
   return out
 }
@@ -493,13 +433,19 @@ export function useReadingLists(user) {
         // below a locally-recorded tombstone for that list id. Prevents a
         // stale fallback relay from resurrecting a list we already deleted.
         const tombstones = loadTombstones(pubkey)
+        // Also seed the local log from tombstones we just fetched — a delete
+        // set on another device arrives here as a regular replaceable event,
+        // and without seeding, the isTombstone filter drops it and any stale
+        // cached copy resurrects the entry on the next cache-merge pass.
+        const eventsArr = Array.from(events)
+        seedTombstonesFromEvents(eventsArr, tombstones, pubkey, saveTombstone)
         const tombstoneFor = (ev) => {
           if (ev.kind === 10003) return tombstones[PRIMARY_LIST_ID] || 0
           const dTag = ev.tags?.find(t => t[0] === 'd')?.[1]
           return dTag ? (tombstones[dTag] || 0) : 0
         }
 
-        const parsed = Array.from(events)
+        const parsed = eventsArr
           .filter(ev => !isTombstone(ev))
           .filter(ev => (ev.created_at || 0) > tombstoneFor(ev))
           .map(eventToList)
@@ -602,14 +548,32 @@ export function useReadingLists(user) {
           // Use the latest state (which may include just-decrypted private
           // articles) so enrichment covers them too.
           const enrichTarget = listsRef.current.length > 0 ? listsRef.current : result
-          enrichBookmarkItems(enrichTarget).then(didEnrich => {
+          enrichBookmarkItems(enrichTarget).then(enrichedMap => {
             enrichingRef.current = false
-            if (cancelled) return
-            if (didEnrich) {
-              // Force a re-render with the enriched data
-              setLists([...listsRef.current])
-              if (!readOnly) saveToStorage(pubkey, listsRef.current)
-            }
+            if (cancelled || !enrichedMap) return
+            // Merge the returned Map<aTag, newItem> into the latest lists
+            // via setLists updater. New items only replace existing ones
+            // where the aTag matches, and each affected list gets a fresh
+            // object reference so React reconciliation invalidates memoed
+            // descendants. Using the updater (not listsRef.current) avoids
+            // clobbering any writes the user made while enrichment ran.
+            setLists(prev => {
+              let touched = false
+              const next = prev.map(list => {
+                const prevArts = list.articles || []
+                const prevPriv = list.privateArticles || []
+                const articles = prevArts.map(a => enrichedMap.get(a.aTag) || a)
+                const privateArticles = prevPriv.map(a => enrichedMap.get(a.aTag) || a)
+                const changed = articles.some((a, i) => a !== prevArts[i])
+                             || privateArticles.some((a, i) => a !== prevPriv[i])
+                if (!changed) return list
+                touched = true
+                return { ...list, articles, privateArticles }
+              })
+              if (!touched) return prev
+              if (!readOnly) saveToStorage(pubkey, next)
+              return next
+            })
           }).catch(() => { enrichingRef.current = false })
         }
       } catch {
@@ -650,6 +614,7 @@ export function useReadingLists(user) {
     if (readOnly) return false
 
     const logFailure = (where, err) => {
+      if (!import.meta.env.DEV) return
       try {
         // eslint-disable-next-line no-console
         console.error(`[reading-lists] ${where} failed for list "${list.title}" (${list.id}):`, err)
@@ -707,14 +672,22 @@ export function useReadingLists(user) {
             }
           }
 
-          if (hasPrivateItems || freshEncrypted) {
+          if (hasPrivateItems) {
+            // We have new private items — re-encrypt the merged blob (our
+            // items plus any foreign tags the other module owns).
             try {
               contentOverride = await buildEncryptedContent(freshEncrypted ? freshContent : list.privateCiphertext || '')
             } catch (err) {
               logFailure('encrypt (primary)', err)
-              if (hasPrivateItems) return false
-              contentOverride = freshEncrypted ? freshContent : (list.privateCiphertext || '')
+              return false
             }
+          } else if (freshEncrypted) {
+            // No new private items and the blob is encrypted. Do NOT decrypt-
+            // and-re-encrypt — if our async decrypt hasn't finished yet,
+            // privateArticles is empty and re-encrypting would filter out our
+            // own `a`-tags, silently wiping them from the blob. Preserve it
+            // verbatim; we're only touching public items in this publish.
+            contentOverride = freshContent
           } else if (fresh) {
             // Pure-public path — merge our articles with notes-module items.
             let parsed = null
@@ -753,14 +726,16 @@ export function useReadingLists(user) {
           }
 
           const hadCiphertext = !!list.privateCiphertext
-          if (hasPrivateItems || hadCiphertext) {
+          if (hasPrivateItems) {
             try {
               event.content = await buildEncryptedContent(list.privateCiphertext || '')
             } catch (err) {
               logFailure('encrypt (list)', err)
-              if (hasPrivateItems) return false
-              event.content = list.privateCiphertext || ''
+              return false
             }
+          } else if (hadCiphertext) {
+            // Preserve blob verbatim (see primary branch).
+            event.content = list.privateCiphertext
           } else {
             // Merge our articles with any foreign content items (e.g., notes'
             // `{id, addedAt}`) so they round-trip intact.
@@ -997,8 +972,6 @@ export function useReadingLists(user) {
     // the user can retry — better than a UI that lies about persistence.
     const primaryOk = await publishList(newPrimary)
     if (!primaryOk) return false
-
-    if (!pubkey) return true
 
     let tombstoneAt = 0
     try {

@@ -46,11 +46,23 @@ export function looksEncrypted(content) {
 // (extension signers call window.nostr.nip44.encrypt(undefined, …) and
 // PrivateKey signers throw "invalid pubkey"). Always wrap as {pubkey}.
 // Our bunker wrapper accepts either form; the {pubkey} wrap works for all.
+//
+// Cache the resolved recipient per signer. Without this, a bulk op that
+// encrypts/decrypts N categories can hit `signer.user()` N times — for
+// NIP-46 bunkers that's a round-trip per call and can prompt the signer
+// app repeatedly. WeakMap releases the entry when the signer is GC'd
+// (logout / NDK reset).
+const RECIPIENT_CACHE = new WeakMap()
 async function getSelfRecipient(ndk) {
   if (!ndk?.signer) throw new Error('No signer attached')
-  const pubkey = ndk.signer.pubkey || (await ndk.signer.user())?.pubkey
+  const signer = ndk.signer
+  const cached = RECIPIENT_CACHE.get(signer)
+  if (cached) return cached
+  const pubkey = signer.pubkey || (await signer.user())?.pubkey
   if (!pubkey) throw new Error('Cannot resolve signer pubkey')
-  return { pubkey }
+  const recipient = { pubkey }
+  RECIPIENT_CACHE.set(signer, recipient)
+  return recipient
 }
 
 /**
@@ -141,6 +153,11 @@ export function tagArrayToNoteItems(tagArray) {
   return items
 }
 
+// NIP-33 addressable event reference: `<kind>:<pubkey-hex>:<d-tag>`.
+// Validate shape so a malformed or malicious entry in a decrypted blob
+// can't propagate into `event.tags` on the next publish.
+const ATAG_PATTERN = /^\d+:[0-9a-f]{64}:.+$/
+
 /**
  * Longform article shape → tag-array form. We preserve the minimum to
  * rehydrate the card (aTag + addedAt); title/image/author get re-fetched
@@ -150,6 +167,7 @@ export function articlesToTagArray(articles) {
   const out = []
   for (const a of articles || []) {
     if (!a?.aTag || typeof a.aTag !== 'string') continue
+    if (!ATAG_PATTERN.test(a.aTag)) continue
     out.push(['a', a.aTag, '', '', String(a.addedAt || 0)])
   }
   return out
@@ -161,7 +179,7 @@ export function tagArrayToArticles(tagArray) {
   for (const t of tagArray || []) {
     if (!Array.isArray(t) || t[0] !== 'a') continue
     const aTag = typeof t[1] === 'string' ? t[1] : null
-    if (!aTag || seen.has(aTag)) continue
+    if (!aTag || !ATAG_PATTERN.test(aTag) || seen.has(aTag)) continue
     seen.add(aTag)
     out.push({
       aTag,

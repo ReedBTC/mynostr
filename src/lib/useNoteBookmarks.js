@@ -36,42 +36,59 @@ import {
   noteItemsToTagArray,
   tagArrayToNoteItems,
 } from './privateItems.js'
+import {
+  makeTombstoneStore,
+  makeHiddenStore,
+  fetchLatestPrimary,
+  isTombstone,
+  seedTombstonesFromEvents,
+} from './bookmarkStorage.js'
 
-// Fetch the freshest kind 10003 event from relays. Used immediately
-// before publishing the primary bookmark list so any data the longform
-// module wrote since our load is preserved through our publish instead
-// of silently clobbered. On fetch failure (timeout, offline) callers
-// fall back to their cached `extraTags` / `rawContent` — no worse than
-// pre-merge behavior.
-async function fetchLatestPrimary(pubkey) {
-  if (!pubkey) return null
-  try {
-    const ndk = getNDK()
-    const events = await Promise.race([
-      ndk.fetchEvents({ kinds: [10003], authors: [pubkey] }),
-      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-    ])
-    let fresh = null
-    for (const ev of events) {
-      if (!fresh || (ev.created_at || 0) > (fresh.created_at || 0)) fresh = ev
-    }
-    return fresh
-  } catch {
-    return null
-  }
-}
+// Shared helpers from bookmarkStorage.js — see that file for details.
+// The tombstone/hidden stores live behind hook-specific localStorage
+// prefixes so the notes and longform modules keep their own namespaces.
+const { load: loadTombstones, save: saveTombstone } = makeTombstoneStore('mynostr_note_bookmark_tombstones:')
+const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenStore('mynostr_note_hidden_bookmarks:')
 
 const STORAGE_KEY_PREFIX = 'mynostr_note_bookmarks:'
-const HIDDEN_STORAGE_KEY_PREFIX = 'mynostr_note_hidden_bookmarks:'
 const PRIMARY_CATEGORY_ID = '_primary'
 
 function storageKeyFor(pubkey) {
   return pubkey ? `${STORAGE_KEY_PREFIX}${pubkey}` : null
 }
+// Validate a cached category entry before letting it flow back into
+// publish paths. Any other script with access to the same origin could
+// in theory write our localStorage keys, and a cache written by a buggy
+// future revision could round-trip through publishCategory and corrupt
+// the user's data. Drop anything that doesn't look like the shape we
+// wrote — items without a valid id, or items whose id isn't a hex event
+// id — rather than trust the blob on disk.
+function isValidCachedCategory(c) {
+  if (!c || typeof c !== 'object') return false
+  if (typeof c.id !== 'string' || !c.id) return false
+  if (typeof c.title !== 'string') return false
+  return true
+}
+function sanitizeCachedCategory(c) {
+  const items = Array.isArray(c.items)
+    ? c.items.filter(it => it && typeof it.id === 'string' && /^[0-9a-f]{64}$/i.test(it.id))
+    : []
+  const otherContentItems = Array.isArray(c.otherContentItems)
+    ? c.otherContentItems.filter(it => it && typeof it === 'object')
+    : []
+  const extraTags = Array.isArray(c.extraTags)
+    ? c.extraTags.filter(t => Array.isArray(t) && typeof t[0] === 'string')
+    : []
+  return { ...c, items, otherContentItems, extraTags, privateItems: [] }
+}
 function loadFromStorage(pubkey) {
   const key = storageKeyFor(pubkey)
   if (!key) return []
-  try { return JSON.parse(localStorage.getItem(key) || '[]') } catch { return [] }
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || '[]')
+    if (!Array.isArray(raw)) return []
+    return raw.filter(isValidCachedCategory).map(sanitizeCachedCategory)
+  } catch { return [] }
 }
 function saveToStorage(pubkey, categories) {
   const key = storageKeyFor(pubkey)
@@ -93,101 +110,8 @@ function saveToStorage(pubkey, categories) {
   } catch {}
 }
 
-// Per-pubkey hidden chips, split by privacy view. Hiding is a display
-// preference — the underlying 30001/30003 events stay on relays and
-// other clients/modules still see them. Primary (_primary) is never
-// hideable.
-//
-// Per-view because a user may want a category to appear only in their
-// private bookmarks (e.g., a "Sensitive" set they keep off their public
-// chip bar) or only in their public (a noisy archive they never want to
-// scroll past when reviewing private saves).
-//
-// Storage shape: `{ public: string[], private: string[] }`. Migration:
-// a bare array from the pre-split schema maps to the public bucket so a
-// user upgrading doesn't see previously-hidden chips pop back onto their
-// public view.
-function hiddenStorageKeyFor(pubkey) {
-  return pubkey ? `${HIDDEN_STORAGE_KEY_PREFIX}${pubkey}` : null
-}
-function loadHiddenFromStorage(pubkey) {
-  const key = hiddenStorageKeyFor(pubkey)
-  const empty = { public: [], private: [] }
-  if (!key) return empty
-  try {
-    const raw = JSON.parse(localStorage.getItem(key) || 'null')
-    if (Array.isArray(raw)) {
-      return { public: raw.filter(id => typeof id === 'string'), private: [] }
-    }
-    if (raw && typeof raw === 'object') {
-      return {
-        public:  Array.isArray(raw.public)  ? raw.public .filter(id => typeof id === 'string') : [],
-        private: Array.isArray(raw.private) ? raw.private.filter(id => typeof id === 'string') : [],
-      }
-    }
-    return empty
-  } catch { return empty }
-}
-function saveHiddenToStorage(pubkey, hiddenByView) {
-  const key = hiddenStorageKeyFor(pubkey)
-  if (!key) return
-  try {
-    localStorage.setItem(key, JSON.stringify({
-      public:  [...(hiddenByView.public  || [])],
-      private: [...(hiddenByView.private || [])],
-    }))
-  } catch {}
-}
-
-// Tombstone log — per-pubkey map of `categoryId → created_at`. Written
-// when `deleteCategory` publishes a tombstone; read on load so a stale
-// relay response for a deleted category can't resurrect it locally.
-//
-// Needed because publishing to one relay is enough to "succeed," but
-// fallback relays may still return the pre-tombstone event on reload.
-// Without this filter the pre-tombstone event parses into a category
-// and the load merge has nothing in the cache to outrank it with.
-const TOMBSTONE_KEY_PREFIX = 'mynostr_note_bookmark_tombstones:'
-function tombstoneKeyFor(pubkey) {
-  return pubkey ? `${TOMBSTONE_KEY_PREFIX}${pubkey}` : null
-}
-function loadTombstones(pubkey) {
-  const key = tombstoneKeyFor(pubkey)
-  if (!key) return {}
-  try {
-    const raw = JSON.parse(localStorage.getItem(key) || 'null')
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-    const out = {}
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof k === 'string' && Number.isFinite(v)) out[k] = v
-    }
-    return out
-  } catch { return {} }
-}
-function saveTombstone(pubkey, categoryId, createdAt) {
-  const key = tombstoneKeyFor(pubkey)
-  if (!key || !categoryId) return
-  try {
-    const current = loadTombstones(pubkey)
-    const stamp = Number.isFinite(createdAt) ? createdAt : Math.floor(Date.now() / 1000)
-    current[categoryId] = Math.max(current[categoryId] || 0, stamp)
-    localStorage.setItem(key, JSON.stringify(current))
-  } catch {}
-}
-
 function makeSlug(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `cat-${Date.now()}`
-}
-
-// A category event that was published with a d-tag but nothing else is a
-// tombstone — our deleteCategory path writes exactly that shape. Filtering
-// these out keeps deleted categories from reappearing after a relay refetch.
-function isTombstone(event) {
-  if (event.kind !== 30001 && event.kind !== 30003) return false
-  const tags = event.tags || []
-  const onlyDTag = tags.length === 1 && tags[0]?.[0] === 'd'
-  const emptyContent = !event.content || event.content === ''
-  return onlyDTag && emptyContent
 }
 
 export function parseEventToCategory(event) {
@@ -376,13 +300,19 @@ export function useNoteBookmarks(user) {
         // resurrecting the deleted category on reload. A newer non-tombstone
         // from another client is still honored — means we re-created it.
         const tombstones = loadTombstones(pubkey)
+        // Also seed from tombstones we just fetched — a delete set on another
+        // device arrives as a regular replaceable event, and without seeding
+        // the isTombstone filter drops it while any stale cached copy would
+        // resurrect the deleted category on the next cache-merge pass.
+        const eventsArr = Array.from(events)
+        seedTombstonesFromEvents(eventsArr, tombstones, pubkey, saveTombstone)
         const tombstoneFor = (ev) => {
           if (ev.kind === 10003) return tombstones[PRIMARY_CATEGORY_ID] || 0
           const dTag = ev.tags?.find(t => t[0] === 'd')?.[1]
           return dTag ? (tombstones[dTag] || 0) : 0
         }
 
-        const parsed = Array.from(events)
+        const parsed = eventsArr
           .filter(ev => !isTombstone(ev))
           .filter(ev => (ev.created_at || 0) > tombstoneFor(ev))
           .map(parseEventToCategory)
@@ -405,6 +335,11 @@ export function useNoteBookmarks(user) {
         // created_at will be higher than the cache's stamp.
         for (const c of cached) {
           if (!c?.id) continue
+          // Skip cached entries that have been tombstoned — without this,
+          // a delete on another device (whose tombstone we just seeded from
+          // the fetch) could still get resurrected via the cache.
+          const tombAt = tombstones[c.id] || 0
+          if (tombAt && (Number(c.createdAt) || 0) <= tombAt) continue
           const cachedAt = Number(c.createdAt) || 0
           const existing = byId.get(c.id)
           if (!existing || cachedAt > (existing.createdAt || 0)) byId.set(c.id, c)
@@ -484,6 +419,7 @@ export function useNoteBookmarks(user) {
     // including the one where encrypt would silently throw "undefined
     // recipient". Hoisted so it's in scope for every try/catch in here.
     const logFailure = (where, err) => {
+      if (!import.meta.env.DEV) return
       try {
         // eslint-disable-next-line no-console
         console.error(`[bookmarks] ${where} failed for category "${cat.title}" (${cat.id}):`, err)
@@ -527,18 +463,22 @@ export function useNoteBookmarks(user) {
           preservedTags = (fresh.tags || []).filter(t => t[0] !== 'e')
         }
 
-        if (hasPrivateItems || freshEncrypted) {
+        if (hasPrivateItems) {
+          // We have new private items — re-encrypt the merged blob (our
+          // items plus any foreign tags the other module owns).
           try {
             contentOverride = await buildEncryptedContent(freshContent)
           } catch (err) {
             logFailure('encrypt (primary)', err)
-            // Can't decrypt or re-encrypt. If we were trying to save new
-            // private items, bail — better to show an error than corrupt
-            // another module's private items. If we had no new private
-            // items, preserve the existing blob verbatim.
-            if (hasPrivateItems) return false
-            contentOverride = freshContent
+            return false
           }
+        } else if (freshEncrypted) {
+          // No new private items and the blob is encrypted. Do NOT decrypt-
+          // and-re-encrypt — if our async decrypt hasn't finished yet,
+          // privateItems is empty and re-encrypting would filter out our own
+          // `e`-tags, silently wiping them from the blob. Preserve verbatim;
+          // we're only touching public items in this publish.
+          contentOverride = freshContent
         } else {
           // Pure-public path (current behavior).
           let parsed = null
@@ -577,14 +517,16 @@ export function useNoteBookmarks(user) {
         }
 
         const hadCiphertext = !!cat.privateCiphertext
-        if (hasPrivateItems || hadCiphertext) {
+        if (hasPrivateItems) {
           try {
             event.content = await buildEncryptedContent(cat.privateCiphertext || '')
           } catch (err) {
             logFailure('encrypt (category)', err)
-            if (hasPrivateItems) return false
-            event.content = cat.privateCiphertext || ''
+            return false
           }
+        } else if (hadCiphertext) {
+          // Preserve blob verbatim (see primary branch).
+          event.content = cat.privateCiphertext
         } else {
           // Merge our items with any foreign content items (e.g., longform's
           // `{aTag, ...}`) so they round-trip intact.

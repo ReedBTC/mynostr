@@ -67,23 +67,66 @@ export async function signWithTimeout(event, timeoutMs = SIGN_TIMEOUT_MS) {
 // the user has no 10002 or the lookup times out. Doesn't block on the
 // new relays completing their WS handshake — NDK connects them in the
 // background, so this call returns as soon as the 10002 is parsed.
+// Module-level buffer so the AppShell banner can display a warning that
+// fired before it mounted. ensureUserWriteRelays runs during login/restore,
+// which completes BEFORE the module route + AppShell mount, so a pure
+// event-listener approach loses races. The banner reads this on mount and
+// clears it on dismiss. Cleared when a subsequent call succeeds so the
+// user doesn't see a stale warning across re-logins.
+export const OUTBOX_WARNING_EVENT = 'mynostr:outbox-warning'
+let _lastOutboxWarning = null
+// Defensive copy — callers shouldn't be able to mutate the shared buffer by
+// accident (a rename of `.reason` would silently corrupt the banner state).
+export function getLastOutboxWarning() {
+  return _lastOutboxWarning ? { ..._lastOutboxWarning } : null
+}
+export function clearLastOutboxWarning() { _lastOutboxWarning = null }
+
 export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = {}) {
   if (!ndk || !pubkey) return []
+  // Empty/failed results mean subsequent publishes will fall back to the
+  // full pool (fallback relays) — the exact pre-outbox-migration behavior
+  // we're trying to get away from. Surface it so the user can react
+  // (re-login, check RelayCard) rather than silently writing to relays
+  // their followers don't read from.
+  const warn = (reason) => {
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn(`[ensureUserWriteRelays] ${reason} for ${pubkey.slice(0, 8)}… — publishes will hit fallback relays`)
+    }
+    _lastOutboxWarning = { pubkey, reason, at: Date.now() }
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(OUTBOX_WARNING_EVENT, { detail: { pubkey, reason } }))
+      }
+    } catch {}
+  }
   try {
     const relayListEvent = await Promise.race([
       ndk.fetchEvent({ kinds: [10002], authors: [pubkey] }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
     ])
-    if (!relayListEvent) return []
+    if (!relayListEvent) {
+      warn('no kind 10002 relay list')
+      return []
+    }
     const writeRelays = (relayListEvent.tags || [])
       .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
       .map(t => t[1])
       .filter(u => typeof u === 'string' && /^wss:\/\//i.test(u))
+    if (writeRelays.length === 0) {
+      warn('kind 10002 has no write relays')
+      return []
+    }
     for (const url of writeRelays) {
       try { ndk.addExplicitRelay(url) } catch {}
     }
+    // Success — clear any prior warning so a recovered session doesn't
+    // keep nagging the user about an outbox issue that no longer applies.
+    _lastOutboxWarning = null
     return writeRelays
-  } catch {
+  } catch (err) {
+    warn(err?.message === 'timeout' ? 'timed out fetching kind 10002' : 'error fetching kind 10002')
     return []
   }
 }
@@ -146,4 +189,7 @@ export function resetNDK() {
     }
   }
   ndkInstance = null
+  // Drop any outbox warning left over from the previous session so a relog
+  // (same or different account) starts clean.
+  _lastOutboxWarning = null
 }

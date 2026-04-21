@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
 import { isSafeUrl } from '../lib/utils.js'
-import { resetNDK } from '../lib/ndk.js'
+import { resetNDK, getLastOutboxWarning, clearLastOutboxWarning, OUTBOX_WARNING_EVENT } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import { useOwnerContext } from '../lib/ownerContext.jsx'
 import BoostModal from './BoostModal.jsx'
@@ -194,8 +194,79 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
 
       {/* ── Module content ──────────────────────────────────────── */}
       <main className="flex-1 overflow-hidden flex flex-col">
+        {sessionUser && <OutboxWarningBanner sessionPubkey={sessionUser.pubkey} />}
         {children}
       </main>
+    </div>
+  )
+}
+
+/**
+ * Listens for `mynostr:outbox-warning` events dispatched by
+ * ensureUserWriteRelays when a user's NIP-65 write relays can't be
+ * resolved. Renders a dismissible strip so the user knows their
+ * publishes are falling back to the fallback relay pool — otherwise the
+ * outbox migration's whole point (writes landing on the right relays)
+ * can silently fail after a bad network moment at login.
+ *
+ * Only renders for the current session's pubkey so a leftover event
+ * from a previous account can't linger. Dismissal is session-scoped
+ * (not persisted) — a new login re-opens the warning if it recurs.
+ */
+function OutboxWarningBanner({ sessionPubkey }) {
+  const [visible, setVisible] = useState(false)
+  const [reason, setReason]   = useState('')
+  // Reset the banner whenever the session pubkey changes (login/logout/
+  // account-switch). Also check the module-level buffer on mount — the
+  // warning may have been dispatched during login/restore BEFORE this
+  // component mounted, in which case addEventListener-only would miss it.
+  // Read the buffer first and call setVisible once so pubkey changes cause
+  // a single render instead of a false→true flicker.
+  useEffect(() => {
+    if (!sessionPubkey) {
+      setVisible(false)
+      return
+    }
+    const last = getLastOutboxWarning()
+    if (last && last.pubkey === sessionPubkey) {
+      setReason(last.reason || '')
+      setVisible(true)
+    } else {
+      setVisible(false)
+    }
+  }, [sessionPubkey])
+  useEffect(() => {
+    if (!sessionPubkey) return
+    function handler(e) {
+      if (e?.detail?.pubkey && e.detail.pubkey !== sessionPubkey) return
+      setReason(e?.detail?.reason || '')
+      setVisible(true)
+    }
+    window.addEventListener(OUTBOX_WARNING_EVENT, handler)
+    return () => window.removeEventListener(OUTBOX_WARNING_EVENT, handler)
+  }, [sessionPubkey])
+  function dismiss() {
+    setVisible(false)
+    clearLastOutboxWarning()
+  }
+  if (!visible) return null
+  return (
+    <div
+      role="status"
+      className="shrink-0 bg-amber-950/40 border-b border-amber-900/50 px-3 py-1.5 flex items-center gap-2 text-[11px] text-amber-200"
+      title={reason ? `Detail: ${reason}` : undefined}
+    >
+      <span>⚠️</span>
+      <span className="flex-1 truncate">
+        Couldn't read your write relays — publishes may only reach fallback relays. Check Profile → Relays.
+      </span>
+      <button
+        onClick={dismiss}
+        aria-label="Dismiss"
+        className="text-amber-300 hover:text-amber-100 px-1.5"
+      >
+        ✕
+      </button>
     </div>
   )
 }
