@@ -28,7 +28,7 @@
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, signWithTimeout } from './ndk.js'
+import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
 import {
   looksEncrypted,
   encryptPrivateTagArray,
@@ -136,6 +136,42 @@ function saveHiddenToStorage(pubkey, hiddenByView) {
       public:  [...(hiddenByView.public  || [])],
       private: [...(hiddenByView.private || [])],
     }))
+  } catch {}
+}
+
+// Tombstone log — per-pubkey map of `categoryId → created_at`. Written
+// when `deleteCategory` publishes a tombstone; read on load so a stale
+// relay response for a deleted category can't resurrect it locally.
+//
+// Needed because publishing to one relay is enough to "succeed," but
+// fallback relays may still return the pre-tombstone event on reload.
+// Without this filter the pre-tombstone event parses into a category
+// and the load merge has nothing in the cache to outrank it with.
+const TOMBSTONE_KEY_PREFIX = 'mynostr_note_bookmark_tombstones:'
+function tombstoneKeyFor(pubkey) {
+  return pubkey ? `${TOMBSTONE_KEY_PREFIX}${pubkey}` : null
+}
+function loadTombstones(pubkey) {
+  const key = tombstoneKeyFor(pubkey)
+  if (!key) return {}
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || 'null')
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const out = {}
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof k === 'string' && Number.isFinite(v)) out[k] = v
+    }
+    return out
+  } catch { return {} }
+}
+function saveTombstone(pubkey, categoryId, createdAt) {
+  const key = tombstoneKeyFor(pubkey)
+  if (!key || !categoryId) return
+  try {
+    const current = loadTombstones(pubkey)
+    const stamp = Number.isFinite(createdAt) ? createdAt : Math.floor(Date.now() / 1000)
+    current[categoryId] = Math.max(current[categoryId] || 0, stamp)
+    localStorage.setItem(key, JSON.stringify(current))
   } catch {}
 }
 
@@ -334,17 +370,44 @@ export function useNoteBookmarks(user) {
         ])
         if (cancelled) return
 
-        // Parse everything but tombstones so empty-for-kind categories still
-        // show in the chip bar (they just render with a 0 count — the user
-        // can see the list exists and pick it to add notes to).
+        // Tombstone filter: a locally-recorded tombstone outranks any fetched
+        // event for the same category whose created_at is older. Prevents a
+        // fallback relay (which may not have seen our delete yet) from
+        // resurrecting the deleted category on reload. A newer non-tombstone
+        // from another client is still honored — means we re-created it.
+        const tombstones = loadTombstones(pubkey)
+        const tombstoneFor = (ev) => {
+          if (ev.kind === 10003) return tombstones[PRIMARY_CATEGORY_ID] || 0
+          const dTag = ev.tags?.find(t => t[0] === 'd')?.[1]
+          return dTag ? (tombstones[dTag] || 0) : 0
+        }
+
         const parsed = Array.from(events)
           .filter(ev => !isTombstone(ev))
+          .filter(ev => (ev.created_at || 0) > tombstoneFor(ev))
           .map(parseEventToCategory)
         // Merge (dedup by id, preferring the newest createdAt per id).
         const byId = new Map()
         for (const cat of parsed) {
           const existing = byId.get(cat.id)
           if (!existing || cat.createdAt > existing.createdAt) byId.set(cat.id, cat)
+        }
+        // Cache-aware merge: for every cached category, keep it if its
+        // createdAt beats the freshest fetched event for that id. Solves the
+        // "publish succeeded to one write relay, but fallback relays still
+        // return the stale event" regression — the local cache is stamped
+        // with the published event's real created_at in commitCategoryUpdate,
+        // so a stale fetch can't outrank it by timestamp.
+        //
+        // Cache-only entries (local-only createCategory not yet published,
+        // or anything the relay pool didn't return) are preserved too. A
+        // genuinely newer write from another client wins because its
+        // created_at will be higher than the cache's stamp.
+        for (const c of cached) {
+          if (!c?.id) continue
+          const cachedAt = Number(c.createdAt) || 0
+          const existing = byId.get(c.id)
+          if (!existing || cachedAt > (existing.createdAt || 0)) byId.set(c.id, c)
         }
         const result = Array.from(byId.values())
         // Order: primary "Ungrouped" (kind 10003) first — it's the default
@@ -409,9 +472,13 @@ export function useNoteBookmarks(user) {
   // items to save, we bail rather than corrupt the blob.
   //
   // Returns true iff the relay publish succeeded.
+  // Returns the published event's `created_at` on success, or 0 on failure.
+  // Callers stamp the returned timestamp onto their cached category via
+  // commitCategoryUpdate so the load-path merge can tell "freshly published"
+  // from "stale relay echo" by comparing created_at.
   const publishCategory = useCallback(async (cat) => {
-    if (readOnly || !pubkey) return false
-    if (cat.readOnly) return false
+    if (readOnly || !pubkey) return 0
+    if (cat.readOnly) return 0
 
     // Every branch below used to swallow failures in a bare `catch {}` —
     // including the one where encrypt would silently throw "undefined
@@ -526,18 +593,21 @@ export function useNoteBookmarks(user) {
         }
       }
       await signWithTimeout(event)
-      const publishedTo = await event.publish()
+      // Bookmarks are replaceable (kind 10003/30001/30003) and the user will
+      // keep editing them. Publish only to their own NIP-65 write relays so
+      // every copy lives where future edits and deletes will land — a copy on
+      // a fallback relay outside their write set would keep showing the old
+      // state after any future change.
+      const publishedTo = await publishToOwnOutbox(event)
       const reached = Array.from(publishedTo || []).map(r => r.url).filter(Boolean)
       if (reached.length === 0) {
         logFailure('publish', new Error('no relays acknowledged the event'))
-        return false
+        return 0
       }
-      return true
+      return Number(event.created_at) || Math.floor(Date.now() / 1000)
     } catch (err) {
       logFailure('sign/publish', err)
-      // Best-effort — local state is already updated; republish on next
-      // mutation.
-      return false
+      return 0
     }
   }, [readOnly, pubkey])
 
@@ -566,260 +636,265 @@ export function useNoteBookmarks(user) {
     return cat
   }, [readOnly, pubkey])
 
+  // Commit a single category change to local state after its publish has
+  // landed. Used by the publish-before-commit mutation paths below so the
+  // UI only reflects what durably published to at least one relay.
+  //
+  // `publishedAt` (optional) is the event's `created_at` — stamping it on
+  // the cached category makes the load-path merge able to tell "freshly
+  // published locally" from "stale echo from a lagging fallback relay"
+  // when deciding which version of a category wins on reload.
+  const commitCategoryUpdate = useCallback((newCat, publishedAt) => {
+    const stamped = Number.isFinite(publishedAt) && publishedAt > 0
+      ? { ...newCat, createdAt: publishedAt }
+      : newCat
+    setCategories(prev => {
+      const next = prev.map(c => c.id === stamped.id ? stamped : c)
+      saveToStorage(pubkey, next)
+      return next
+    })
+  }, [pubkey])
+
   // Mutually-exclusive bookmarks: a note lives in exactly one (category,
   // privacy) pair at a time. Adding to target X as privacy P removes it
   // from every other bucket — every other category AND the other privacy
   // side within the target. Each affected category gets one publish.
   //
+  // Publish-before-commit: state is only updated after each event lands on
+  // ≥1 relay. Target is published first so a partial failure results in
+  // duplication (recoverable on refetch) rather than data loss. Returns
+  // true iff the target publish succeeded.
+  //
   // Trade-off: moving between kinds or privacy sides costs one publish per
   // touched category. Most NIP-07 extensions auto-approve replaceables;
   // NIP-46 signers surface each as a prompt. Acceptable.
   const addNote = useCallback(async (categoryId, noteId, options = {}) => {
-    if (readOnly || !noteId) return
+    if (readOnly || !noteId) return false
     const id = noteId.toLowerCase()
     const privacy = options.privacy === 'private' ? 'private' : 'public'
-    const toPublish = []
-    setCategories(prev => {
-      const target = prev.find(c => c.id === categoryId)
-      if (!target) return prev
 
-      const next = prev.map(c => {
-        const publicHas  = (c.items || []).some(it => it.id === id)
-        const privateHas = (c.privateItems || []).some(it => it.id === id)
-        if (c.id === categoryId) {
-          if (privacy === 'public' && publicHas) {
-            // Already in the target bucket — still evict from private side.
-            if (!privateHas) return c
-            const newCat = { ...c, privateItems: c.privateItems.filter(it => it.id !== id) }
-            toPublish.push(newCat)
-            return newCat
-          }
-          if (privacy === 'private' && privateHas) {
-            if (!publicHas) return c
-            const newCat = { ...c, items: c.items.filter(it => it.id !== id) }
-            toPublish.push(newCat)
-            return newCat
-          }
-          const now = Date.now()
-          const newItem = { id, addedAt: now }
-          const newCat = {
-            ...c,
-            items:        privacy === 'public'  ? [newItem, ...(c.items || [])]        : (c.items || []).filter(it => it.id !== id),
-            privateItems: privacy === 'private' ? [newItem, ...(c.privateItems || [])] : (c.privateItems || []).filter(it => it.id !== id),
-          }
-          toPublish.push(newCat)
-          return newCat
+    const current = categoriesRef.current
+    const target = current.find(c => c.id === categoryId)
+    if (!target) return false
+
+    let targetNew = null
+    const sourceNews = []
+    for (const c of current) {
+      const publicHas  = (c.items || []).some(it => it.id === id)
+      const privateHas = (c.privateItems || []).some(it => it.id === id)
+      if (c.id === categoryId) {
+        if (privacy === 'public' && publicHas) {
+          if (!privateHas) { targetNew = c; continue }
+          targetNew = { ...c, privateItems: c.privateItems.filter(it => it.id !== id) }
+          continue
         }
-        // Evict from any other bucket that held it (either privacy side).
-        if (publicHas || privateHas) {
-          const newCat = {
-            ...c,
-            items:        publicHas  ? c.items.filter(it => it.id !== id)        : c.items,
-            privateItems: privateHas ? c.privateItems.filter(it => it.id !== id) : c.privateItems,
-          }
-          toPublish.push(newCat)
-          return newCat
+        if (privacy === 'private' && privateHas) {
+          if (!publicHas) { targetNew = c; continue }
+          targetNew = { ...c, items: c.items.filter(it => it.id !== id) }
+          continue
         }
-        return c
-      })
-      saveToStorage(pubkey, next)
-      return next
-    })
-    for (const cat of toPublish) {
-      await publishCategory(cat)
+        const newItem = { id, addedAt: Date.now() }
+        targetNew = {
+          ...c,
+          items:        privacy === 'public'  ? [newItem, ...(c.items || [])]        : (c.items || []).filter(it => it.id !== id),
+          privateItems: privacy === 'private' ? [newItem, ...(c.privateItems || [])] : (c.privateItems || []).filter(it => it.id !== id),
+        }
+      } else if (publicHas || privateHas) {
+        sourceNews.push({
+          ...c,
+          items:        publicHas  ? c.items.filter(it => it.id !== id)        : c.items,
+          privateItems: privateHas ? c.privateItems.filter(it => it.id !== id) : c.privateItems,
+        })
+      }
     }
-  }, [readOnly, pubkey, publishCategory])
+    if (!targetNew) return false
+
+    // Target first — if it fails, abort without touching state.
+    const targetAt = await publishCategory(targetNew)
+    if (!targetAt) return false
+    commitCategoryUpdate(targetNew, targetAt)
+
+    // Source evictions: publish and commit each individually. A failure
+    // here means the item is visible in both places until the user refetches
+    // or retries — duplication, not loss.
+    for (const src of sourceNews) {
+      const at = await publishCategory(src)
+      if (at) commitCategoryUpdate(src, at)
+    }
+    return true
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
   const removeNote = useCallback(async (categoryId, noteId, options = {}) => {
-    if (readOnly || !noteId) return
+    if (readOnly || !noteId) return false
     const id = noteId.toLowerCase()
     const privacy = options.privacy === 'private' ? 'private' : 'public'
-    let updated = null
-    setCategories(prev => {
-      const cat = prev.find(c => c.id === categoryId)
-      if (!cat || cat.readOnly) return prev
-      const newCat = privacy === 'private'
-        ? { ...cat, privateItems: (cat.privateItems || []).filter(it => it.id !== id) }
-        : { ...cat, items:        (cat.items || []).filter(it => it.id !== id) }
-      updated = newCat
-      const next = prev.map(c => c.id === categoryId ? newCat : c)
-      saveToStorage(pubkey, next)
-      return next
-    })
-    if (updated) await publishCategory(updated)
-  }, [readOnly, pubkey, publishCategory])
+    const cat = categoriesRef.current.find(c => c.id === categoryId)
+    if (!cat || cat.readOnly) return false
+    const newCat = privacy === 'private'
+      ? { ...cat, privateItems: (cat.privateItems || []).filter(it => it.id !== id) }
+      : { ...cat, items:        (cat.items || []).filter(it => it.id !== id) }
+    const at = await publishCategory(newCat)
+    if (at) commitCategoryUpdate(newCat, at)
+    return at > 0
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
   // Flip privacy for one note within a single category. One publish. Use
   // addNote to move between categories with privacy; use this for in-place
   // flips.
   const movePrivacy = useCallback(async (categoryId, noteId, newPrivacy) => {
-    if (readOnly || !noteId) return
+    if (readOnly || !noteId) return false
     const id = noteId.toLowerCase()
     const target = newPrivacy === 'private' ? 'private' : 'public'
-    let updated = null
-    setCategories(prev => {
-      const cat = prev.find(c => c.id === categoryId)
-      if (!cat || cat.readOnly) return prev
-      const publicHas  = (cat.items || []).some(it => it.id === id)
-      const privateHas = (cat.privateItems || []).some(it => it.id === id)
-      if (target === 'private') {
-        if (privateHas) return prev
-        if (!publicHas) return prev
-        const item = cat.items.find(it => it.id === id) || { id, addedAt: Date.now() }
-        const newCat = {
-          ...cat,
-          items:        cat.items.filter(it => it.id !== id),
-          privateItems: [item, ...(cat.privateItems || [])],
-        }
-        updated = newCat
-        const next = prev.map(c => c.id === categoryId ? newCat : c)
-        saveToStorage(pubkey, next)
-        return next
-      } else {
-        if (publicHas) return prev
-        if (!privateHas) return prev
-        const item = cat.privateItems.find(it => it.id === id) || { id, addedAt: Date.now() }
-        const newCat = {
-          ...cat,
-          items:        [item, ...(cat.items || [])],
-          privateItems: cat.privateItems.filter(it => it.id !== id),
-        }
-        updated = newCat
-        const next = prev.map(c => c.id === categoryId ? newCat : c)
-        saveToStorage(pubkey, next)
-        return next
+    const cat = categoriesRef.current.find(c => c.id === categoryId)
+    if (!cat || cat.readOnly) return false
+    const publicHas  = (cat.items || []).some(it => it.id === id)
+    const privateHas = (cat.privateItems || []).some(it => it.id === id)
+    let newCat = null
+    if (target === 'private') {
+      if (privateHas || !publicHas) return true
+      const item = cat.items.find(it => it.id === id) || { id, addedAt: Date.now() }
+      newCat = {
+        ...cat,
+        items:        cat.items.filter(it => it.id !== id),
+        privateItems: [item, ...(cat.privateItems || [])],
       }
-    })
-    if (updated) await publishCategory(updated)
-  }, [readOnly, pubkey, publishCategory])
+    } else {
+      if (publicHas || !privateHas) return true
+      const item = cat.privateItems.find(it => it.id === id) || { id, addedAt: Date.now() }
+      newCat = {
+        ...cat,
+        items:        [item, ...(cat.items || [])],
+        privateItems: cat.privateItems.filter(it => it.id !== id),
+      }
+    }
+    const at = await publishCategory(newCat)
+    if (at) commitCategoryUpdate(newCat, at)
+    return at > 0
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
   // Bulk move: same mutual-exclusivity semantics as addNote, but for a
-  // batch. One state mutation plus one publish per *changed* category
-  // (source buckets + destination) — not per note. Moving 20 notes from
-  // Ungrouped → Reading Queue is 2 signatures, not 40.
+  // batch. One publish per *changed* category (source buckets + destination)
+  // — not per note. Moving 20 notes from Ungrouped → Reading Queue is 2
+  // signatures, not 40.
+  //
+  // Publish-before-commit: target first, then sources. Each commit fires
+  // only after that event lands.
   const bulkMove = useCallback(async (targetCategoryId, noteIds, options = {}) => {
-    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return
+    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return false
     const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
-    if (idSet.size === 0) return
+    if (idSet.size === 0) return false
     const privacy = options.privacy === 'private' ? 'private' : 'public'
-    const toPublish = []
-    setCategories(prev => {
-      const target = prev.find(c => c.id === targetCategoryId)
-      if (!target) return prev
-      const now = Date.now()
-      const next = prev.map(c => {
-        const pubList  = c.items || []
-        const privList = c.privateItems || []
-        const heldIds = new Set([
-          ...pubList .filter(it => idSet.has(it.id)).map(it => it.id),
-          ...privList.filter(it => idSet.has(it.id)).map(it => it.id),
-        ])
-        if (c.id === targetCategoryId) {
-          const targetBucket = privacy === 'private' ? privList : pubList
-          const otherBucket  = privacy === 'private' ? pubList  : privList
-          const existing = new Set(targetBucket.map(it => it.id))
-          const toAdd = [...idSet].filter(id => !existing.has(id))
-          const needsDemote = otherBucket.some(it => idSet.has(it.id))
-          if (toAdd.length === 0 && !needsDemote) return c
-          const newTarget = [...toAdd.map(id => ({ id, addedAt: now })), ...targetBucket]
-          const newOther  = otherBucket.filter(it => !idSet.has(it.id))
-          const newCat = {
-            ...c,
-            items:        privacy === 'private' ? newOther  : newTarget,
-            privateItems: privacy === 'private' ? newTarget : newOther,
-          }
-          toPublish.push(newCat)
-          return newCat
+
+    const current = categoriesRef.current
+    const target = current.find(c => c.id === targetCategoryId)
+    if (!target) return false
+
+    const now = Date.now()
+    let targetNew = null
+    const sourceNews = []
+    for (const c of current) {
+      const pubList  = c.items || []
+      const privList = c.privateItems || []
+      if (c.id === targetCategoryId) {
+        const targetBucket = privacy === 'private' ? privList : pubList
+        const otherBucket  = privacy === 'private' ? pubList  : privList
+        const existing = new Set(targetBucket.map(it => it.id))
+        const toAdd = [...idSet].filter(id => !existing.has(id))
+        const needsDemote = otherBucket.some(it => idSet.has(it.id))
+        if (toAdd.length === 0 && !needsDemote) {
+          targetNew = c
+          continue
         }
-        if (heldIds.size > 0) {
-          const newCat = {
+        const newTarget = [...toAdd.map(id => ({ id, addedAt: now })), ...targetBucket]
+        const newOther  = otherBucket.filter(it => !idSet.has(it.id))
+        targetNew = {
+          ...c,
+          items:        privacy === 'private' ? newOther  : newTarget,
+          privateItems: privacy === 'private' ? newTarget : newOther,
+        }
+      } else {
+        const held = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
+        if (held) {
+          sourceNews.push({
             ...c,
             items:        pubList .filter(it => !idSet.has(it.id)),
             privateItems: privList.filter(it => !idSet.has(it.id)),
-          }
-          toPublish.push(newCat)
-          return newCat
+          })
         }
-        return c
-      })
-      saveToStorage(pubkey, next)
-      return next
-    })
-    for (const cat of toPublish) {
-      await publishCategory(cat)
+      }
     }
-  }, [readOnly, pubkey, publishCategory])
+    if (!targetNew) return false
+
+    const targetAt = await publishCategory(targetNew)
+    if (!targetAt) return false
+    commitCategoryUpdate(targetNew, targetAt)
+
+    for (const src of sourceNews) {
+      const at = await publishCategory(src)
+      if (at) commitCategoryUpdate(src, at)
+    }
+    return true
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
   const bulkRemove = useCallback(async (categoryId, noteIds, options = {}) => {
-    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return
+    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return false
     const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
-    if (idSet.size === 0) return
+    if (idSet.size === 0) return false
     const privacy = options.privacy === 'private' ? 'private' : 'public'
-    let updated = null
-    setCategories(prev => {
-      const cat = prev.find(c => c.id === categoryId)
-      if (!cat || cat.readOnly) return prev
-      const newCat = privacy === 'private'
-        ? { ...cat, privateItems: (cat.privateItems || []).filter(it => !idSet.has(it.id)) }
-        : { ...cat, items:        (cat.items || []).filter(it => !idSet.has(it.id)) }
-      const targetLen = privacy === 'private' ? (cat.privateItems || []).length : (cat.items || []).length
-      const nextLen   = privacy === 'private' ? newCat.privateItems.length : newCat.items.length
-      if (nextLen === targetLen) return prev
-      updated = newCat
-      const next = prev.map(c => c.id === categoryId ? newCat : c)
-      saveToStorage(pubkey, next)
-      return next
-    })
-    if (updated) await publishCategory(updated)
-  }, [readOnly, pubkey, publishCategory])
+    const cat = categoriesRef.current.find(c => c.id === categoryId)
+    if (!cat || cat.readOnly) return false
+    const newCat = privacy === 'private'
+      ? { ...cat, privateItems: (cat.privateItems || []).filter(it => !idSet.has(it.id)) }
+      : { ...cat, items:        (cat.items || []).filter(it => !idSet.has(it.id)) }
+    const targetLen = privacy === 'private' ? (cat.privateItems || []).length : (cat.items || []).length
+    const nextLen   = privacy === 'private' ? newCat.privateItems.length : newCat.items.length
+    if (nextLen === targetLen) return true
+    const at = await publishCategory(newCat)
+    if (at) commitCategoryUpdate(newCat, at)
+    return at > 0
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
   // Bulk flip privacy within a single category. Public items in the set
   // move to privateItems; already-private items are untouched. One publish.
   const bulkMovePrivacy = useCallback(async (categoryId, noteIds, newPrivacy) => {
-    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return
+    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return false
     const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
-    if (idSet.size === 0) return
+    if (idSet.size === 0) return false
     const target = newPrivacy === 'private' ? 'private' : 'public'
-    let updated = null
-    setCategories(prev => {
-      const cat = prev.find(c => c.id === categoryId)
-      if (!cat || cat.readOnly) return prev
-      const pubList  = cat.items || []
-      const privList = cat.privateItems || []
-      if (target === 'private') {
-        const moving = pubList.filter(it => idSet.has(it.id))
-        if (moving.length === 0) return prev
-        const newCat = {
-          ...cat,
-          items:        pubList.filter(it => !idSet.has(it.id)),
-          privateItems: [...moving, ...privList],
-        }
-        updated = newCat
-        const next = prev.map(c => c.id === categoryId ? newCat : c)
-        saveToStorage(pubkey, next)
-        return next
-      } else {
-        const moving = privList.filter(it => idSet.has(it.id))
-        if (moving.length === 0) return prev
-        const newCat = {
-          ...cat,
-          items:        [...moving, ...pubList],
-          privateItems: privList.filter(it => !idSet.has(it.id)),
-        }
-        updated = newCat
-        const next = prev.map(c => c.id === categoryId ? newCat : c)
-        saveToStorage(pubkey, next)
-        return next
+    const cat = categoriesRef.current.find(c => c.id === categoryId)
+    if (!cat || cat.readOnly) return false
+    const pubList  = cat.items || []
+    const privList = cat.privateItems || []
+    let newCat = null
+    if (target === 'private') {
+      const moving = pubList.filter(it => idSet.has(it.id))
+      if (moving.length === 0) return true
+      newCat = {
+        ...cat,
+        items:        pubList.filter(it => !idSet.has(it.id)),
+        privateItems: [...moving, ...privList],
       }
-    })
-    if (updated) await publishCategory(updated)
-  }, [readOnly, pubkey, publishCategory])
+    } else {
+      const moving = privList.filter(it => idSet.has(it.id))
+      if (moving.length === 0) return true
+      newCat = {
+        ...cat,
+        items:        [...moving, ...pubList],
+        privateItems: privList.filter(it => !idSet.has(it.id)),
+      }
+    }
+    const at = await publishCategory(newCat)
+    if (at) commitCategoryUpdate(newCat, at)
+    return at > 0
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
-  // Atomic "create category + move selection into it" — collapses what would
-  // otherwise be two separate state transitions (createCategory then bulkMove)
-  // into one setCategories call, so bulkMove's reducer can never race the
-  // creation. If the slug already exists, we move into the existing category
-  // (same forgiveness as createCategory).
+  // Atomic "create category + move selection into it". If the slug already
+  // exists, we merge into the existing category (same forgiveness as
+  // createCategory).
+  //
+  // Publish-before-commit: target (new or existing) is published first so a
+  // failure there aborts the whole op without touching state. Source
+  // evictions publish-then-commit individually.
   const bulkMoveToNew = useCallback(async (name, noteIds, options = {}) => {
     if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return null
     const trimmed = (name || '').trim()
@@ -829,96 +904,104 @@ export function useNoteBookmarks(user) {
     if (idSet.size === 0) return null
     const privacy = options.privacy === 'private' ? 'private' : 'public'
     const now = Date.now()
-    const toPublish = []
-    setCategories(prev => {
-      const existingAt = prev.findIndex(c => c.id === id)
-      let next
-      if (existingAt >= 0) {
-        // Slug collision — merge into the existing category (respect readOnly).
-        if (prev[existingAt].readOnly) return prev
-        next = prev.map(c => {
-          const pubList  = c.items || []
-          const privList = c.privateItems || []
-          if (c.id === id) {
-            const targetBucket = privacy === 'private' ? privList : pubList
-            const otherBucket  = privacy === 'private' ? pubList  : privList
-            const existing = new Set(targetBucket.map(it => it.id))
-            const toAdd = [...idSet].filter(iid => !existing.has(iid))
-            const newTarget = [...toAdd.map(iid => ({ id: iid, addedAt: now })), ...targetBucket]
-            const newOther  = otherBucket.filter(it => !idSet.has(it.id))
-            const newCat = {
-              ...c,
-              items:        privacy === 'private' ? newOther  : newTarget,
-              privateItems: privacy === 'private' ? newTarget : newOther,
-            }
-            toPublish.push(newCat)
-            return newCat
+
+    const current = categoriesRef.current
+    const existingAt = current.findIndex(c => c.id === id)
+    let targetNew = null
+    let targetIsNew = false
+    const sourceNews = []
+
+    if (existingAt >= 0) {
+      if (current[existingAt].readOnly) return null
+      for (const c of current) {
+        const pubList  = c.items || []
+        const privList = c.privateItems || []
+        if (c.id === id) {
+          const targetBucket = privacy === 'private' ? privList : pubList
+          const otherBucket  = privacy === 'private' ? pubList  : privList
+          const existing = new Set(targetBucket.map(it => it.id))
+          const toAdd = [...idSet].filter(iid => !existing.has(iid))
+          const newTarget = [...toAdd.map(iid => ({ id: iid, addedAt: now })), ...targetBucket]
+          const newOther  = otherBucket.filter(it => !idSet.has(it.id))
+          targetNew = {
+            ...c,
+            items:        privacy === 'private' ? newOther  : newTarget,
+            privateItems: privacy === 'private' ? newTarget : newOther,
           }
-          const heldAny = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
-          if (heldAny) {
-            const pruned = {
+        } else {
+          const held = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
+          if (held) {
+            sourceNews.push({
               ...c,
               items:        pubList .filter(it => !idSet.has(it.id)),
               privateItems: privList.filter(it => !idSet.has(it.id)),
-            }
-            toPublish.push(pruned)
-            return pruned
+            })
           }
-          return c
-        })
-      } else {
-        const newItems = [...idSet].map(iid => ({ id: iid, addedAt: now }))
-        const newCat = {
-          id,
-          title: trimmed,
-          items:        privacy === 'private' ? []       : newItems,
-          privateItems: privacy === 'private' ? newItems : [],
-          createdAt: Math.floor(Date.now() / 1000),
-          readOnly: false,
         }
-        toPublish.push(newCat)
-        next = [newCat, ...prev.map(c => {
-          const pubList  = c.items || []
-          const privList = c.privateItems || []
-          const heldAny = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
-          if (heldAny) {
-            const pruned = {
-              ...c,
-              items:        pubList .filter(it => !idSet.has(it.id)),
-              privateItems: privList.filter(it => !idSet.has(it.id)),
-            }
-            toPublish.push(pruned)
-            return pruned
-          }
-          return c
-        })]
+      }
+    } else {
+      targetIsNew = true
+      const newItems = [...idSet].map(iid => ({ id: iid, addedAt: now }))
+      targetNew = {
+        id,
+        title: trimmed,
+        items:        privacy === 'private' ? []       : newItems,
+        privateItems: privacy === 'private' ? newItems : [],
+        createdAt: Math.floor(Date.now() / 1000),
+        readOnly: false,
+      }
+      for (const c of current) {
+        const pubList  = c.items || []
+        const privList = c.privateItems || []
+        const held = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
+        if (held) {
+          sourceNews.push({
+            ...c,
+            items:        pubList .filter(it => !idSet.has(it.id)),
+            privateItems: privList.filter(it => !idSet.has(it.id)),
+          })
+        }
+      }
+    }
+
+    if (!targetNew) return null
+
+    const targetAt = await publishCategory(targetNew)
+    if (!targetAt) return null
+    const stampedTarget = { ...targetNew, createdAt: targetAt }
+
+    // Commit target. For new categories, insert at head; for existing, map.
+    setCategories(prev => {
+      let next
+      if (targetIsNew && !prev.some(c => c.id === stampedTarget.id)) {
+        next = [stampedTarget, ...prev]
+      } else {
+        next = prev.map(c => c.id === stampedTarget.id ? stampedTarget : c)
       }
       saveToStorage(pubkey, next)
       return next
     })
-    for (const cat of toPublish) {
-      await publishCategory(cat)
+
+    for (const src of sourceNews) {
+      const at = await publishCategory(src)
+      if (at) commitCategoryUpdate(src, at)
     }
     return id
-  }, [readOnly, pubkey, publishCategory])
+  }, [readOnly, pubkey, publishCategory, commitCategoryUpdate])
 
   const renameCategory = useCallback(async (categoryId, newTitle) => {
-    if (readOnly) return
-    if (categoryId === PRIMARY_CATEGORY_ID) return
+    if (readOnly) return false
+    if (categoryId === PRIMARY_CATEGORY_ID) return false
     const trimmed = (newTitle || '').trim()
-    if (!trimmed) return
-    let updated = null
-    setCategories(prev => {
-      const cat = prev.find(c => c.id === categoryId)
-      if (!cat || cat.readOnly) return prev
-      const newCat = { ...cat, title: trimmed }
-      updated = newCat
-      const next = prev.map(c => c.id === categoryId ? newCat : c)
-      saveToStorage(pubkey, next)
-      return next
-    })
-    if (updated) await publishCategory(updated)
-  }, [readOnly, pubkey, publishCategory])
+    if (!trimmed) return false
+    const cat = categoriesRef.current.find(c => c.id === categoryId)
+    if (!cat || cat.readOnly) return false
+    if (cat.title === trimmed) return true
+    const newCat = { ...cat, title: trimmed }
+    const at = await publishCategory(newCat)
+    if (at) commitCategoryUpdate(newCat, at)
+    return at > 0
+  }, [readOnly, publishCategory, commitCategoryUpdate])
 
   // Delete a category. Items inside are moved back to the primary
   // Ungrouped list (creating it locally if the user had never published
@@ -926,14 +1009,14 @@ export function useNoteBookmarks(user) {
   // republished with the merged items, and the deleted category gets a
   // tombstone event (empty replaceable, same kind it was authored in).
   const deleteCategory = useCallback(async (categoryId) => {
-    if (readOnly) return
-    if (categoryId === PRIMARY_CATEGORY_ID) return
+    if (readOnly) return false
+    if (categoryId === PRIMARY_CATEGORY_ID) return false
 
     // Read current categories via ref so the merge is computed from
     // fresh data and nothing is mutated until the durable publish lands.
     const current = categoriesRef.current
     const cat = current.find(c => c.id === categoryId)
-    if (!cat || cat.readOnly) return
+    if (!cat || cat.readOnly) return false
 
     const sourceKind    = cat.sourceKind === 30001 ? 30001 : 30003
     const publicToRehome  = cat.items || []
@@ -944,11 +1027,10 @@ export function useNoteBookmarks(user) {
     //   1. If the category has items, publish merged primary FIRST. If
     //      that fails, ABORT — no local state change, no tombstone.
     //      Items stay safely in the source category.
-    //   2. Only after the primary write lands, remove the source category
-    //      locally and publish the tombstone.
-    // Tombstone failure at step 2 leaves the source category live on
-    // relays; items will show in both places on reload (duplication, not
-    // loss). User can retry delete.
+    //   2. Publish the tombstone. Only after it lands on ≥1 relay do we
+    //      remove the source category and commit the merged primary.
+    // Tombstone failure leaves the source category in local state so the
+    // user can retry — the UI never claims a delete succeeded when it didn't.
     let primaryToPublish = null
     if (publicToRehome.length > 0 || privateToRehome.length > 0) {
       const primary = current.find(c => c.id === PRIMARY_CATEGORY_ID)
@@ -982,12 +1064,39 @@ export function useNoteBookmarks(user) {
           rawContent: '',
         }
       }
-      const primaryOk = await publishCategory(primaryToPublish)
-      if (!primaryOk) return
+      const primaryAt = await publishCategory(primaryToPublish)
+      if (!primaryAt) return false
+      primaryToPublish = { ...primaryToPublish, createdAt: primaryAt }
     }
 
-    // Primary is durable (or there was nothing to rehome). Apply local
-    // state: merge primary if we rebuilt it, remove the source category.
+    // Tombstone the deleted category on the kind it was authored in —
+    // replaceables are per-kind, so a 30003 tombstone wouldn't invalidate
+    // a 30001 original. Await publish and confirm at least one relay.
+    let tombstoneAt = 0
+    try {
+      const ndk = getNDK()
+      const event = new NDKEvent(ndk)
+      event.kind = sourceKind
+      event.tags = [['d', categoryId]]
+      event.content = ''
+      await signWithTimeout(event)
+      // Same outbox-only reasoning as publishCategory — tombstones must reach
+      // the same relay set that holds every copy of the category, otherwise
+      // a fallback-only copy stays "alive" from other clients' perspective.
+      const publishedTo = await publishToOwnOutbox(event)
+      const landed = Array.from(publishedTo || []).length > 0
+      if (!landed) return false
+      tombstoneAt = Number(event.created_at) || Math.floor(Date.now() / 1000)
+    } catch {
+      return false
+    }
+
+    // Record the tombstone locally so a stale fetch from a lagging fallback
+    // relay can't resurrect this category on the next reload — the load-path
+    // filter drops any fetched event for this id whose created_at <= tombstoneAt.
+    saveTombstone(pubkey, categoryId, tombstoneAt)
+
+    // Both writes landed — safe to commit local state.
     setCategories(prev => {
       let next
       if (primaryToPublish) {
@@ -1005,19 +1114,7 @@ export function useNoteBookmarks(user) {
       saveToStorage(pubkey, next)
       return next
     })
-
-    // Tombstone the deleted category on the kind it was authored in —
-    // replaceables are per-kind, so a 30003 tombstone wouldn't invalidate
-    // a 30001 original.
-    try {
-      const ndk = getNDK()
-      const event = new NDKEvent(ndk)
-      event.kind = sourceKind
-      event.tags = [['d', categoryId]]
-      event.content = ''
-      await signWithTimeout(event)
-      await event.publish()
-    } catch {}
+    return true
   }, [readOnly, pubkey, publishCategory])
 
   return { categories, loading, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }

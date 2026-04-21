@@ -32,8 +32,10 @@ export default function ArticleReadPanel({
   onAddToList,
   onCreateList,
   onMoveArticle,
+  onMovePrivacy,
   onRemoveFromList,
   onLoadInEditor,
+  defaultPrivacy = 'public',
   onClose,
   onAuthorClick,
   readOnly,
@@ -42,12 +44,14 @@ export default function ArticleReadPanel({
 }) {
   const navigate = useNavigate()
 
-  const [listMenuOpen, setListMenuOpen] = useState(false)
-  const [adding,       setAdding]       = useState(false)
-  const [savedToList,  setSavedToList]  = useState(null)
-  const [newListInput, setNewListInput] = useState(false)
-  const [newListName,  setNewListName]  = useState('')
-  const [menuOpen,     setMenuOpen]     = useState(false)
+  const [listMenuOpen,   setListMenuOpen]   = useState(false)
+  // 'idle' | 'saving' | 'error' — drives spinner/label on the Bookmark button
+  // and gates handlers so a double-tap can't race two publishes.
+  const [bookmarkStatus, setBookmarkStatus] = useState('idle')
+  const [savedToList,    setSavedToList]    = useState(null)
+  const [newListInput,   setNewListInput]   = useState(false)
+  const [newListName,    setNewListName]    = useState('')
+  const [menuOpen,       setMenuOpen]       = useState(false)
   const menuRef = useRef(null)
   const listMenuRef = useRef(null)
 
@@ -142,41 +146,122 @@ export default function ArticleReadPanel({
   const date = formatDate(getPublishedAt(effectiveArticle))
 
   // ── Bookmark ────────────────────────────────────────────────────────────────
-  async function handleAddToList(listId) {
-    setAdding(true)
+  // New saves respect the current view — saving while viewing Private lands
+  // the item in the private bucket. Existing bookmarks use whichever bucket
+  // the item is actually in (article._privacy) for move/remove targeting.
+  const saveBucket   = article._privacy || defaultPrivacy
+  const removeBucket = article._privacy || defaultPrivacy
+
+  // Wrap any bookmark-write promise with the publish-before-commit status
+  // pattern: spinner while pending, stay-open-with-error on failure, close
+  // the dropdown only after a successful publish. `onOk` fires only on true
+  // success so the ✓Saved indicator doesn't flash for a failed write.
+  async function runBookmarkOp(op, onOk) {
+    if (bookmarkStatus === 'saving') return false
+    setBookmarkStatus('saving')
     try {
-      const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
-      await onAddToList(listId, { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags, publishedAt: getPublishedAt(effectiveArticle) })
-      setSavedToList(listId)
-    } finally {
-      setAdding(false)
-      setListMenuOpen(false)
-      setNewListInput(false)
-      setNewListName('')
+      const ok = await op()
+      if (ok === false) {
+        setBookmarkStatus('error')
+        setTimeout(() => setBookmarkStatus('idle'), 3000)
+        return false
+      }
+      setBookmarkStatus('idle')
+      onOk?.()
+      return true
+    } catch {
+      setBookmarkStatus('error')
+      setTimeout(() => setBookmarkStatus('idle'), 3000)
+      return false
     }
+  }
+
+  async function handleAddToList(listId) {
+    const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
+    const ok = await runBookmarkOp(
+      () => onAddToList(
+        listId,
+        { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags, publishedAt: getPublishedAt(effectiveArticle) },
+        { privacy: saveBucket },
+      ),
+      () => {
+        setSavedToList(listId)
+        setListMenuOpen(false)
+        setNewListInput(false)
+        setNewListName('')
+      },
+    )
+    return ok
   }
 
   async function handleCreateAndAdd() {
     const name = newListName.trim()
     if (!name) return
-    setAdding(true)
-    try {
-      const list = await onCreateList(name)
-      const tTags = article.tags?.filter(t => t[0] === 't').map(t => t[1]) || []
-      await onAddToList(list.id, { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags })
-      setSavedToList(list.id)
-    } finally {
-      setAdding(false)
-      setListMenuOpen(false)
-      setNewListInput(false)
-      setNewListName('')
-    }
+    const ok = await runBookmarkOp(
+      async () => {
+        const list = await onCreateList(name)
+        if (!list) return false
+        const tTags = article.tags?.filter(t => t[0] === 't').map(t => t[1]) || []
+        const r = await onAddToList(
+          list.id,
+          { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags },
+          { privacy: saveBucket },
+        )
+        if (r === false) return false
+        setSavedToList(list.id)
+        return true
+      },
+      () => {
+        setListMenuOpen(false)
+        setNewListInput(false)
+        setNewListName('')
+      },
+    )
+    return ok
   }
 
   async function handleRemoveFromBookmark() {
     if (!article._listId || !article._aTag) return
-    await onRemoveFromList(article._listId, article._aTag)
-    onClose()
+    await runBookmarkOp(
+      () => onRemoveFromList(article._listId, article._aTag, { privacy: removeBucket }),
+      () => onClose(),
+    )
+  }
+
+  // Inline Move-to handler — same status pattern, closes dropdown on success.
+  async function handleInlineMoveTo(toListId) {
+    await runBookmarkOp(
+      () => onMoveArticle(article._listId, toListId, aTag, { privacy: removeBucket }),
+      () => setListMenuOpen(false),
+    )
+  }
+
+  // Inline Create-new-group-then-save handler used by both the Enter key and
+  // the ✓ button in the inline "new group" input.
+  async function handleInlineCreateAndSave(mode) {
+    const name = newListName.trim()
+    if (!name) return
+    await runBookmarkOp(
+      async () => {
+        const list = await onCreateList(name)
+        if (!list) return false
+        const articleMeta = { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags: article.tags?.filter(t => t[0] === 't').map(t => t[1]) || [] }
+        if (mode === 'move' && article._listId && onMoveArticle) {
+          const r = await onMoveArticle(article._listId, list.id, aTag, { privacy: removeBucket })
+          if (r === false) return false
+        } else {
+          const r = await onAddToList(list.id, articleMeta, { privacy: saveBucket })
+          if (r === false) return false
+          setSavedToList(list.id)
+        }
+        return true
+      },
+      () => {
+        setListMenuOpen(false)
+        setNewListInput(false)
+        setNewListName('')
+      },
+    )
   }
 
   // ── Social actions ───────────────────────────────────────────────────────────
@@ -188,7 +273,12 @@ export default function ArticleReadPanel({
 
   async function handleLike() {
     if (!canPublish || liking || liked) return
+    // Optimistic flip — heart lights up immediately, pulses while in flight,
+    // reverts if sign/publish errors OR if publish returns without any
+    // relay ack. Matches NoteActionBar so a like reaching zero relays can't
+    // leave the UI in a false "liked" state on either module.
     setLiking(true)
+    setLiked(true)
     try {
       const ndk = getNDK()
       const ev = new NDKEvent(ndk)
@@ -199,13 +289,16 @@ export default function ArticleReadPanel({
         ['a', aTag],
         ['k', '30023'],
       ]
-      // Only include e tag if we have a real hex event ID
       if (hasRealEventId) ev.tags.unshift(['e', article.id])
       await signWithTimeout(ev)
-      await ev.publish()
-      setLiked(true)
+      const publishedTo = await ev.publish()
+      if (!publishedTo || publishedTo.size === 0) {
+        if (import.meta.env.DEV) console.warn('Article like reached no relays')
+        setLiked(false)
+      }
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Like failed:', err)
+      setLiked(false)
     } finally {
       setLiking(false)
     }
@@ -213,7 +306,12 @@ export default function ArticleReadPanel({
 
   async function handleRepost() {
     if (!canPublish || reposting) return
+    // Optimistic flip — "✓ Reposting…" shows immediately, settles to
+    // "✓ Reposted" once at least one relay acks; reverts on error or
+    // zero-ack so the label doesn't lie about persistence.
     setReposting(true)
+    setRepostDone(true)
+    setRepostOpen(false)
     try {
       const ndk = getNDK()
       const ev = new NDKEvent(ndk)
@@ -227,11 +325,14 @@ export default function ArticleReadPanel({
       ]
       if (hasRealEventId) ev.tags.unshift(['e', article.id])
       await signWithTimeout(ev)
-      await ev.publish()
-      setRepostDone(true)
-      setRepostOpen(false)
+      const publishedTo = await ev.publish()
+      if (!publishedTo || publishedTo.size === 0) {
+        if (import.meta.env.DEV) console.warn('Article repost reached no relays')
+        setRepostDone(false)
+      }
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Repost failed:', err)
+      setRepostDone(false)
     } finally {
       setReposting(false)
     }
@@ -361,7 +462,7 @@ export default function ArticleReadPanel({
             liked
               ? 'border-red-800 text-red-400'
               : 'border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300'
-          }`}
+          } ${liking ? 'animate-pulse' : ''}`}
         >
           {liked ? '❤️' : '🤍'} {liked ? 'Liked' : 'Like'}
         </button>
@@ -391,7 +492,9 @@ export default function ArticleReadPanel({
         {/* Repost */}
         <div className="relative" ref={repostRef}>
           {repostDone ? (
-            <span className="text-xs text-neutral-500 px-2">✓ Reposted</span>
+            <span className={`text-xs text-neutral-500 px-2 ${reposting ? 'animate-pulse' : ''}`}>
+              ✓ {reposting ? 'Reposting…' : 'Reposted'}
+            </span>
           ) : (
             <button
               onClick={() => setRepostOpen(o => !o)}
@@ -428,19 +531,31 @@ export default function ArticleReadPanel({
           {!readOnly && (
             <div className="relative" ref={listMenuRef}>
               <button
-                onClick={() => { setListMenuOpen(o => !o); setNewListInput(false) }}
-                className={`text-xs px-2 py-1 rounded border transition-colors ${
-                  savedToList
+                onClick={() => {
+                  if (bookmarkStatus === 'saving') return
+                  setListMenuOpen(o => !o); setNewListInput(false)
+                }}
+                disabled={bookmarkStatus === 'saving'}
+                className={`text-xs px-2 py-1 rounded border transition-colors inline-flex items-center gap-1 disabled:opacity-60 ${
+                  bookmarkStatus === 'error'
+                    ? 'border-red-900/60 text-red-400'
+                    : savedToList
                     ? 'border-amber-800 text-amber-400'
                     : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
                 }`}
               >
-                {savedToList ? '🔖 Saved' : '🔖 Bookmark'}
+                {bookmarkStatus === 'saving' ? (
+                  <>
+                    <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                    <span>Saving…</span>
+                  </>
+                ) : bookmarkStatus === 'error' ? '⚠️ Failed'
+                  : savedToList ? '🔖 Saved'
+                  : '🔖 Bookmark'}
               </button>
               {listMenuOpen && (() => {
                 const isBookmarked = !!article._listId
                 const otherLists = isBookmarked ? lists.filter(l => l.id !== article._listId) : lists
-                const articleMeta = { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags: article.tags?.filter(t => t[0] === 't').map(t => t[1]) || [] }
                 return (
                   <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[200px] max-h-[70vh] overflow-y-auto">
                     {/* Move to — only for bookmarked items */}
@@ -449,8 +564,9 @@ export default function ArticleReadPanel({
                         <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Move to</p>
                         {otherLists.map(list => (
                           <button key={`mv-${list.id}`}
-                            onClick={() => { onMoveArticle(article._listId, list.id, aTag); setListMenuOpen(false) }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate">
+                            onClick={() => handleInlineMoveTo(list.id)}
+                            disabled={bookmarkStatus === 'saving'}
+                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50">
                             {list.title}
                           </button>
                         ))}
@@ -469,8 +585,9 @@ export default function ArticleReadPanel({
                         <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Copy to</p>
                         {otherLists.map(list => (
                           <button key={`cp-${list.id}`}
-                            onClick={() => { handleAddToList(list.id); }}
-                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate">
+                            onClick={() => handleAddToList(list.id)}
+                            disabled={bookmarkStatus === 'saving'}
+                            className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50">
                             {list.title}
                           </button>
                         ))}
@@ -491,8 +608,8 @@ export default function ArticleReadPanel({
                           <p className="px-3 py-2 text-xs text-neutral-500">No lists yet.</p>
                         ) : (
                           lists.map(list => (
-                            <button key={list.id} onClick={() => handleAddToList(list.id)} disabled={adding}
-                              className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate">
+                            <button key={list.id} onClick={() => handleAddToList(list.id)} disabled={bookmarkStatus === 'saving'}
+                              className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50">
                               {list.title}
                             </button>
                           ))
@@ -512,43 +629,36 @@ export default function ArticleReadPanel({
                         <input autoFocus type="text" value={newListName} onChange={e => setNewListName(e.target.value)}
                           onKeyDown={e => {
                             if (e.key === 'Enter' && newListName.trim()) {
-                              (async () => {
-                                const list = await onCreateList(newListName.trim())
-                                if (newListInput === 'move' && article._listId && onMoveArticle) {
-                                  onMoveArticle(article._listId, list.id, aTag)
-                                } else {
-                                  await onAddToList(list.id, articleMeta)
-                                  setSavedToList(list.id)
-                                }
-                                setListMenuOpen(false); setNewListInput(false); setNewListName('')
-                              })()
+                              handleInlineCreateAndSave(newListInput)
                             }
                             if (e.key === 'Escape') { setNewListInput(false) }
                           }}
                           placeholder="Group name…" maxLength={60}
-                          className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none" />
-                        <button onClick={async () => {
-                          const name = newListName.trim(); if (!name) return
-                          const list = await onCreateList(name)
-                          if (newListInput === 'move' && article._listId && onMoveArticle) {
-                            onMoveArticle(article._listId, list.id, aTag)
-                          } else {
-                            await onAddToList(list.id, articleMeta)
-                            setSavedToList(list.id)
-                          }
-                          setListMenuOpen(false); setNewListInput(false); setNewListName('')
-                        }} disabled={!newListName.trim() || adding}
-                          className="text-xs px-2 py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors">
-                          ✓
+                          disabled={bookmarkStatus === 'saving'}
+                          className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none disabled:opacity-60" />
+                        <button
+                          onClick={() => handleInlineCreateAndSave(newListInput)}
+                          disabled={!newListName.trim() || bookmarkStatus === 'saving'}
+                          className="text-xs px-2 py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors inline-flex items-center gap-1">
+                          {bookmarkStatus === 'saving' ? (
+                            <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                          ) : '✓'}
                         </button>
                       </div>
                     )}
 
                     {/* Remove from current list */}
                     {isBookmarked && onRemoveFromList && (
-                      <button onClick={() => { handleRemoveFromBookmark(); setListMenuOpen(false) }}
-                        className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-950/40 transition-colors">
-                        Remove from "{article._listTitle || 'list'}"
+                      <button
+                        onClick={handleRemoveFromBookmark}
+                        disabled={bookmarkStatus === 'saving'}
+                        className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-950/40 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5">
+                        {bookmarkStatus === 'saving' ? (
+                          <>
+                            <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                            <span>Removing…</span>
+                          </>
+                        ) : `Remove from "${article._listTitle || 'list'}"`}
                       </button>
                     )}
                   </div>
@@ -575,6 +685,8 @@ export default function ArticleReadPanel({
               image={image}
               tTags={effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []}
               content={displayContent || article.content || ''}
+              onMovePrivacy={onMovePrivacy}
+              defaultPrivacy={effectiveArticle?._privacy || defaultPrivacy}
               authorName={authorName}
               authorPic={authorPic}
               onLoadInEditor={onLoadInEditor}

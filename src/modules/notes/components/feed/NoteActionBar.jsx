@@ -108,7 +108,10 @@ export default function NoteActionBar({ note, profile }) {
     if (!note?.pubkey || !/^[0-9a-f]{64}$/i.test(note.pubkey)) return
     // Optimistic: mark liked in the shared set right away so the heart
     // flips immediately and any other card showing this note stays in
-    // sync. Revert if signing/publishing fails.
+    // sync. Revert if signing/publishing fails OR if publish returned
+    // without any relay acknowledging the event — a silent zero-ack is
+    // indistinguishable from failure from the user's perspective and
+    // would leave the heart lit for a like that never reached anyone.
     setLiking(true)
     markLiked(note.id)
     try {
@@ -122,7 +125,11 @@ export default function NoteActionBar({ note, profile }) {
         ['k', '1'],
       ]
       await signWithTimeout(ev)
-      await ev.publish()
+      const publishedTo = await ev.publish()
+      if (!publishedTo || publishedTo.size === 0) {
+        if (import.meta.env.DEV) console.warn('Like reached no relays')
+        unmarkLiked(note.id)
+      }
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Like failed:', err)
       unmarkLiked(note.id)
@@ -135,7 +142,8 @@ export default function NoteActionBar({ note, profile }) {
     if (!canPublish || reposting) return
     if (!note?.id || !/^[0-9a-f]{64}$/i.test(note.id)) return
     if (!note?.pubkey || !/^[0-9a-f]{64}$/i.test(note.pubkey)) return
-    // Optimistic: show "Reposted" immediately; revert on failure.
+    // Optimistic: show "Reposted" immediately; revert on failure OR on
+    // a zero-ack publish so the label doesn't lie about persistence.
     setReposting(true)
     setRepostDone(true)
     setRepostOpen(false)
@@ -150,7 +158,11 @@ export default function NoteActionBar({ note, profile }) {
         ['p', note.pubkey],
       ]
       await signWithTimeout(ev)
-      await ev.publish()
+      const publishedTo = await ev.publish()
+      if (!publishedTo || publishedTo.size === 0) {
+        if (import.meta.env.DEV) console.warn('Repost reached no relays')
+        if (mountedRef.current) setRepostDone(false)
+      }
     } catch (err) {
       if (import.meta.env.DEV) console.warn('Repost failed:', err)
       if (mountedRef.current) setRepostDone(false)
@@ -240,7 +252,7 @@ export default function NoteActionBar({ note, profile }) {
             liked
               ? 'border-red-800 text-red-400'
               : 'border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300'
-          }`}
+          } ${liking ? 'animate-pulse' : ''}`}
         >
           {liked ? '❤️' : '🤍'} {liked ? 'Liked' : 'Like'}
         </button>
@@ -269,7 +281,9 @@ export default function NoteActionBar({ note, profile }) {
         {/* Repost */}
         <div className="relative" ref={repostRef}>
           {repostDone ? (
-            <span className="text-xs text-neutral-500 px-2">✓ Reposted</span>
+            <span className={`text-xs text-neutral-500 px-2 ${reposting ? 'animate-pulse' : ''}`}>
+              ✓ {reposting ? 'Reposting…' : 'Reposted'}
+            </span>
           ) : (
             <button
               onClick={() => setRepostOpen(o => !o)}

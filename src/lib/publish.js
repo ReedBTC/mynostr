@@ -1,6 +1,6 @@
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { getNDK, signWithTimeout, FALLBACK_RELAYS } from './ndk.js'
+import { getNDK, signWithTimeout, FALLBACK_RELAYS, publishToOwnOutbox } from './ndk.js'
 import { titleToSlug, toUnixTimestamp, parseDateString, buildAttributionLine } from './utils.js'
 
 /**
@@ -61,9 +61,12 @@ export async function publishArticle({ content, metadata, source }) {
     // Non-fatal — fallback relays will be used
   }
 
-  // Sign and publish — NDK returns a Set of relays that acknowledged the event
+  // Sign and publish — NDK returns a Set of relays that acknowledged the event.
+  // Kind 30023 is replaceable: future edits and deletes go to the user's own
+  // write relays, so publishing here to the same set keeps every copy of the
+  // article on a relay we can reach next time.
   await signWithTimeout(event)
-  const publishedTo = await event.publish()
+  const publishedTo = await publishToOwnOutbox(event)
   const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
 
   // Fall back to the attempted relay list if NDK returns nothing
@@ -132,7 +135,8 @@ export async function publishDraft({ content, metadata, source }) {
   } catch {}
 
   await signWithTimeout(event)
-  const publishedTo = await event.publish()
+  // Kind 31023 is a replaceable draft — same reasoning as publishArticle.
+  const publishedTo = await publishToOwnOutbox(event)
   const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
   const relays = confirmedRelays.length ? confirmedRelays : relayUrls
 

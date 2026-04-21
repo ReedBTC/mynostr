@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, signWithTimeout } from '../../../lib/ndk.js'
+import { getNDK, signWithTimeout, publishToOwnOutbox } from '../../../lib/ndk.js'
 import { isSafeUrl } from '../../../lib/utils.js'
 
 function getTag(event, name) {
@@ -95,7 +95,10 @@ export default function DraftDrawer({ user, onLoad, onClose }) {
       ev.tags = [['d', dTag]]
       ev.content = ''
       await signWithTimeout(ev)
-      await ev.publish()
+      // Draft is replaceable (kind 31023) — the empty replacement must land
+      // on the same relays the draft originally did (user's write relays) so
+      // third-party clients see it as deleted too.
+      await publishToOwnOutbox(ev)
       // Remove from local list
       setDrafts(prev => prev.filter(d => d.id !== event.id))
     } catch {} finally {

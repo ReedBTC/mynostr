@@ -49,6 +49,13 @@ export default function BookmarkChipBar({
   // longform BookmarksPanel pattern instead of a native confirm dialog.
   const [confirmDeleteId, setConfirmDeleteId] = useState(null)
 
+  // Pending status for publish-gated ops (rename/delete). Only one can run
+  // at a time — remote signer approvals are serialized. `action` drives
+  // the inline spinner label and `error` parks a "⚠️ Failed" hint when a
+  // publish doesn't land (e.g. Primal bunker timed out before acking).
+  // createCategory is local-only — no publish — so it skips this entirely.
+  const [pendingChip, setPendingChip] = useState({ id: null, action: null, error: '' })
+
   // Declared up front so the effect below can close over it without
   // hitting the const TDZ.
   const hasEditable = categories.some(c => c.id !== NOTE_PRIMARY_CATEGORY_ID && !c.readOnly)
@@ -98,11 +105,45 @@ export default function BookmarkChipBar({
     if (!renamingId) return
     const trimmed = renameName.trim()
     const original = categories.find(c => c.id === renamingId)?.title || ''
-    if (trimmed && trimmed !== original) {
-      await onRenameCategory?.(renamingId, trimmed)
+    if (!trimmed || trimmed === original) {
+      setRenamingId(null)
+      setRenameName('')
+      return
     }
-    setRenamingId(null)
-    setRenameName('')
+    const id = renamingId
+    setPendingChip({ id, action: 'renaming', error: '' })
+    try {
+      const ok = await onRenameCategory?.(id, trimmed)
+      if (ok === false) {
+        setPendingChip({ id, action: null, error: 'Rename failed' })
+        setTimeout(() => setPendingChip(prev => prev.error === 'Rename failed' ? { id: null, action: null, error: '' } : prev), 3500)
+        // Keep input open so the user can retry without retyping.
+        return
+      }
+      setPendingChip({ id: null, action: null, error: '' })
+      setRenamingId(null)
+      setRenameName('')
+    } catch {
+      setPendingChip({ id: null, action: null, error: 'Rename failed' })
+      setTimeout(() => setPendingChip(prev => prev.error === 'Rename failed' ? { id: null, action: null, error: '' } : prev), 3500)
+    }
+  }
+
+  async function runDelete(catId) {
+    setPendingChip({ id: catId, action: 'deleting', error: '' })
+    try {
+      const ok = await onDeleteCategory?.(catId)
+      if (ok === false) {
+        setPendingChip({ id: catId, action: null, error: 'Delete failed' })
+        setTimeout(() => setPendingChip(prev => prev.error === 'Delete failed' ? { id: null, action: null, error: '' } : prev), 3500)
+        return
+      }
+      setPendingChip({ id: null, action: null, error: '' })
+      setConfirmDeleteId(null)
+    } catch {
+      setPendingChip({ id: null, action: null, error: 'Delete failed' })
+      setTimeout(() => setPendingChip(prev => prev.error === 'Delete failed' ? { id: null, action: null, error: '' } : prev), 3500)
+    }
   }
 
   function startRename(cat) {
@@ -131,8 +172,10 @@ export default function BookmarkChipBar({
           const isRenaming = renamingId === cat.id
 
           if (isRenaming) {
+            const isPendingRename = pendingChip.id === cat.id && pendingChip.action === 'renaming'
+            const hasRenameError = pendingChip.id === cat.id && pendingChip.error === 'Rename failed'
             return (
-              <div key={cat.id} className="flex items-center gap-1">
+              <div key={cat.id} className="flex items-center gap-1.5">
                 <input
                   ref={renameInputRef}
                   type="text"
@@ -141,11 +184,21 @@ export default function BookmarkChipBar({
                   onBlur={commitRename}
                   onKeyDown={e => {
                     if (e.key === 'Enter') commitRename()
-                    if (e.key === 'Escape') { setRenamingId(null); setRenameName('') }
+                    if (e.key === 'Escape') { setRenamingId(null); setRenameName(''); setPendingChip({ id: null, action: null, error: '' }) }
                   }}
+                  disabled={isPendingRename}
                   maxLength={60}
-                  className="text-xs px-3 py-1.5 rounded-full bg-neutral-900 border border-purple-500 text-neutral-100 focus:outline-none min-w-[140px]"
+                  className="text-xs px-3 py-1.5 rounded-full bg-neutral-900 border border-purple-500 text-neutral-100 focus:outline-none min-w-[140px] disabled:opacity-60"
                 />
+                {isPendingRename && (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-neutral-400">
+                    <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                    Saving…
+                  </span>
+                )}
+                {hasRenameError && (
+                  <span className="text-[11px] text-red-400" title="Rename failed">⚠️ Failed</span>
+                )}
               </div>
             )
           }
@@ -182,38 +235,66 @@ export default function BookmarkChipBar({
                   · {bucketCount}
                 </span>
               </button>
-              {showManageActions && isConfirmingDelete && (
-                <div
-                  className={`flex items-center pl-2 gap-1 border-l text-xs whitespace-nowrap ${
-                    isActive ? 'border-purple-300/40' : 'border-neutral-600/60'
-                  }`}
-                  title={(() => {
-                    const total = (cat.items?.length || 0) + (cat.privateItems?.length || 0)
-                    return total > 0
-                      ? `Its ${total} bookmark${total === 1 ? '' : 's'} will move to Ungrouped`
-                      : 'Delete this empty category'
-                  })()}
-                >
-                  <span className={isActive ? 'text-purple-100' : 'text-neutral-400'}>Delete?</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onDeleteCategory?.(cat.id)
-                      setConfirmDeleteId(null)
-                    }}
-                    className={`px-1 ${isActive ? 'text-red-200 hover:text-red-100' : 'text-red-400 hover:text-red-300'}`}
+              {showManageActions && isConfirmingDelete && (() => {
+                const isPendingDelete = pendingChip.id === cat.id && pendingChip.action === 'deleting'
+                const hasDeleteError  = pendingChip.id === cat.id && pendingChip.error === 'Delete failed'
+                return (
+                  <div
+                    className={`flex items-center pl-2 gap-1 border-l text-xs whitespace-nowrap ${
+                      isActive ? 'border-purple-300/40' : 'border-neutral-600/60'
+                    }`}
+                    title={(() => {
+                      const total = (cat.items?.length || 0) + (cat.privateItems?.length || 0)
+                      return total > 0
+                        ? `Its ${total} bookmark${total === 1 ? '' : 's'} will move to Ungrouped`
+                        : 'Delete this empty category'
+                    })()}
                   >
-                    Yes
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDeleteId(null)}
-                    className={`px-1 ${isActive ? 'text-purple-200 hover:text-purple-100' : 'text-neutral-500 hover:text-neutral-300'}`}
-                  >
-                    No
-                  </button>
-                </div>
-              )}
+                    {isPendingDelete ? (
+                      <span className={`inline-flex items-center gap-1 px-1 ${isActive ? 'text-purple-100' : 'text-neutral-400'}`}>
+                        <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                        Deleting…
+                      </span>
+                    ) : hasDeleteError ? (
+                      <>
+                        <span className="text-red-400" title="Delete failed">⚠️ Failed</span>
+                        <button
+                          type="button"
+                          onClick={() => runDelete(cat.id)}
+                          className={`px-1 ${isActive ? 'text-red-200 hover:text-red-100' : 'text-red-400 hover:text-red-300'}`}
+                        >
+                          Retry
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setConfirmDeleteId(null); setPendingChip({ id: null, action: null, error: '' }) }}
+                          className={`px-1 ${isActive ? 'text-purple-200 hover:text-purple-100' : 'text-neutral-500 hover:text-neutral-300'}`}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className={isActive ? 'text-purple-100' : 'text-neutral-400'}>Delete?</span>
+                        <button
+                          type="button"
+                          onClick={() => runDelete(cat.id)}
+                          className={`px-1 ${isActive ? 'text-red-200 hover:text-red-100' : 'text-red-400 hover:text-red-300'}`}
+                        >
+                          Yes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteId(null)}
+                          className={`px-1 ${isActive ? 'text-purple-200 hover:text-purple-100' : 'text-neutral-500 hover:text-neutral-300'}`}
+                        >
+                          No
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )
+              })()}
               {showManageActions && !isConfirmingDelete && (
                 <div className="flex items-center pl-1 gap-0.5 border-l border-neutral-600/60">
                   <button

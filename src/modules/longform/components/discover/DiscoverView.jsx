@@ -98,7 +98,7 @@ function dedupeReplaceable(events) {
   return Array.from(best.values())
 }
 
-export default function DiscoverView({ user, lists, addArticle, addArticlesBulk, createList, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, deleteList, renameList, reorderLists, hiddenIds, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+export default function DiscoverView({ user, lists, addArticle, addArticlesBulk, createList, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
 
   // Below md:, the two-pane layout collapses to one-pane-at-a-time: the feed
   // until an article is picked, then the reader (with a back arrow) until
@@ -108,6 +108,16 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
   // ── Selection / filter ────────────────────────────────────────────────────────
   const [selected,    setSelectedRaw]    = useState(null)
   const [titleQuery,  setTitleQuery]  = useState('')
+
+  // Owner-only privacy view — the Collection tab toolbar pill flips between
+  // public and private buckets. Visitors stay on 'public' (their reading of
+  // another author's lists can't see private items anyway).
+  const [privacyView, setPrivacyView] = useState('public')
+  // Leaving the Collection tab resets privacyView so a stale 'private'
+  // selection doesn't bleed into the next visit.
+  useEffect(() => {
+    if (feedMode !== 'collection') setPrivacyView('public')
+  }, [feedMode])
 
   const pubkey = user?.pubkey || ''
 
@@ -422,11 +432,15 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
   }
 
   // ── Build bookmark articles from reading lists ────────────────────────────────
+  // `view` selects which bucket to materialize: 'public' reads `list.articles`,
+  // 'private' reads `list.privateArticles`. Each output row carries _privacy
+  // so downstream UI (lock icon, mutation options) can dispatch correctly.
 
-  function buildBookmarkArticles(listsToUse = lists) {
+  function buildBookmarkArticles(listsToUse = lists, view = 'public') {
     const out = []
+    const bucket = view === 'private' ? 'privateArticles' : 'articles'
     for (const list of (listsToUse || [])) {
-      for (const item of (list.articles || [])) {
+      for (const item of (list[bucket] || [])) {
         const pub = item.publishedAt || 0
         const tags = [
           ['title', item.title || ''],
@@ -444,6 +458,7 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
           _aTag:       item.aTag,
           _listId:     list.id,
           _listTitle:  list.title,
+          _privacy:    view,
           _authorName: item.author || '',
           _authorPic:  item.authorPic || '',
           _tTags:      item.tTags || [],
@@ -461,10 +476,10 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
   const inAuthorCollectionView = feedMode === 'search' && authorViewMode === 'collection' && !!authorFilter
 
   const displayArticles = (() => {
-    if (inAuthorCollectionView) return buildBookmarkArticles(authorCollection.lists)
+    if (inAuthorCollectionView) return buildBookmarkArticles(authorCollection.lists, 'public')
     if (isAuthorFeed) return searchResults
 
-    const items = buildBookmarkArticles()
+    const items = buildBookmarkArticles(lists, privacyView)
     const lq = titleQuery.trim().toLowerCase()
     if (!lq) return items
     return items.filter(a => {
@@ -474,6 +489,13 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
       return title.includes(lq) || author.includes(lq) || listTitle.includes(lq)
     })
   })()
+
+  // Per-view hidden set and cross-view counts — the toggle pill needs to
+  // show "Public (n)" / "Private (m)" for the owner to gauge how many items
+  // sit behind each flag without actually flipping the view.
+  const hiddenIds = hiddenIdsByView?.[privacyView] || new Set()
+  const publicCount  = lists.reduce((n, l) => n + (l.articles?.length || 0), 0)
+  const privateCount = lists.reduce((n, l) => n + (l.privateArticles?.length || 0), 0)
 
   // In author-collection view, articles come from many different pubkeys —
   // reuse collectionProfiles (same cache the owner's Collection tab uses)
@@ -591,6 +613,44 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
           </div>
         ) : (
           <>
+            {!readOnly && (
+              <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5 flex-shrink-0">
+                {[
+                  { key: 'public',  label: 'Public',  count: publicCount  },
+                  { key: 'private', label: 'Private', count: privateCount },
+                ].map(opt => {
+                  const active = privacyView === opt.key
+                  return (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => {
+                        setPrivacyView(opt.key)
+                        setSelectedRaw(null)
+                        setCheckedIds(new Set())
+                      }}
+                      className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                        active
+                          ? (opt.key === 'private' ? 'bg-neutral-700 text-neutral-100' : 'bg-purple-700 text-white')
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                      title={opt.key === 'private'
+                        ? 'Private bookmarks — encrypted, only you see them'
+                        : 'Public bookmarks — visible to anyone on Nostr'}
+                    >
+                      {opt.key === 'private' && (
+                        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                          <rect x="3" y="7" width="10" height="7" rx="1.2" />
+                          <path d="M5 7V5a3 3 0 016 0v2" strokeLinecap="round" />
+                        </svg>
+                      )}
+                      <span>{opt.label}</span>
+                      <span className={active ? 'opacity-90' : 'opacity-60'}>({opt.count})</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
             <input type="text" value={titleQuery}
               onChange={e => setTitleQuery(e.target.value)}
               placeholder="Filter by title, author, or list name…"
@@ -756,9 +816,11 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                 onCreateList={readOnly ? null : createList}
                 onMoveArticle={readOnly ? null : moveArticle}
                 onMoveArticlesBulk={readOnly ? null : moveArticlesBulk}
+                onBulkMovePrivacy={readOnly ? null : bulkMovePrivacy}
                 onRemoveArticle={readOnly ? null : removeArticle}
                 onRemoveArticlesBulk={readOnly ? null : removeArticlesBulk}
                 onClearSelection={() => setCheckedIds(new Set())}
+                privacyView={privacyView}
               />
             )}
             {(displayArticles.length > 0 || (!readOnly && hasManageableGroups)) && (
@@ -813,14 +875,18 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                 })
               }}
               addArticle={addArticle}
+              moveArticle={moveArticle}
+              removeArticle={removeArticle}
               createList={createList}
               deleteList={deleteList}
               renameList={renameList}
               reorderLists={reorderLists}
+              movePrivacy={movePrivacy}
               hiddenIds={hiddenIds}
-              hideList={hideList}
-              unhideList={unhideList}
+              hideList={(id) => hideList(id, privacyView)}
+              unhideList={(id) => unhideList(id, privacyView)}
               readOnly={readOnly}
+              privacyView={privacyView}
               onOpenHelp={() => setHelpOpen(true)}
             />
             </>
@@ -850,7 +916,9 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
               onAddToList={readOnly ? null : addArticle}
               onCreateList={readOnly ? null : createList}
               onMoveArticle={readOnly ? null : moveArticle}
+              onMovePrivacy={readOnly ? null : movePrivacy}
               onRemoveFromList={!readOnly && selected?._listId ? removeArticle : undefined}
+              defaultPrivacy={privacyView}
               onLoadInEditor={onLoadInEditor}
               onClose={() => setSelected(null)}
               onAuthorClick={(author) => {
@@ -938,11 +1006,17 @@ function HelpOverlay({ onClose }) {
 
 // ── Bookmarks panel ─────────────────────────────────────────────────────────────
 
-function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, createList, deleteList, renameList, reorderLists, hiddenIds, hideList, unhideList, readOnly, onOpenHelp, manageMode }) {
+function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, moveArticle, removeArticle, createList, deleteList, renameList, reorderLists, movePrivacy, hiddenIds, hideList, unhideList, readOnly, privacyView = 'public', onOpenHelp, manageMode }) {
   const [editingId,     setEditingId]     = useState(null)
   const [editTitle,     setEditTitle]     = useState('')
   const [confirmDel,    setConfirmDel]    = useState(null)
   const [itemMenuId,    setItemMenuId]    = useState(null) // aTag of item with open menu
+  // List-scoped mutation status so a failed rename/delete surfaces in the
+  // header instead of silently reverting. `pendingListOp` is the op in
+  // flight ('renaming' | 'deleting' | null); `errorListId` parks the most
+  // recent failed list so the user sees the Yes/✎ didn't land.
+  const [pendingList,   setPendingList]   = useState({ id: null, op: null })
+  const [errorListId,   setErrorListId]   = useState(null)
 
   // Leaving manage mode cancels any in-flight rename/delete prompts so
   // they don't resurface the next time manage is opened.
@@ -969,17 +1043,31 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
   // keeps visibility into the same category list across both modules.
   // Visitors also see the empty-state when every public list is empty,
   // since the map below filters those rows out.
+  const bucketKey = privacyView === 'private' ? 'privateArticles' : 'articles'
   const visitorHasNothing = readOnly && !lists.some(l => (l.articles?.length || 0) > 0)
-  if (!lists.length || visitorHasNothing) {
+  // In private view, an owner with no private items should see a targeted
+  // empty state rather than the generic onboarding copy — they know how to
+  // bookmark, just haven't marked anything private yet.
+  const ownerPrivateEmpty = !readOnly && privacyView === 'private'
+    && !lists.some(l => (l.privateArticles?.length || 0) > 0)
+  if (!lists.length || visitorHasNothing || ownerPrivateEmpty) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-16 gap-4">
-        <div className="text-3xl text-neutral-700">📚</div>
+        <div className="text-3xl text-neutral-700">{ownerPrivateEmpty ? '🔒' : '📚'}</div>
         <div className="space-y-1.5">
           {readOnly ? (
             <>
               <p className="text-sm text-neutral-300">No public bookmarks</p>
               <p className="text-xs text-neutral-600 max-w-xs leading-relaxed">
                 This user hasn't published any public reading lists yet.
+              </p>
+            </>
+          ) : ownerPrivateEmpty ? (
+            <>
+              <p className="text-sm text-neutral-300">No private bookmarks</p>
+              <p className="text-xs text-neutral-600 max-w-xs leading-relaxed">
+                Mark items private from the Public view to store them encrypted.
+                Only you can decrypt and see them.
               </p>
             </>
           ) : (
@@ -992,7 +1080,7 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
             </>
           )}
         </div>
-        {!readOnly && (
+        {!readOnly && !ownerPrivateEmpty && (
           <button onClick={onOpenHelp}
             className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-500 hover:text-neutral-300 hover:border-neutral-500 transition-colors">
             Learn more
@@ -1022,10 +1110,42 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
     setConfirmDel(null)
   }
 
-  function commitEdit(list) {
+  async function commitEdit(list) {
     const t = editTitle.trim()
-    if (t && t !== list.title) renameList(list.id, t)
+    if (!t || t === list.title) { setEditingId(null); return }
     setEditingId(null)
+    setPendingList({ id: list.id, op: 'renaming' })
+    setErrorListId(null)
+    try {
+      const ok = await renameList(list.id, t)
+      if (ok === false) {
+        setErrorListId(list.id)
+        setTimeout(() => setErrorListId(prev => prev === list.id ? null : prev), 3000)
+      }
+    } catch {
+      setErrorListId(list.id)
+      setTimeout(() => setErrorListId(prev => prev === list.id ? null : prev), 3000)
+    } finally {
+      setPendingList({ id: null, op: null })
+    }
+  }
+
+  async function confirmDelete(listId) {
+    setConfirmDel(null)
+    setPendingList({ id: listId, op: 'deleting' })
+    setErrorListId(null)
+    try {
+      const ok = await deleteList(listId)
+      if (ok === false) {
+        setErrorListId(listId)
+        setTimeout(() => setErrorListId(prev => prev === listId ? null : prev), 3000)
+      }
+    } catch {
+      setErrorListId(listId)
+      setTimeout(() => setErrorListId(prev => prev === listId ? null : prev), 3000)
+    } finally {
+      setPendingList({ id: null, op: null })
+    }
   }
 
   function handleDeleteClick(id, e) {
@@ -1049,10 +1169,11 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
         // listIndex stays aligned with the full reorderLists array.
         if (isHidden && !manageMode) return null
 
-        const allItems    = list.articles || []
+        const allItems    = list[bucketKey] || []
         // Visitor view: visitors can't manage or hide chips, so an empty
         // category is just clutter. Owners keep seeing empties so they can
-        // add articles or manually hide the group.
+        // add articles or manually hide the group. Visitors never see the
+        // private bucket at all (bucketKey is always 'articles' for them).
         if (readOnly && allItems.length === 0) return null
         // Sort by published_at (or addedAt fallback) desc so the newest
         // article surfaces first, matching the author feed behavior.
@@ -1140,12 +1261,21 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
               {isDeleting && (
                 <div className="flex items-center gap-1 flex-shrink-0">
                   <span className="text-xs text-neutral-500" title="Items in this group will move to Ungrouped">Delete?</span>
-                  <button onClick={() => { deleteList(list.id); setConfirmDel(null) }}
+                  <button onClick={() => confirmDelete(list.id)}
                     title="Items will move to Ungrouped"
                     className="text-xs text-red-500 hover:text-red-400 transition-colors px-1">Yes</button>
                   <button onClick={() => setConfirmDel(null)}
                     className="text-xs text-neutral-600 hover:text-neutral-400 transition-colors px-1">No</button>
                 </div>
+              )}
+              {pendingList.id === list.id && pendingList.op && (
+                <span className="flex items-center gap-1 text-xs text-neutral-500 flex-shrink-0">
+                  <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                  <span>{pendingList.op === 'deleting' ? 'Deleting…' : 'Saving…'}</span>
+                </span>
+              )}
+              {errorListId === list.id && pendingList.id !== list.id && (
+                <span className="text-xs text-red-400 flex-shrink-0" title="Publish failed — try again">⚠️ Failed</span>
               )}
             </div>
 
@@ -1196,8 +1326,16 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                       }
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className={`text-sm font-medium truncate leading-snug ${item.title ? 'text-neutral-100' : 'text-neutral-500 italic'}`}>
-                        {displayTitle}
+                      <p className={`text-sm font-medium truncate leading-snug ${item.title ? 'text-neutral-100' : 'text-neutral-500 italic'} flex items-center gap-1.5`}>
+                        {privacyView === 'private' && (
+                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"
+                            className="text-neutral-500 flex-shrink-0"
+                            title="Private bookmark — encrypted, only you see it">
+                            <rect x="3" y="7" width="10" height="7" rx="1.2" />
+                            <path d="M5 7V5a3 3 0 016 0v2" strokeLinecap="round" />
+                          </svg>
+                        )}
+                        <span className="truncate">{displayTitle}</span>
                       </p>
                       {tagSummary && (
                         <p className="text-xs text-neutral-500 mt-0.5 truncate">{tagSummary}</p>
@@ -1234,7 +1372,11 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                       tTags={item.tTags || []}
                       lists={otherLists}
                       onAddToList={addArticle}
+                      onMoveArticle={moveArticle}
+                      onRemoveFromList={removeArticle}
                       onCreateList={createList}
+                      onMovePrivacy={movePrivacy}
+                      defaultPrivacy={privacyView}
                       authorName={item.author || ''}
                       authorPic={item.authorPic || ''}
                     />

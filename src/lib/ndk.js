@@ -1,4 +1,4 @@
-import NDK from '@nostr-dev-kit/ndk'
+import NDK, { NDKRelaySet } from '@nostr-dev-kit/ndk'
 
 // Fallback relays used when user has no Kind 10002 relay list
 export const FALLBACK_RELAYS = [
@@ -86,6 +86,46 @@ export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = 
   } catch {
     return []
   }
+}
+
+// Resolve the signed-in user's NIP-65 write relays. Returns the URL list if
+// we can read a kind 10002, null otherwise — callers decide how to handle a
+// missing 10002 (fall back to pool, prompt the user, etc).
+export async function getOwnWriteRelays(ndk) {
+  try {
+    const relayList = await ndk?.activeUser?.relayList()
+    const urls = relayList?.writeRelayUrls
+    if (Array.isArray(urls) && urls.length) return urls
+  } catch {}
+  return null
+}
+
+// Publish an event only to the user's own NIP-65 write relays.
+//
+// This is the outbox-model publish path. Use it for events the user will want
+// to edit or retract later — replaceables (profile, contacts, bookmarks,
+// reading lists, articles, drafts, kind-5 deletes). Publishing such events to
+// fallback relays outside the user's write set creates data debt: a future
+// edit or delete published to the user's own relays won't reach those copies,
+// so third-party clients may keep showing the old version.
+//
+// If the user has no 10002 yet, we fall back to the full pool — there's
+// nothing else to target until they publish one, and their writes landing on
+// the fallbacks is the same outcome as today. The RelayCard onboarding prompts
+// for 10002 setup, so this degenerate case is bounded.
+export async function publishToOwnOutbox(event) {
+  const ndk = event.ndk
+  const writeRelays = await getOwnWriteRelays(ndk)
+  if (!writeRelays) return event.publish()
+  const relaySet = NDKRelaySet.fromRelayUrls(writeRelays, ndk)
+  return event.publish(relaySet)
+}
+
+// Publish an event to NDK's full relay pool (user's outbox + fallbacks).
+// Use this for reach-over-recall events: kind 1 notes, reactions, reposts,
+// and the kind 10002 relay list itself (bootstrap repair).
+export async function publishToPool(event) {
+  return event.publish()
 }
 
 // Call on logout to close relay connections, detach the signer,

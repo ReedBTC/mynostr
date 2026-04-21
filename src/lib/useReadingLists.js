@@ -14,19 +14,33 @@
  * events for any bookmark items that are missing title/image/author (i.e. items
  * that came in as bare `a` tags from other Nostr apps). The enriched metadata
  * is cached in localStorage for instant display on subsequent loads.
+ *
+ * Private items (NIP-51):
+ *   Encrypted `content` field carries a JSON-stringified tag array. For
+ *   longform that means entries like ["a", "30023:pubkey:dtag"]. Per-item
+ *   title/image/author metadata is NOT stored in the encrypted blob (it
+ *   would be a self-encrypted leak that only adds decrypt cost); instead,
+ *   enrichment re-fetches article metadata post-decrypt the same way it
+ *   does for bare public `a` tags. Decryption is owner-only — visitor mode
+ *   (readOnly) never decrypts anyone else's items.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, signWithTimeout } from './ndk.js'
-import { looksEncrypted } from './privateItems.js'
+import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
+import {
+  looksEncrypted,
+  encryptPrivateTagArray,
+  decryptPrivateTagArray,
+} from './privateItems.js'
 
 // Per-pubkey cache so viewing multiple authors on the same machine doesn't
 // leak one person's enriched bookmarks into another's display.
 const STORAGE_KEY_PREFIX = 'mynostr_reading_lists:'
 
-// Client-side per-pubkey list of hidden category ids. Hiding is a view-only
-// preference; the underlying events still exist on relays.
+// Client-side per-pubkey list of hidden category ids, split by privacy view
+// (see hiddenStorageKey helpers). Hiding is a view-only preference; the
+// underlying events still exist on relays.
 const HIDDEN_STORAGE_KEY_PREFIX = 'mynostr_reading_hidden:'
 
 // The kind-10003 primary list has this synthetic id everywhere in the app.
@@ -48,33 +62,93 @@ function loadFromStorage(pubkey) {
 function saveToStorage(pubkey, lists) {
   const key = storageKeyFor(pubkey)
   if (!key) return
-  try { localStorage.setItem(key, JSON.stringify(lists)) } catch {}
+  try {
+    // Decrypted private items NEVER touch disk — mirror of the notes-module
+    // rule. The privateCiphertext blob is safe to persist (still encrypted,
+    // requires the signer to decrypt).
+    const stripped = (lists || []).map(l => {
+      const { privateArticles, ...rest } = l
+      return rest
+    })
+    localStorage.setItem(key, JSON.stringify(stripped))
+  } catch {}
 }
 
+// Per-pubkey hidden chips, split by privacy view. Same shape as
+// useNoteBookmarks: `{ public: string[], private: string[] }`. A pre-split
+// bare array migrates into the public bucket so previously-hidden lists
+// don't pop back into view.
 function hiddenStorageKeyFor(pubkey) {
   return pubkey ? `${HIDDEN_STORAGE_KEY_PREFIX}${pubkey}` : null
 }
 
 function loadHiddenFromStorage(pubkey) {
   const key = hiddenStorageKeyFor(pubkey)
-  if (!key) return new Set()
+  const empty = { public: [], private: [] }
+  if (!key) return empty
   try {
-    const arr = JSON.parse(localStorage.getItem(key) || '[]')
-    return new Set(Array.isArray(arr) ? arr : [])
-  } catch { return new Set() }
+    const raw = JSON.parse(localStorage.getItem(key) || 'null')
+    if (Array.isArray(raw)) {
+      return { public: raw.filter(id => typeof id === 'string'), private: [] }
+    }
+    if (raw && typeof raw === 'object') {
+      return {
+        public:  Array.isArray(raw.public)  ? raw.public .filter(id => typeof id === 'string') : [],
+        private: Array.isArray(raw.private) ? raw.private.filter(id => typeof id === 'string') : [],
+      }
+    }
+    return empty
+  } catch { return empty }
 }
 
-function saveHiddenToStorage(pubkey, hiddenSet) {
+function saveHiddenToStorage(pubkey, hiddenByView) {
   const key = hiddenStorageKeyFor(pubkey)
   if (!key) return
-  try { localStorage.setItem(key, JSON.stringify(Array.from(hiddenSet))) } catch {}
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      public:  [...(hiddenByView.public  || [])],
+      private: [...(hiddenByView.private || [])],
+    }))
+  } catch {}
+}
+
+// Tombstone log — per-pubkey `listId → created_at` map. Written when
+// deleteList's tombstone publish lands; read on load so a stale fallback
+// relay can't resurrect a deleted list by returning the pre-tombstone event.
+// Mirrors the tombstone log in useNoteBookmarks.
+const TOMBSTONE_KEY_PREFIX = 'mynostr_reading_tombstones:'
+function tombstoneKeyFor(pubkey) {
+  return pubkey ? `${TOMBSTONE_KEY_PREFIX}${pubkey}` : null
+}
+function loadTombstones(pubkey) {
+  const key = tombstoneKeyFor(pubkey)
+  if (!key) return {}
+  try {
+    const raw = JSON.parse(localStorage.getItem(key) || 'null')
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const out = {}
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof k === 'string' && Number.isFinite(v)) out[k] = v
+    }
+    return out
+  } catch { return {} }
+}
+function saveTombstone(pubkey, listId, createdAt) {
+  const key = tombstoneKeyFor(pubkey)
+  if (!key || !listId) return
+  try {
+    const current = loadTombstones(pubkey)
+    const stamp = Number.isFinite(createdAt) ? createdAt : Math.floor(Date.now() / 1000)
+    current[listId] = Math.max(current[listId] || 0, stamp)
+    localStorage.setItem(key, JSON.stringify(current))
+  } catch {}
 }
 
 // ── Cross-module concurrency ──────────────────────────────────────────────────
 //
 // Notes + Longform both read/write the user's single kind 10003 event.
 // Each module owns a slice of that event (longform: `a`-tags + aTag items
-// in content; notes: `e`-tags + id items in content + any NIP-04
+// in content; notes: `e`-tags + id items in content + any NIP-51
 // ciphertext in content). A naive publish-from-in-memory-snapshot races
 // the other module and can silently clobber its data.
 //
@@ -121,6 +195,19 @@ function isTombstone(event) {
   return onlyDTag && (!event.content || event.content === '')
 }
 
+// Build a minimal article stub from a bare aTag. Enrichment fills in
+// title/image/author later.
+function stubFromATag(aTag, addedAt) {
+  return {
+    aTag,
+    title: '',
+    image: '',
+    author: '',
+    tTags: [],
+    addedAt: addedAt || Date.now(),
+  }
+}
+
 function eventToList(event) {
   const kind = event.kind
 
@@ -137,15 +224,13 @@ function eventToList(event) {
   // stash everything else (e.g., the notes module's `{id, addedAt}` items)
   // verbatim so republishing preserves them for other modules.
   //
-  // If content is NIP-51 ciphertext (a notes-module category with private
-  // items), we can't parse it — capture the blob verbatim as rawContent so
-  // publishList preserves it on round-trip. Articles in that case come
-  // from `a`-tags only (losing per-item JSON metadata for that category,
-  // but enrichment re-fetches it anyway).
+  // If content is NIP-51 ciphertext (this category has private items),
+  // stash the blob verbatim as privateCiphertext; publishList preserves it
+  // on round-trip and an async decrypt pass decodes it for the owner.
   let articles = []
   const otherContentItems = []
-  const rawContent = looksEncrypted(event.content) ? event.content : ''
-  if (!rawContent) {
+  const privateCiphertext = looksEncrypted(event.content) ? event.content : ''
+  if (!privateCiphertext) {
     try {
       const parsed = JSON.parse(event.content || '[]')
       if (Array.isArray(parsed)) {
@@ -171,14 +256,7 @@ function eventToList(event) {
       // Accept long-form articles (30023) and recipes (30078) only.
       if (aKind !== '30023' && aKind !== '30078') continue
       existingATags.add(aTag)
-      articles.push({
-        aTag,
-        title: '',
-        image: '',
-        author: '',
-        tTags: [],
-        addedAt: event.created_at ? event.created_at * 1000 : Date.now(),
-      })
+      articles.push(stubFromATag(aTag, event.created_at ? event.created_at * 1000 : Date.now()))
     } else if (tag[0] !== 'd' && tag[0] !== 'title') {
       // Preserve every other tag (e tags from the notes module, r/t tags,
       // etc.) so republishing doesn't drop them.
@@ -186,13 +264,29 @@ function eventToList(event) {
     }
   }
 
-  return { id, title, articles, createdAt: event.created_at, sourceKind: kind, extraTags, otherContentItems, rawContent }
+  return {
+    id, title,
+    articles,
+    privateArticles: [],
+    privateCiphertext,
+    createdAt: event.created_at,
+    sourceKind: kind,
+    extraTags,
+    otherContentItems,
+    // Back-compat: some older callers read `rawContent`. Now synonymous
+    // with privateCiphertext — only meaningful when the blob is encrypted.
+    rawContent: privateCiphertext,
+  }
 }
 
 // ── Background enrichment ───────────────────────────────────────────────────
 // Fetches kind 30023 events for bookmark items missing metadata, then fetches
 // kind 0 profiles for the authors. Updates items in-place and returns true if
 // any items were enriched.
+//
+// Operates on both buckets (public articles + private articles) — private
+// items need the same title/image/author pass; enrichment looks up public
+// 30023 events so nothing confidential leaks in the process.
 
 // Returns true if a string looks like a hex pubkey fragment or npub, not a real name
 function isHexLike(str) {
@@ -211,7 +305,8 @@ async function enrichBookmarkItems(lists) {
   const allPubkeys = new Set()
 
   for (const list of lists) {
-    for (const item of list.articles) {
+    const allItems = [...(list.articles || []), ...(list.privateArticles || [])]
+    for (const item of allItems) {
       if (!item.aTag) continue
       const pubkey = item.aTag.split(':')[1]
       if (!pubkey) continue
@@ -313,11 +408,38 @@ async function enrichBookmarkItems(lists) {
   return enriched
 }
 
+// Decrypt a list's privateCiphertext blob into article stubs. Returns an
+// empty array if decryption fails or the blob contains no `a` tags.
+// Enrichment re-fetches title/image/author post-decrypt.
+async function decryptPrivateArticles(ciphertext, ndk) {
+  if (!ciphertext) return []
+  const tagArray = await decryptPrivateTagArray(ciphertext, ndk)
+  if (!Array.isArray(tagArray)) return []
+  const out = []
+  const seen = new Set()
+  for (const t of tagArray) {
+    if (!Array.isArray(t) || t[0] !== 'a' || typeof t[1] !== 'string') continue
+    const aTag = t[1]
+    if (!aTag.includes(':') || seen.has(aTag)) continue
+    const aKind = aTag.split(':')[0]
+    if (aKind !== '30023' && aKind !== '30078') continue
+    seen.add(aTag)
+    // addedAt unknown for private items (no event-time fallback to leak);
+    // use current time so newly-decrypted items sort sensibly. Gets
+    // replaced on subsequent mutations with a real timestamp.
+    out.push(stubFromATag(aTag, Date.now()))
+  }
+  return out
+}
+
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useReadingLists(user) {
-  const [lists,     setLists]     = useState([])
-  const [hiddenIds, setHiddenIds] = useState(() => new Set())
+  const [lists,           setLists]           = useState([])
+  const [hiddenIdsByView, setHiddenIdsByView] = useState(() => ({
+    public: new Set(),
+    private: new Set(),
+  }))
   const [loading,   setLoading]   = useState(true)
   const enrichingRef = useRef(false)
   // Mirror of `lists` so async flows (deleteList) can read the current
@@ -328,9 +450,17 @@ export function useReadingLists(user) {
   const pubkey   = user?.pubkey
   const readOnly = !!user?.readOnly
 
-  // Hidden-list preference is purely client-side and per-pubkey.
+  // Hidden-list preference is purely client-side and per-pubkey, split by view.
   useEffect(() => {
-    setHiddenIds(loadHiddenFromStorage(pubkey))
+    if (!pubkey) {
+      setHiddenIdsByView({ public: new Set(), private: new Set() })
+      return
+    }
+    const stored = loadHiddenFromStorage(pubkey)
+    setHiddenIdsByView({
+      public:  new Set(stored.public),
+      private: new Set(stored.private),
+    })
   }, [pubkey])
 
   // Load from Nostr on mount; localStorage as fallback / read-only store
@@ -359,33 +489,49 @@ export function useReadingLists(user) {
         })
         if (cancelled) return
 
+        // Tombstone filter: drop any fetched event whose created_at is at or
+        // below a locally-recorded tombstone for that list id. Prevents a
+        // stale fallback relay from resurrecting a list we already deleted.
+        const tombstones = loadTombstones(pubkey)
+        const tombstoneFor = (ev) => {
+          if (ev.kind === 10003) return tombstones[PRIMARY_LIST_ID] || 0
+          const dTag = ev.tags?.find(t => t[0] === 'd')?.[1]
+          return dTag ? (tombstones[dTag] || 0) : 0
+        }
+
         const parsed = Array.from(events)
           .filter(ev => !isTombstone(ev))
+          .filter(ev => (ev.created_at || 0) > tombstoneFor(ev))
           .map(eventToList)
 
-        // Merge duplicate IDs
+        // Dedupe by list id, keeping the newest version wholesale. Replaceable
+        // events (10003/30001/30003) identify by (kind, author, d-tag) — if
+        // multiple relays return the same logical list we must pick ONE copy,
+        // not union their items. Unioning re-adds articles the user just
+        // removed whenever a fallback relay still has the pre-delete event.
         const merged = new Map()
         for (const list of parsed) {
-          if (merged.has(list.id)) {
-            const existing = merged.get(list.id)
-            const seen = new Set(existing.articles.map(a => a.aTag))
-            for (const art of list.articles) {
-              if (!seen.has(art.aTag)) {
-                existing.articles.push(art)
-                seen.add(art.aTag)
-              }
-            }
-            if (list.createdAt > existing.createdAt) {
-              existing.createdAt = list.createdAt
-              existing.title = list.title
-              existing.sourceKind = list.sourceKind
-              existing.extraTags = list.extraTags
-              existing.otherContentItems = list.otherContentItems
-              existing.rawContent = list.rawContent
-            }
-          } else {
+          const existing = merged.get(list.id)
+          if (!existing || list.createdAt > existing.createdAt) {
             merged.set(list.id, list)
           }
+        }
+
+        // Cache-aware merge: for any list the cache has with a newer
+        // createdAt than what we just pulled, trust the cache. This is what
+        // prevents a publish-succeeded-to-one-relay delete/rename/edit from
+        // being clobbered on reload by fallback relays that still return
+        // the pre-publish event. publishList stamps the cached entry with
+        // the real event created_at, so stale fetches can't outrank it.
+        // A genuinely-newer write from another client still wins by virtue
+        // of having an even higher createdAt.
+        for (const c of cachedInitial) {
+          if (!c?.id) continue
+          const tombAt = tombstones[c.id] || 0
+          if (tombAt && (Number(c.createdAt) || 0) <= tombAt) continue
+          const existing = merged.get(c.id)
+          const cachedAt = Number(c.createdAt) || 0
+          if (!existing || cachedAt > (existing.createdAt || 0)) merged.set(c.id, c)
         }
 
         // Keep categories with zero matching articles — they still show in
@@ -421,16 +567,48 @@ export function useReadingLists(user) {
         // session, so keep those in-memory for the page lifetime only.
         if (!readOnly) saveToStorage(pubkey, result)
 
+        // Async decrypt pass for NIP-51 private items — owner only, sequential
+        // so a bunker prompting per request doesn't flood the signer app.
+        if (!readOnly) {
+          const ndkSigner = ndk.signer
+          const needsDecrypt = result.filter(l => l.privateCiphertext)
+          for (const list of needsDecrypt) {
+            if (cancelled) return
+            if (!ndkSigner) break
+            const privateArticles = await decryptPrivateArticles(list.privateCiphertext, ndk)
+            if (cancelled) return
+            if (privateArticles.length === 0) continue
+            // Apply cached metadata to decrypted stubs before setState so
+            // they render with real titles immediately.
+            for (const art of privateArticles) {
+              const c = cachedItemMap.get(art.aTag)
+              if (!c) continue
+              if (!art.title       && c.title)       art.title       = c.title
+              if (!art.image       && c.image)       art.image       = c.image
+              if (!art.author      && c.author)      art.author      = c.author
+              if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
+              if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
+              if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
+            }
+            setLists(prev => prev.map(l =>
+              l.id === list.id ? { ...l, privateArticles } : l
+            ))
+          }
+        }
+
         // Background enrichment — fetch metadata for items still missing info
         if (!cancelled && !enrichingRef.current) {
           enrichingRef.current = true
-          enrichBookmarkItems(result).then(didEnrich => {
+          // Use the latest state (which may include just-decrypted private
+          // articles) so enrichment covers them too.
+          const enrichTarget = listsRef.current.length > 0 ? listsRef.current : result
+          enrichBookmarkItems(enrichTarget).then(didEnrich => {
             enrichingRef.current = false
             if (cancelled) return
             if (didEnrich) {
               // Force a re-render with the enriched data
-              setLists([...result])
-              if (!readOnly) saveToStorage(pubkey, result)
+              setLists([...listsRef.current])
+              if (!readOnly) saveToStorage(pubkey, listsRef.current)
             }
           }).catch(() => { enrichingRef.current = false })
         }
@@ -446,39 +624,79 @@ export function useReadingLists(user) {
     return () => { cancelled = true }
   }, [pubkey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Publish a list to Nostr and update local state. Returns true iff the
-  // relay publish actually succeeded. Local state is updated regardless
-  // (so a transient relay error doesn't yank the user's edit from the
-  // UI) — the return value is only for callers who need to gate a
-  // follow-up action (e.g., deleteList won't tombstone unless primary
-  // publish was durable).
+  // Publish a list to Nostr and — on success — commit the matching local
+  // state. Returns true iff the relay publish actually succeeded.
+  //
+  // Publish-before-commit: state is updated ONLY when the relay
+  // acknowledges the event. On failure, local state is untouched so the
+  // UI stays truthful rather than showing a change that didn't land (this
+  // matters a lot with remote signers like NIP-46 bunkers, where signing
+  // can time out 30s later and the user may have missed the phone prompt).
+  // Callers read the boolean to drive saving / done / error feedback.
+  //
+  // Two content strategies coexist (parallel to useNoteBookmarks):
+  //
+  //   A) No private items anywhere — content is our JSON-extended format.
+  //      Shared categories merge both shapes (aTag items + notes' {id,addedAt}).
+  //
+  //   B) Any private items — content becomes the NIP-51 encrypted tag array.
+  //      Cross-module merge: decrypt existing ciphertext, filter out `a`-tags
+  //      (longform owns those), keep `e`-tags (notes' private items), and
+  //      re-encrypt the union. If decrypt fails and we have new private
+  //      items to save, bail rather than corrupt the blob.
   const publishList = useCallback(async (list) => {
     // Defense in depth — UI already hides these paths for visitors, but if a
     // caller ever slipped through, we must not mutate the viewed user's cache.
     if (readOnly) return false
 
-    const updated = (prev) =>
-      prev.some(l => l.id === list.id)
-        ? prev.map(l => l.id === list.id ? list : l)
-        : [list, ...prev]
+    const logFailure = (where, err) => {
+      try {
+        // eslint-disable-next-line no-console
+        console.error(`[reading-lists] ${where} failed for list "${list.title}" (${list.id}):`, err)
+      } catch {}
+    }
 
     let published = false
+    let publishedAt = 0
     if (pubkey) {
       try {
         const ndk   = getNDK()
         const event = new NDKEvent(ndk)
+
+        const publicArticles = list.articles || []
+        const privateArticles = list.privateArticles || []
+        const hasPrivateItems = privateArticles.length > 0
+
+        // Build the encrypted content blob from our current private items
+        // plus any foreign (non-`a`) tags preserved from an existing blob.
+        async function buildEncryptedContent(sourceCiphertext) {
+          let foreignTags = []
+          if (sourceCiphertext && looksEncrypted(sourceCiphertext)) {
+            const existing = await decryptPrivateTagArray(sourceCiphertext, ndk)
+            if (Array.isArray(existing)) {
+              foreignTags = existing.filter(t => Array.isArray(t) && t[0] !== 'a')
+            }
+          }
+          const ourTags = privateArticles.map(a => ['a', a.aTag])
+          const merged = [...ourTags, ...foreignTags]
+          if (merged.length === 0) return ''
+          return await encryptPrivateTagArray(merged, ndk)
+        }
+
         // Preserve the source kind for round-trip of existing events:
-        // 10003 stays 10003, legacy 30001 stays 30001. NIP-51 deprecated
-        // 30001 in favor of 30003, so *new* lists we create always go out
-        // as 30003. The kind-10003 primary is a singleton (no d-tag, no
-        // title tag) and is shared with the notes module.
+        // 10003 stays 10003, legacy 30001 stays 30001. New lists default
+        // to 30003 (current NIP-51 convention). The kind-10003 primary is
+        // a singleton (no d-tag, no title tag) and is shared with the
+        // notes module.
         if (list.sourceKind === 10003) {
           // Cross-module merge — refetch the latest primary so any data
           // the notes module wrote since our load isn't silently clobbered.
           const fresh = await fetchLatestPrimary(pubkey)
           let preservedTags  = list.extraTags || []
           let preservedItems = list.otherContentItems || []
-          let rawContentOverride = null
+          let contentOverride = ''
+          const freshContent  = fresh ? (fresh.content || '') : ''
+          const freshEncrypted = looksEncrypted(freshContent)
           if (fresh) {
             // Keep every tag except what longform owns (`a`/`d`/`title`).
             // `e`-tags (notes), `t`/`r`/etc stay.
@@ -487,65 +705,102 @@ export function useReadingLists(user) {
               if (t[0] === 'a' || t[0] === 'd' || t[0] === 'title') continue
               preservedTags.push(t)
             }
-            // Content: if it's a JSON array, keep every non-article item
-            // (notes' `{id, addedAt}` etc). If it isn't JSON (likely
-            // NIP-04 encrypted private bookmarks), preserve it verbatim
-            // in `rawContentOverride` — our articles live in `a`-tags and
-            // don't need the content blob.
+          }
+
+          if (hasPrivateItems || freshEncrypted) {
+            try {
+              contentOverride = await buildEncryptedContent(freshEncrypted ? freshContent : list.privateCiphertext || '')
+            } catch (err) {
+              logFailure('encrypt (primary)', err)
+              if (hasPrivateItems) return false
+              contentOverride = freshEncrypted ? freshContent : (list.privateCiphertext || '')
+            }
+          } else if (fresh) {
+            // Pure-public path — merge our articles with notes-module items.
             let parsed = null
             try {
-              const p = JSON.parse(fresh.content || '[]')
+              const p = JSON.parse(freshContent || '[]')
               if (Array.isArray(p)) parsed = p
             } catch {}
             if (parsed) {
               preservedItems = parsed.filter(it => it && typeof it === 'object' && !it.aTag)
-            } else if (fresh.content && fresh.content !== '') {
+            } else if (freshContent !== '') {
+              // Non-JSON, non-encrypted — preserve verbatim.
+              contentOverride = freshContent
               preservedItems = []
-              rawContentOverride = fresh.content
             }
+            if (!contentOverride) {
+              const mergedContent = [...publicArticles, ...preservedItems]
+              contentOverride = JSON.stringify(mergedContent)
+            }
+          } else {
+            // No fresh fetch — fall back to cached items.
+            const mergedContent = [...publicArticles, ...preservedItems]
+            contentOverride = JSON.stringify(mergedContent)
           }
+
           event.kind = 10003
           event.tags = [...preservedTags]
-          for (const art of list.articles) {
+          for (const art of publicArticles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
-          if (rawContentOverride) {
-            event.content = rawContentOverride
-          } else {
-            const mergedContent = [...list.articles, ...preservedItems]
-            event.content = JSON.stringify(mergedContent)
-          }
+          event.content = contentOverride
         } else {
           event.kind = list.sourceKind === 30001 ? 30001 : 30003
           event.tags = [['d', list.id], ['title', list.title], ...(list.extraTags || [])]
-          for (const art of list.articles) {
+          for (const art of publicArticles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
-          // If the category's content is a NIP-51 encrypted blob (notes
-          // module has private items here), preserve it verbatim. Our
-          // articles live in `a`-tags and don't need the content JSON.
-          // Otherwise, merge our articles with any foreign content items
-          // (e.g., the notes module's `{id, addedAt}`) so they round-trip.
-          if (list.rawContent && looksEncrypted(list.rawContent)) {
-            event.content = list.rawContent
+
+          const hadCiphertext = !!list.privateCiphertext
+          if (hasPrivateItems || hadCiphertext) {
+            try {
+              event.content = await buildEncryptedContent(list.privateCiphertext || '')
+            } catch (err) {
+              logFailure('encrypt (list)', err)
+              if (hasPrivateItems) return false
+              event.content = list.privateCiphertext || ''
+            }
           } else {
-            const mergedContent = [...list.articles, ...(list.otherContentItems || [])]
+            // Merge our articles with any foreign content items (e.g., notes'
+            // `{id, addedAt}`) so they round-trip intact.
+            const mergedContent = [...publicArticles, ...(list.otherContentItems || [])]
             event.content = JSON.stringify(mergedContent)
           }
         }
+
         await signWithTimeout(event)
-        await event.publish()
-        published = true
-      } catch {
-        // Non-fatal — local state still updated
+        // Reading lists are replaceable (kind 10003/30001/30003) and users
+        // keep curating them. Publish only to their NIP-65 write relays so
+        // every copy lives where future edits and deletes will land — a copy
+        // on a fallback outside their write set would keep the pre-edit state
+        // visible to other clients after we move on.
+        const publishedTo = await publishToOwnOutbox(event)
+        const reached = Array.from(publishedTo || []).map(r => r.url).filter(Boolean)
+        if (reached.length === 0) {
+          logFailure('publish', new Error('no relays acknowledged the event'))
+        } else {
+          published = true
+          publishedAt = Number(event.created_at) || Math.floor(Date.now() / 1000)
+        }
+      } catch (err) {
+        logFailure('sign/publish', err)
       }
     }
 
-    setLists(prev => {
-      const next = updated(prev)
-      saveToStorage(pubkey, next)
-      return next
-    })
+    if (published) {
+      // Stamp the cached list with the event's real created_at so the
+      // load-path merge can tell a freshly-published commit apart from a
+      // stale fallback-relay echo of the pre-publish event on reload.
+      const stamped = publishedAt > 0 ? { ...list, createdAt: publishedAt } : list
+      setLists(prev => {
+        const next = prev.some(l => l.id === stamped.id)
+          ? prev.map(l => l.id === stamped.id ? stamped : l)
+          : [stamped, ...prev]
+        saveToStorage(pubkey, next)
+        return next
+      })
+    }
     return published
   }, [readOnly, pubkey])
 
@@ -555,6 +810,7 @@ export function useReadingLists(user) {
       id:         makeSlug(name),
       title:      name,
       articles:   [],
+      privateArticles: [],
       createdAt:  Math.floor(Date.now() / 1000),
       sourceKind: 30003,
     }
@@ -562,16 +818,38 @@ export function useReadingLists(user) {
     return list
   }, [readOnly, publishList])
 
-  const addArticle = useCallback(async (listId, articleMeta) => {
-    if (readOnly) return
-    setLists(prev => {
-      const list = prev.find(l => l.id === listId)
-      if (!list) return prev
-      if (list.articles.some(a => a.aTag === articleMeta.aTag)) return prev
-      const updated = { ...list, articles: [...list.articles, articleMeta] }
-      publishList(updated)
-      return prev
-    })
+  // Add an article to a list. Optional privacy: 'public' (default) | 'private'.
+  // Mutually exclusive with the other bucket in the same list — if the
+  // article was already in the opposite bucket, it moves rather than
+  // duplicating. Returns true iff the publish succeeded (or the article
+  // was already present, which is treated as a no-op success).
+  const addArticle = useCallback(async (listId, articleMeta, options = {}) => {
+    if (readOnly) return false
+    if (!articleMeta?.aTag) return false
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
+    const list = listsRef.current.find(l => l.id === listId)
+    if (!list) return false
+
+    const publicHas  = (list.articles        || []).some(a => a.aTag === articleMeta.aTag)
+    const privateHas = (list.privateArticles || []).some(a => a.aTag === articleMeta.aTag)
+    if (privacy === 'public' && publicHas && !privateHas) return true
+    if (privacy === 'private' && privateHas && !publicHas) return true
+
+    const targetBucket = privacy === 'public' ? 'articles' : 'privateArticles'
+    const otherBucket  = privacy === 'public' ? 'privateArticles' : 'articles'
+
+    const newItem = { ...articleMeta, addedAt: articleMeta.addedAt || Date.now() }
+    const newTarget = [
+      newItem,
+      ...(list[targetBucket] || []).filter(a => a.aTag !== articleMeta.aTag),
+    ]
+    const newOther = (list[otherBucket] || []).filter(a => a.aTag !== articleMeta.aTag)
+    const newList = {
+      ...list,
+      [targetBucket]: newTarget,
+      [otherBucket]:  newOther,
+    }
+    return await publishList(newList)
   }, [readOnly, publishList])
 
   // Bulk add — single publish for N articles. The per-call addArticle path
@@ -580,68 +858,110 @@ export function useReadingLists(user) {
   // last-signed event (holding only its own article) clobbers the others
   // on the relay and only one article actually gets bookmarked. This
   // collapses everything into one signed event with all new articles.
-  const addArticlesBulk = useCallback(async (listId, articleMetas) => {
+  const addArticlesBulk = useCallback(async (listId, articleMetas, options = {}) => {
     if (readOnly) return false
     if (!Array.isArray(articleMetas) || articleMetas.length === 0) return true
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     const list = listsRef.current.find(l => l.id === listId)
     if (!list) return false
-    const existing = new Set((list.articles || []).map(a => a.aTag))
+    const targetBucket = privacy === 'public' ? 'articles' : 'privateArticles'
+    const otherBucket  = privacy === 'public' ? 'privateArticles' : 'articles'
+    const existing = new Set((list[targetBucket] || []).map(a => a.aTag))
     const additions = articleMetas.filter(m => m?.aTag && !existing.has(m.aTag))
-    if (additions.length === 0) return true
-    const updated = { ...list, articles: [...(list.articles || []), ...additions] }
+    const aTagsInAdd = new Set(articleMetas.map(m => m?.aTag).filter(Boolean))
+    const demoting = (list[otherBucket] || []).some(a => aTagsInAdd.has(a.aTag))
+    if (additions.length === 0 && !demoting) return true
+    const newTarget = [
+      ...additions.map(m => ({ ...m, addedAt: m.addedAt || Date.now() })),
+      ...(list[targetBucket] || []).filter(a => !aTagsInAdd.has(a.aTag)),
+    ]
+    const newOther  = (list[otherBucket] || []).filter(a => !aTagsInAdd.has(a.aTag))
+    const updated = {
+      ...list,
+      [targetBucket]: newTarget,
+      [otherBucket]:  newOther,
+    }
     return await publishList(updated)
   }, [readOnly, publishList])
 
-  const removeArticle = useCallback(async (listId, aTag) => {
-    if (readOnly) return
-    setLists(prev => {
-      const list = prev.find(l => l.id === listId)
-      if (!list) return prev
-      const updated = { ...list, articles: list.articles.filter(a => a.aTag !== aTag) }
-      publishList(updated)
-      return prev
-    })
+  const removeArticle = useCallback(async (listId, aTag, options = {}) => {
+    if (readOnly) return false
+    // When privacy is omitted, remove from whichever bucket holds it.
+    const explicit = options.privacy === 'private' || options.privacy === 'public'
+    const list = listsRef.current.find(l => l.id === listId)
+    if (!list) return false
+    const newList = {
+      ...list,
+      articles:        (!explicit || options.privacy === 'public')
+        ? (list.articles || []).filter(a => a.aTag !== aTag)
+        : (list.articles || []),
+      privateArticles: (!explicit || options.privacy === 'private')
+        ? (list.privateArticles || []).filter(a => a.aTag !== aTag)
+        : (list.privateArticles || []),
+    }
+    const changed = (newList.articles.length !== (list.articles || []).length)
+      || (newList.privateArticles.length !== (list.privateArticles || []).length)
+    if (!changed) return true
+    return await publishList(newList)
   }, [readOnly, publishList])
 
-  // Bulk remove — single publish per list. Same rationale as addArticlesBulk:
-  // looping removeArticle races on 10003 because each call publishes from a
-  // stale `prev` snapshot and the last publish wins.
-  const removeArticlesBulk = useCallback(async (listId, aTags) => {
+  // Bulk remove — single publish per list.
+  const removeArticlesBulk = useCallback(async (listId, aTags, options = {}) => {
     if (readOnly) return false
     if (!Array.isArray(aTags) || aTags.length === 0) return true
     const list = listsRef.current.find(l => l.id === listId)
     if (!list) return false
+    const explicit = options.privacy === 'private' || options.privacy === 'public'
     const aTagSet = new Set(aTags)
-    const remaining = (list.articles || []).filter(a => !aTagSet.has(a.aTag))
-    if (remaining.length === (list.articles || []).length) return true
-    return await publishList({ ...list, articles: remaining })
+    const newArticles = (!explicit || options.privacy === 'public')
+      ? (list.articles || []).filter(a => !aTagSet.has(a.aTag))
+      : (list.articles || [])
+    const newPrivate = (!explicit || options.privacy === 'private')
+      ? (list.privateArticles || []).filter(a => !aTagSet.has(a.aTag))
+      : (list.privateArticles || [])
+    if (newArticles.length === (list.articles || []).length
+        && newPrivate.length === (list.privateArticles || []).length) {
+      return true
+    }
+    const updated = { ...list, articles: newArticles, privateArticles: newPrivate }
+    return await publishList(updated)
   }, [readOnly, publishList])
 
   const deleteList = useCallback(async (listId) => {
-    if (readOnly) return
+    if (readOnly) return false
     // Primary ("Ungrouped") is the rehome destination — deleting it would
     // have nowhere to land its items, so block it.
-    if (listId === PRIMARY_LIST_ID) return
+    if (listId === PRIMARY_LIST_ID) return false
 
     // Read current lists via ref so the merge is computed from fresh data
     // and nothing is mutated until the durable publish lands.
     const current = listsRef.current
     const sourceList = current.find(l => l.id === listId)
-    if (!sourceList) return
+    if (!sourceList) return false
 
     const sourceKind = sourceList.sourceKind === 30003 ? 30003 : 30001
     const primary    = current.find(l => l.id === PRIMARY_LIST_ID)
 
-    // Merge deleted list's articles + otherContentItems into primary,
-    // deduping by aTag (articles) / id (notes-module items). If no
-    // primary exists yet, synthesize one — first publish creates the
+    // Merge deleted list's articles + privateArticles + otherContentItems
+    // into primary, deduping by aTag (articles) / id (notes-module items).
+    // If no primary exists yet, synthesize one — first publish creates the
     // user's kind 10003 event.
+    const publicToRehome  = sourceList.articles || []
+    const privateToRehome = sourceList.privateArticles || []
     const mergedArticles = primary ? [...primary.articles] : []
-    const seenATags = new Set(mergedArticles.map(a => a.aTag))
-    for (const art of sourceList.articles || []) {
-      if (art.aTag && !seenATags.has(art.aTag)) {
+    const mergedPrivate  = primary ? [...(primary.privateArticles || [])] : []
+    const seenPubATags  = new Set(mergedArticles.map(a => a.aTag))
+    const seenPrivATags = new Set(mergedPrivate.map(a => a.aTag))
+    for (const art of publicToRehome) {
+      if (art.aTag && !seenPubATags.has(art.aTag)) {
         mergedArticles.push(art)
-        seenATags.add(art.aTag)
+        seenPubATags.add(art.aTag)
+      }
+    }
+    for (const art of privateToRehome) {
+      if (art.aTag && !seenPrivATags.has(art.aTag)) {
+        mergedPrivate.push(art)
+        seenPrivATags.add(art.aTag)
       }
     }
     const mergedOther = primary ? [...(primary.otherContentItems || [])] : []
@@ -654,11 +974,12 @@ export function useReadingLists(user) {
     }
 
     const newPrimary = primary
-      ? { ...primary, articles: mergedArticles, otherContentItems: mergedOther }
+      ? { ...primary, articles: mergedArticles, privateArticles: mergedPrivate, otherContentItems: mergedOther }
       : {
           id: PRIMARY_LIST_ID,
           title: PRIMARY_LIST_TITLE,
           articles: mergedArticles,
+          privateArticles: mergedPrivate,
           otherContentItems: mergedOther,
           extraTags: [],
           sourceKind: 10003,
@@ -670,13 +991,39 @@ export function useReadingLists(user) {
     // source list nor in primary. Order of operations:
     //   1. Publish merged primary. If this fails, ABORT — no local state
     //      change, no tombstone. Articles stay safely in the source list.
-    //   2. Only after (1) lands, remove the source list locally and
-    //      publish the tombstone.
-    // If the tombstone step fails, the source list will reappear on next
-    // relay refetch and the user will see their articles in both places —
-    // duplication, not loss. They can retry delete.
+    //   2. Publish the tombstone. Only after it lands on ≥1 relay do we
+    //      remove the source list from local state.
+    // If the tombstone step fails, the source list stays in local state so
+    // the user can retry — better than a UI that lies about persistence.
     const primaryOk = await publishList(newPrimary)
-    if (!primaryOk) return
+    if (!primaryOk) return false
+
+    if (!pubkey) return true
+
+    let tombstoneAt = 0
+    try {
+      const ndk   = getNDK()
+      const event = new NDKEvent(ndk)
+      // Tombstone the original kind — replaceables are per-kind, so a
+      // 30001 tombstone wouldn't invalidate a 30003 original and vice versa.
+      event.kind    = sourceKind
+      event.tags    = [['d', listId]]
+      event.content = ''
+      await signWithTimeout(event)
+      // Same outbox-only reasoning as publishList — tombstones must reach
+      // the same relay set that holds every copy of the list.
+      const publishedTo = await publishToOwnOutbox(event)
+      const landed = Array.from(publishedTo || []).length > 0
+      if (!landed) return false
+      tombstoneAt = Number(event.created_at) || Math.floor(Date.now() / 1000)
+    } catch {
+      return false
+    }
+
+    // Record the tombstone locally so a stale fetch from a lagging fallback
+    // relay can't resurrect this list on the next reload — the load-path
+    // filter drops any fetched event for this id with created_at <= tombstoneAt.
+    saveTombstone(pubkey, listId, tombstoneAt)
 
     setLists(prev => {
       const next = prev.filter(l => l.id !== listId)
@@ -684,80 +1031,169 @@ export function useReadingLists(user) {
       return next
     })
 
-    if (pubkey) {
-      try {
-        const ndk   = getNDK()
-        const event = new NDKEvent(ndk)
-        // Tombstone the original kind — replaceables are per-kind, so a
-        // 30001 tombstone wouldn't invalidate a 30003 original and vice versa.
-        event.kind    = sourceKind
-        event.tags    = [['d', listId]]
-        event.content = ''
-        await signWithTimeout(event)
-        await event.publish()
-      } catch {}
-    }
+    return true
   }, [readOnly, pubkey, publishList])
 
   const renameList = useCallback(async (listId, newTitle) => {
-    if (readOnly) return
-    setLists(prev => {
-      const list = prev.find(l => l.id === listId)
-      if (!list) return prev
-      const updated = { ...list, title: newTitle }
-      publishList(updated)
-      return prev
-    })
+    if (readOnly) return false
+    const list = listsRef.current.find(l => l.id === listId)
+    if (!list) return false
+    if (list.title === newTitle) return true
+    const newList = { ...list, title: newTitle }
+    return await publishList(newList)
   }, [readOnly, publishList])
 
-  const moveArticle = useCallback(async (fromListId, toListId, aTag) => {
-    if (readOnly) return
-    setLists(prev => {
-      const from = prev.find(l => l.id === fromListId)
-      const to   = prev.find(l => l.id === toListId)
-      if (!from || !to) return prev
-      const item = from.articles.find(a => a.aTag === aTag)
-      if (!item) return prev
-      if (to.articles.some(a => a.aTag === aTag)) {
-        // Already in target — just remove from source
-        const updatedFrom = { ...from, articles: from.articles.filter(a => a.aTag !== aTag) }
-        publishList(updatedFrom)
-        return prev
-      }
-      const updatedFrom = { ...from, articles: from.articles.filter(a => a.aTag !== aTag) }
-      const updatedTo   = { ...to,   articles: [...to.articles, item] }
-      publishList(updatedFrom)
-      publishList(updatedTo)
-      return prev
-    })
+  // Move a single article across lists. Target is published first so a
+  // failure between publishes leaves duplicates rather than dropped items
+  // (same atomicity stance as deleteList).
+  const moveArticle = useCallback(async (fromListId, toListId, aTag, options = {}) => {
+    if (readOnly) return false
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
+    const from = listsRef.current.find(l => l.id === fromListId)
+    const to   = listsRef.current.find(l => l.id === toListId)
+    if (!from || !to) return false
+
+    const sourceBucket = (from.articles || []).some(a => a.aTag === aTag) ? 'articles' : 'privateArticles'
+    const item = (from[sourceBucket] || []).find(a => a.aTag === aTag)
+    if (!item) return false
+
+    const targetBucket = privacy === 'public' ? 'articles' : 'privateArticles'
+    const otherBucket  = privacy === 'public' ? 'privateArticles' : 'articles'
+
+    const newFrom = {
+      ...from,
+      articles:        (from.articles        || []).filter(a => a.aTag !== aTag),
+      privateArticles: (from.privateArticles || []).filter(a => a.aTag !== aTag),
+    }
+    const targetHas = (to[targetBucket] || []).some(a => a.aTag === aTag)
+    const newTo = {
+      ...to,
+      [targetBucket]: targetHas
+        ? (to[targetBucket] || [])
+        : [{ ...item, addedAt: item.addedAt || Date.now() }, ...(to[targetBucket] || [])],
+      [otherBucket]:  (to[otherBucket] || []).filter(a => a.aTag !== aTag),
+    }
+
+    const toOk = await publishList(newTo)
+    if (!toOk) return false
+    const fromOk = await publishList(newFrom)
+    return fromOk
   }, [readOnly, publishList])
 
-  // Bulk move from one list to another — single publish per side. Loops of
-  // moveArticle hit the same replaceable-event race as addArticle (each
-  // iteration publishes its own stale snapshot; the last publish wins on
-  // the relay). Target is published first so a failure between publishes
-  // leaves duplicates rather than dropped items — same atomicity stance as
-  // deleteList.
-  const moveArticlesBulk = useCallback(async (fromListId, toListId, aTags) => {
+  // Bulk move from one list to another — single publish per side. Target is
+  // published first so a failure between publishes leaves duplicates rather
+  // than dropped items — same atomicity stance as deleteList.
+  const moveArticlesBulk = useCallback(async (fromListId, toListId, aTags, options = {}) => {
     if (readOnly) return false
     if (!Array.isArray(aTags) || aTags.length === 0) return true
-    if (fromListId === toListId) return true
+    if (fromListId === toListId) {
+      // Same-list move — this is a privacy flip, not a cross-list move.
+      return await bulkMovePrivacyRef.current?.(fromListId, aTags, options.privacy) || false
+    }
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     const current = listsRef.current
     const from = current.find(l => l.id === fromListId)
     const to   = current.find(l => l.id === toListId)
     if (!from || !to) return false
     const aTagSet = new Set(aTags)
-    const moving = (from.articles || []).filter(a => aTagSet.has(a.aTag))
-    if (moving.length === 0) return true
-    const existingTo = new Set((to.articles || []).map(a => a.aTag))
-    const newItems = moving.filter(it => !existingTo.has(it.aTag))
-    const updatedTo   = { ...to,   articles: [...(to.articles || []), ...newItems] }
-    const updatedFrom = { ...from, articles: (from.articles || []).filter(a => !aTagSet.has(a.aTag)) }
+    const fromItems = [
+      ...(from.articles || []).filter(a => aTagSet.has(a.aTag)),
+      ...(from.privateArticles || []).filter(a => aTagSet.has(a.aTag)),
+    ]
+    if (fromItems.length === 0) return true
+
+    const targetBucket = privacy === 'public' ? 'articles' : 'privateArticles'
+    const otherBucket  = privacy === 'public' ? 'privateArticles' : 'articles'
+    const existingTo = new Set((to[targetBucket] || []).map(a => a.aTag))
+    const newToTarget = [
+      ...fromItems
+        .filter(it => !existingTo.has(it.aTag))
+        .map(it => ({ ...it, addedAt: it.addedAt || Date.now() })),
+      ...(to[targetBucket] || []),
+    ]
+    const newToOther = (to[otherBucket] || []).filter(a => !aTagSet.has(a.aTag))
+    const updatedTo = {
+      ...to,
+      [targetBucket]: newToTarget,
+      [otherBucket]:  newToOther,
+    }
+    const updatedFrom = {
+      ...from,
+      articles:        (from.articles        || []).filter(a => !aTagSet.has(a.aTag)),
+      privateArticles: (from.privateArticles || []).filter(a => !aTagSet.has(a.aTag)),
+    }
     const toOk = await publishList(updatedTo)
     if (!toOk) return false
     const fromOk = await publishList(updatedFrom)
-    return toOk && fromOk
+    return fromOk
   }, [readOnly, publishList])
+
+  // Flip privacy for one article within a single list. One publish.
+  const movePrivacy = useCallback(async (listId, aTag, newPrivacy) => {
+    if (readOnly || !aTag) return false
+    const target = newPrivacy === 'private' ? 'private' : 'public'
+    const list = listsRef.current.find(l => l.id === listId)
+    if (!list) return false
+    const pubList  = list.articles || []
+    const privList = list.privateArticles || []
+    const publicHas  = pubList.some(a => a.aTag === aTag)
+    const privateHas = privList.some(a => a.aTag === aTag)
+    let newList
+    if (target === 'private') {
+      if (privateHas || !publicHas) return true
+      const item = pubList.find(a => a.aTag === aTag)
+      newList = {
+        ...list,
+        articles:        pubList.filter(a => a.aTag !== aTag),
+        privateArticles: [item, ...privList],
+      }
+    } else {
+      if (publicHas || !privateHas) return true
+      const item = privList.find(a => a.aTag === aTag)
+      newList = {
+        ...list,
+        articles:        [item, ...pubList],
+        privateArticles: privList.filter(a => a.aTag !== aTag),
+      }
+    }
+    return await publishList(newList)
+  }, [readOnly, publishList])
+
+  // Bulk flip privacy within a single list. One publish.
+  const bulkMovePrivacy = useCallback(async (listId, aTags, newPrivacy) => {
+    if (readOnly || !Array.isArray(aTags) || aTags.length === 0) return false
+    const target = newPrivacy === 'private' ? 'private' : 'public'
+    const aTagSet = new Set(aTags)
+    const list = listsRef.current.find(l => l.id === listId)
+    if (!list) return false
+    const pubList  = list.articles || []
+    const privList = list.privateArticles || []
+    let newList
+    if (target === 'private') {
+      const moving = pubList.filter(a => aTagSet.has(a.aTag))
+      if (moving.length === 0) return true
+      newList = {
+        ...list,
+        articles:        pubList.filter(a => !aTagSet.has(a.aTag)),
+        privateArticles: [...moving, ...privList],
+      }
+    } else {
+      const moving = privList.filter(a => aTagSet.has(a.aTag))
+      if (moving.length === 0) return true
+      newList = {
+        ...list,
+        articles:        [...moving, ...pubList],
+        privateArticles: privList.filter(a => !aTagSet.has(a.aTag)),
+      }
+    }
+    return await publishList(newList)
+  }, [readOnly, publishList])
+
+  // moveArticlesBulk needs to reference bulkMovePrivacy for the same-list
+  // short-circuit, but bulkMovePrivacy is defined after. A ref bridges the
+  // forward reference without re-ordering useCallback hooks.
+  const bulkMovePrivacyRef = useRef(null)
+  useEffect(() => { bulkMovePrivacyRef.current = bulkMovePrivacy }, [bulkMovePrivacy])
 
   const reorderLists = useCallback((fromIndex, toIndex) => {
     // Visitors can't re-order someone else's lists — the cache belongs to the
@@ -774,27 +1210,33 @@ export function useReadingLists(user) {
     })
   }, [readOnly, pubkey])
 
-  const hideList = useCallback((listId) => {
+  const hideList = useCallback((listId, view = 'public') => {
     if (readOnly || !listId) return
     // Primary stays visible — hiding it would strand items with nowhere to
     // surface them.
     if (listId === PRIMARY_LIST_ID) return
-    setHiddenIds(prev => {
-      if (prev.has(listId)) return prev
-      const next = new Set(prev)
-      next.add(listId)
-      saveHiddenToStorage(pubkey, next)
+    const bucket = view === 'private' ? 'private' : 'public'
+    setHiddenIdsByView(prev => {
+      const current = prev[bucket]
+      if (current.has(listId)) return prev
+      const nextBucket = new Set(current)
+      nextBucket.add(listId)
+      const next = { ...prev, [bucket]: nextBucket }
+      saveHiddenToStorage(pubkey, { public: next.public, private: next.private })
       return next
     })
   }, [readOnly, pubkey])
 
-  const unhideList = useCallback((listId) => {
+  const unhideList = useCallback((listId, view = 'public') => {
     if (readOnly || !listId) return
-    setHiddenIds(prev => {
-      if (!prev.has(listId)) return prev
-      const next = new Set(prev)
-      next.delete(listId)
-      saveHiddenToStorage(pubkey, next)
+    const bucket = view === 'private' ? 'private' : 'public'
+    setHiddenIdsByView(prev => {
+      const current = prev[bucket]
+      if (!current.has(listId)) return prev
+      const nextBucket = new Set(current)
+      nextBucket.delete(listId)
+      const next = { ...prev, [bucket]: nextBucket }
+      saveHiddenToStorage(pubkey, { public: next.public, private: next.private })
       return next
     })
   }, [readOnly, pubkey])
@@ -805,7 +1247,8 @@ export function useReadingLists(user) {
     addArticle, addArticlesBulk,
     removeArticle, removeArticlesBulk,
     moveArticle, moveArticlesBulk,
+    movePrivacy, bulkMovePrivacy,
     deleteList, renameList, reorderLists,
-    hiddenIds, hideList, unhideList,
+    hiddenIdsByView, hideList, unhideList,
   }
 }

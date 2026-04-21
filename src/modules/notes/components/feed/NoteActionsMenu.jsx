@@ -29,11 +29,15 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
   const [newName, setNewName] = useState('')
   const [copied, setCopied] = useState(null)
   const [pending, setPending] = useState(null) // 'add' | 'remove' | null
+  // Parked error message from the last failed publish. Keeps the menu open
+  // so the user can retry — silent revert was the exact bug that prompted
+  // this refactor.
+  const [actionError, setActionError] = useState('')
   // Privacy target for the Add submenu. Resets to 'public' on each open
   // so a previous "Add → Private" doesn't silently persist the next time
   // the user bookmarks something.
   const [addPrivacy, setAddPrivacy] = useState('public')
-  useEffect(() => { if (!open) { setAddPrivacy('public'); setSubmenu(false); setRemoveSubmenu(false) } }, [open])
+  useEffect(() => { if (!open) { setAddPrivacy('public'); setSubmenu(false); setRemoveSubmenu(false); setActionError('') } }, [open])
   const mountedRef = useRef(true)
 
   useEffect(() => () => { mountedRef.current = false }, [])
@@ -56,29 +60,41 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
     }, 1100)
   }
 
+  // Centralized publish-status handler. On success → close the relevant
+  // dropdown + onClose. On failure → keep the menu open, flash a ⚠️ label
+  // on the pending button so retry is a single click.
+  function settle({ ok, errorMsg = 'Failed — tap to retry', closeAfter }) {
+    if (!mountedRef.current) return
+    if (ok) {
+      setPending(null)
+      setActionError('')
+      closeAfter?.()
+      onClose?.()
+    } else {
+      setPending(null)
+      setActionError(errorMsg)
+    }
+  }
+
   async function addToCategory(categoryId) {
     setPending('add')
+    setActionError('')
     try {
-      await addNote(categoryId, note.id, { privacy: addPrivacy })
-    } finally {
-      if (mountedRef.current) {
-        setPending(null)
-        setSubmenu(false)
-        onClose?.()
-      }
+      const ok = await addNote(categoryId, note.id, { privacy: addPrivacy })
+      settle({ ok: ok !== false, closeAfter: () => setSubmenu(false) })
+    } catch {
+      settle({ ok: false })
     }
   }
 
   async function removeFromCategory(categoryId, privacy) {
     setPending('remove')
+    setActionError('')
     try {
-      await removeNote(categoryId, note.id, { privacy })
-    } finally {
-      if (mountedRef.current) {
-        setPending(null)
-        setRemoveSubmenu(false)
-        onClose?.()
-      }
+      const ok = await removeNote(categoryId, note.id, { privacy })
+      settle({ ok: ok !== false, errorMsg: 'Remove failed', closeAfter: () => setRemoveSubmenu(false) })
+    } catch {
+      settle({ ok: false, errorMsg: 'Remove failed' })
     }
   }
 
@@ -86,43 +102,39 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
     const name = newName.trim()
     if (!name) return
     setPending('add')
+    setActionError('')
     try {
       const cat = await createCategory(name)
-      if (cat) await addNote(cat.id, note.id, { privacy: addPrivacy })
-      if (mountedRef.current) setNewName('')
-    } finally {
-      if (mountedRef.current) {
-        setPending(null)
-        setSubmenu(false)
-        onClose?.()
-      }
+      if (!cat) { settle({ ok: false }); return }
+      const ok = await addNote(cat.id, note.id, { privacy: addPrivacy })
+      if (ok !== false && mountedRef.current) setNewName('')
+      settle({ ok: ok !== false, closeAfter: () => setSubmenu(false) })
+    } catch {
+      settle({ ok: false })
     }
   }
 
   async function sheetPick(categoryId, privacy) {
     setPending('add')
+    setActionError('')
     try {
-      await addNote(categoryId, note.id, { privacy: privacy || 'public' })
-    } finally {
-      if (mountedRef.current) {
-        setPending(null)
-        setMobileSheet(false)
-        onClose?.()
-      }
+      const ok = await addNote(categoryId, note.id, { privacy: privacy || 'public' })
+      settle({ ok: ok !== false, closeAfter: () => setMobileSheet(false) })
+    } catch {
+      settle({ ok: false })
     }
   }
 
   async function sheetCreate(name, privacy) {
     setPending('add')
+    setActionError('')
     try {
       const cat = await createCategory(name)
-      if (cat) await addNote(cat.id, note.id, { privacy: privacy || 'public' })
-    } finally {
-      if (mountedRef.current) {
-        setPending(null)
-        setMobileSheet(false)
-        onClose?.()
-      }
+      if (!cat) { settle({ ok: false }); return }
+      const ok = await addNote(cat.id, note.id, { privacy: privacy || 'public' })
+      settle({ ok: ok !== false, closeAfter: () => setMobileSheet(false) })
+    } catch {
+      settle({ ok: false })
     }
   }
 
@@ -180,12 +192,29 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
         <>
           <button
             onClick={() => {
+              if (pending) return
               if (isMobile) setMobileSheet(true)
               else setSubmenu(o => !o)
             }}
-            className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors flex items-center justify-between"
+            disabled={!!pending}
+            className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center justify-between disabled:opacity-60 ${
+              actionError && !pending
+                ? 'text-red-400 hover:bg-red-950/40'
+                : 'text-neutral-300 hover:bg-neutral-700'
+            }`}
           >
-            <span>{inBookmarksFeed ? 'Bookmark Category' : 'Add to bookmarks'}</span>
+            <span className="inline-flex items-center gap-1.5">
+              {pending === 'add' ? (
+                <>
+                  <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                  <span>Saving…</span>
+                </>
+              ) : actionError && !pending ? (
+                <span>⚠️ {actionError}</span>
+              ) : (
+                <span>{inBookmarksFeed ? 'Bookmark Category' : 'Add to bookmarks'}</span>
+              )}
+            </span>
             {!isMobile && (
               <span className="text-neutral-600 text-[10px]">{submenu ? '▲' : '▼'}</span>
             )}

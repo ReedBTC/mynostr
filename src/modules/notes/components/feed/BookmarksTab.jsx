@@ -153,6 +153,16 @@ export default function BookmarksTab({ user, isOwner }) {
   const [activeCategoryId, setActiveCategoryId] = useState(null)
   const [manageMode, setManageMode] = useState(false)
 
+  // Status for the active bulk action. One op at a time so a single holder
+  // is enough — each button reads `.action` to decide whether to show its
+  // spinner, and `.error` parks the last failure so the user sees the
+  // publish didn't land (this was the whole point of the refactor: no more
+  // silent reverts when a Primal bunker approval times out).
+  //
+  // `.action`: 'moving' | 'removing' | 'flipping' | 'creating-moving' | null
+  // `.error`:  message string | ''
+  const [bulkStatus, setBulkStatus] = useState({ action: null, error: '' })
+
   // Exit manage mode whenever the category set drops to "nothing editable"
   // (just primary, or empty). Prevents an orphan "Done" button lingering.
   useEffect(() => {
@@ -309,13 +319,36 @@ export default function BookmarksTab({ user, isOwner }) {
     enabled: isOwner && !!pubkey && !waitingOnInitial && currentIds.length > 0,
   })
 
+  // Run a bulk publish and translate the hook's boolean into a visible
+  // success/error indicator. We intentionally do NOT `clearSelection()`
+  // until the publish lands — otherwise a failed op leaves the user
+  // without the selection they'd need to retry.
+  const runBulkOp = useCallback(async (action, op, errorMsg) => {
+    setBulkStatus({ action, error: '' })
+    try {
+      const ok = await op()
+      if (ok === false) {
+        setBulkStatus({ action: null, error: errorMsg })
+        setTimeout(() => setBulkStatus(prev => prev.error === errorMsg ? { action: null, error: '' } : prev), 3500)
+        return false
+      }
+      setBulkStatus({ action: null, error: '' })
+      return true
+    } catch {
+      setBulkStatus({ action: null, error: errorMsg })
+      setTimeout(() => setBulkStatus(prev => prev.error === errorMsg ? { action: null, error: '' } : prev), 3500)
+      return false
+    }
+  }, [])
+
   const handleBulkMove = useCallback(async (targetCategoryId) => {
     if (selectedIds.size === 0) return
     const ids = [...selectedIds]
     const privacy = moveTargetPrivacy
-    clearSelection()
-    await bulkMove(targetCategoryId, ids, { privacy })
-  }, [selectedIds, bulkMove, clearSelection, moveTargetPrivacy])
+    setMoveMenuOpen(false)
+    const ok = await runBulkOp('moving', () => bulkMove(targetCategoryId, ids, { privacy }), 'Move failed')
+    if (ok) clearSelection()
+  }, [selectedIds, bulkMove, clearSelection, moveTargetPrivacy, runBulkOp])
 
   // Atomic create + move in one hook call. Splitting it into
   // createCategory → bulkMove would queue two setCategories updates, and
@@ -326,16 +359,21 @@ export default function BookmarksTab({ user, isOwner }) {
     if (!name || selectedIds.size === 0) return
     const ids = [...selectedIds]
     const privacy = moveTargetPrivacy
-    clearSelection()
-    await bulkMoveToNew(name, ids, { privacy })
-  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection, moveTargetPrivacy])
+    setMoveMenuOpen(false)
+    const ok = await runBulkOp('creating-moving', async () => {
+      const id = await bulkMoveToNew(name, ids, { privacy })
+      return id != null
+    }, 'Move failed')
+    if (ok) clearSelection()
+  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection, moveTargetPrivacy, runBulkOp])
 
   const handleBulkRemove = useCallback(async () => {
     if (selectedIds.size === 0 || !activeCategoryId) return
     const ids = [...selectedIds]
-    clearSelection()
-    await bulkRemove(activeCategoryId, ids, { privacy: privacyView })
-  }, [selectedIds, activeCategoryId, bulkRemove, clearSelection, privacyView])
+    setConfirmBulkRemove(false)
+    const ok = await runBulkOp('removing', () => bulkRemove(activeCategoryId, ids, { privacy: privacyView }), 'Remove failed')
+    if (ok) clearSelection()
+  }, [selectedIds, activeCategoryId, bulkRemove, clearSelection, privacyView, runBulkOp])
 
   // Flip the selection's privacy in place (public ↔ private) within the
   // current category. One publish regardless of selection size.
@@ -343,9 +381,9 @@ export default function BookmarksTab({ user, isOwner }) {
     if (selectedIds.size === 0 || !activeCategoryId) return
     const ids = [...selectedIds]
     const target = isPrivate ? 'public' : 'private'
-    clearSelection()
-    await bulkMovePrivacy(activeCategoryId, ids, target)
-  }, [selectedIds, activeCategoryId, bulkMovePrivacy, clearSelection, isPrivate])
+    const ok = await runBulkOp('flipping', () => bulkMovePrivacy(activeCategoryId, ids, target), 'Flip failed')
+    if (ok) clearSelection()
+  }, [selectedIds, activeCategoryId, bulkMovePrivacy, clearSelection, isPrivate, runBulkOp])
 
   // Live filter: drop any already-paginated note that's no longer in the
   // active id set (e.g., user just removed it or moved it).
@@ -446,6 +484,8 @@ export default function BookmarksTab({ user, isOwner }) {
   const hasSelection = selectedIds.size > 0
   const allSelected = currentIds.length > 0 && selectedIds.size === currentIds.length
   const canShowBulkBar = currentIds.length > 0
+  const bulkPending = bulkStatus.action !== null
+  const bulkError = bulkStatus.error
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -484,9 +524,15 @@ export default function BookmarksTab({ user, isOwner }) {
                 <button
                   type="button"
                   onClick={() => setMoveMenuOpen(v => !v)}
-                  className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
+                  disabled={bulkPending}
+                  className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
                 >
-                  Move to…
+                  {bulkStatus.action === 'moving' || bulkStatus.action === 'creating-moving' ? (
+                    <>
+                      <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                      {bulkStatus.action === 'creating-moving' ? 'Creating…' : 'Moving…'}
+                    </>
+                  ) : 'Move to…'}
                 </button>
                 {moveMenuOpen && (
                   <div className="absolute top-full left-0 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-lg z-20 min-w-[240px] max-h-80 overflow-y-auto">
@@ -572,14 +618,18 @@ export default function BookmarksTab({ user, isOwner }) {
                           <button
                             type="button"
                             onClick={handleBulkMoveToNew}
-                            disabled={!newMoveTargetName.trim()}
+                            disabled={!newMoveTargetName.trim() || bulkPending}
                             title="Create category + move selection"
                             aria-label="Create category and move selection"
                             className="shrink-0 w-7 h-7 rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                           >
-                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-                              <path d="M3 7.5l3 3 5-7" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
+                            {bulkStatus.action === 'creating-moving' ? (
+                              <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            ) : (
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+                                <path d="M3 7.5l3 3 5-7" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
                           </button>
                         </div>
                         <p className="mt-1 text-[10px] text-neutral-500">
@@ -602,13 +652,24 @@ export default function BookmarksTab({ user, isOwner }) {
               <button
                 type="button"
                 onClick={handleBulkFlipPrivacy}
+                disabled={bulkPending}
                 title={isPrivate ? 'Move selected to public bookmarks' : 'Move selected to private bookmarks (NIP-51 encrypted)'}
-                className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
+                className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
               >
-                {isPrivate ? 'Make public' : 'Make private'}
+                {bulkStatus.action === 'flipping' ? (
+                  <>
+                    <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                    Flipping…
+                  </>
+                ) : (isPrivate ? 'Make public' : 'Make private')}
               </button>
 
-              {confirmBulkRemove ? (
+              {bulkStatus.action === 'removing' ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded border border-red-900/60 text-red-400">
+                  <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                  Removing…
+                </span>
+              ) : confirmBulkRemove ? (
                 <div className="flex items-center gap-1 px-2" title={`Remove the selected bookmark${selectedIds.size === 1 ? '' : 's'} from ${activeCategory?.title || 'this category'}`}>
                   <span className="text-neutral-400">
                     Remove {selectedIds.size}?
@@ -616,14 +677,16 @@ export default function BookmarksTab({ user, isOwner }) {
                   <button
                     type="button"
                     onClick={handleBulkRemove}
-                    className="px-1.5 text-red-400 hover:text-red-300 transition-colors"
+                    disabled={bulkPending}
+                    className="px-1.5 text-red-400 hover:text-red-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     Yes
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmBulkRemove(false)}
-                    className="px-1.5 text-neutral-500 hover:text-neutral-300 transition-colors"
+                    disabled={bulkPending}
+                    className="px-1.5 text-neutral-500 hover:text-neutral-300 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     No
                   </button>
@@ -632,10 +695,15 @@ export default function BookmarksTab({ user, isOwner }) {
                 <button
                   type="button"
                   onClick={() => setConfirmBulkRemove(true)}
-                  className="px-3 py-1 rounded border border-red-900/60 text-red-400 hover:bg-red-950/50 transition-colors"
+                  disabled={bulkPending}
+                  className="px-3 py-1 rounded border border-red-900/60 text-red-400 hover:bg-red-950/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   Remove
                 </button>
+              )}
+
+              {bulkError && !bulkPending && (
+                <span className="text-red-400" title={bulkError}>⚠️ {bulkError}</span>
               )}
 
               <button

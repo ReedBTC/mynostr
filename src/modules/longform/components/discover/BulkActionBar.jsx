@@ -52,19 +52,33 @@ function buildMeta(article) {
  *   onCreateList(name)        — create a new reading list
  *   onClearSelection()
  */
-export default function BulkActionBar({ articles, profiles, lists, onAddToList, onAddManyToList, onCreateList, onMoveArticle, onMoveArticlesBulk, onRemoveArticle, onRemoveArticlesBulk, onClearSelection }) {
+export default function BulkActionBar({ articles, profiles, lists, onAddToList, onAddManyToList, onCreateList, onMoveArticle, onMoveArticlesBulk, onBulkMovePrivacy, onRemoveArticle, onRemoveArticlesBulk, onClearSelection, privacyView = 'public' }) {
   const [pendingExport,  setPendingExport]  = useState(null) // null | 'md' | 'epub'
   const [bookmarkOpen,   setBookmarkOpen]   = useState(false)
   const [moveOpen,       setMoveOpen]       = useState(false)
   const [newListInput,   setNewListInput]   = useState(false)
   const [newListName,    setNewListName]    = useState('')
+  // Save-as target privacy — defaults to the current view so bulk-saving from
+  // the Private panel stays private. Overridable via the in-dropdown pill.
+  const [bookmarkPrivacy, setBookmarkPrivacy] = useState(privacyView === 'private' ? 'private' : 'public')
+  // Move-to target privacy — defaults to current view so Move-to flips the
+  // *list* without also flipping privacy.
+  const [movePrivacy,     setMovePrivacy]     = useState(privacyView === 'private' ? 'private' : 'public')
   const [exportStatus,   setExportStatus]   = useState('')   // '' | 'fetching' | 'done' | 'error'
   const [exportError,    setExportError]    = useState('')
   const [bookmarkStatus, setBookmarkStatus] = useState('')   // '' | 'saving' | 'done' | 'error'
   const [moveStatus,     setMoveStatus]     = useState('')   // '' | 'moving' | 'done' | 'error'
   const [removeStatus,   setRemoveStatus]   = useState('')   // '' | 'removing' | 'error'
+  const [privacyStatus,  setPrivacyStatus]  = useState('')   // '' | 'flipping' | 'done' | 'error'
   const bookmarkRef = useRef(null)
   const moveRef     = useRef(null)
+
+  // Keep pill defaults in sync with the active view so switching Public↔Private
+  // in the toolbar doesn't leave a stale default behind in the dropdowns.
+  useEffect(() => {
+    setBookmarkPrivacy(privacyView === 'private' ? 'private' : 'public')
+    setMovePrivacy(privacyView === 'private' ? 'private' : 'public')
+  }, [privacyView])
 
   // Close bookmark dropdown on outside click
   useEffect(() => {
@@ -166,9 +180,10 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
     setBookmarkStatus('saving')
     try {
       const metas = buildMetas()
+      const opts = { privacy: bookmarkPrivacy }
       const ok = onAddManyToList
-        ? await onAddManyToList(listId, metas)
-        : (await Promise.all(metas.map(m => onAddToList(listId, m)))).every(Boolean)
+        ? await onAddManyToList(listId, metas, opts)
+        : (await Promise.all(metas.map(m => onAddToList(listId, m, opts)))).every(Boolean)
       if (ok === false) {
         setBookmarkStatus('error')
         setTimeout(() => setBookmarkStatus(''), 3000)
@@ -208,6 +223,7 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
     || bookmarkStatus === 'saving'
     || moveStatus === 'moving'
     || removeStatus === 'removing'
+    || privacyStatus === 'flipping'
 
   // Group article aTags by their source list so one publish per source list
   // replaces N racing publishes that would otherwise overwrite each other.
@@ -227,12 +243,13 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
     setMoveStatus('moving')
     try {
       const groups = groupATagsByListId()
+      const opts = { privacy: movePrivacy }
       let allOk = true
       for (const [fromListId, aTags] of groups) {
-        if (fromListId === toListId) continue
+        if (fromListId === toListId && movePrivacy === privacyView) continue
         const ok = onMoveArticlesBulk
-          ? await onMoveArticlesBulk(fromListId, toListId, aTags)
-          : (await Promise.all(aTags.map(t => onMoveArticle(fromListId, toListId, t)))).every(Boolean)
+          ? await onMoveArticlesBulk(fromListId, toListId, aTags, opts)
+          : (await Promise.all(aTags.map(t => onMoveArticle(fromListId, toListId, t, opts)))).every(Boolean)
         if (ok === false) allOk = false
       }
       if (!allOk) {
@@ -248,15 +265,42 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
     }
   }
 
+  // Bulk flip privacy for already-bookmarked selection — one publish per list.
+  async function handleBulkFlipPrivacy() {
+    if (!onBulkMovePrivacy) return
+    setPrivacyStatus('flipping')
+    try {
+      const groups = groupATagsByListId()
+      const target = privacyView === 'private' ? 'public' : 'private'
+      let allOk = true
+      for (const [listId, aTags] of groups) {
+        const ok = await onBulkMovePrivacy(listId, aTags, target)
+        if (ok === false) allOk = false
+      }
+      if (!allOk) {
+        setPrivacyStatus('error')
+        setTimeout(() => setPrivacyStatus(''), 3000)
+        return
+      }
+      setPrivacyStatus('done')
+      setTimeout(() => setPrivacyStatus(''), 2000)
+      onClearSelection()
+    } catch {
+      setPrivacyStatus('error')
+      setTimeout(() => setPrivacyStatus(''), 3000)
+    }
+  }
+
   async function handleRemove() {
     setRemoveStatus('removing')
     try {
       const groups = groupATagsByListId()
+      const opts = { privacy: privacyView }
       let allOk = true
       for (const [listId, aTags] of groups) {
         const ok = onRemoveArticlesBulk
-          ? await onRemoveArticlesBulk(listId, aTags)
-          : (await Promise.all(aTags.map(t => onRemoveArticle(listId, t)))).every(Boolean)
+          ? await onRemoveArticlesBulk(listId, aTags, opts)
+          : (await Promise.all(aTags.map(t => onRemoveArticle(listId, t, opts)))).every(Boolean)
         if (ok === false) allOk = false
       }
       if (!allOk) {
@@ -335,6 +379,30 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
             </button>
             {bookmarkOpen && (
               <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
+                <div className="px-3 py-1.5 flex items-center justify-center border-b border-neutral-700">
+                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
+                    {[
+                      { key: 'public',  label: 'Public'  },
+                      { key: 'private', label: 'Private' },
+                    ].map(opt => {
+                      const active = bookmarkPrivacy === opt.key
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => setBookmarkPrivacy(opt.key)}
+                          className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                            active
+                              ? (opt.key === 'private' ? 'bg-neutral-700 text-neutral-100' : 'bg-purple-700 text-white')
+                              : 'text-neutral-500 hover:text-neutral-300'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
                 {lists.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-neutral-500">No lists yet.</p>
                 ) : (
@@ -390,6 +458,30 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
             </button>
             {moveOpen && (
               <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
+                <div className="px-3 py-1.5 flex items-center justify-center border-b border-neutral-700">
+                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
+                    {[
+                      { key: 'public',  label: 'Public'  },
+                      { key: 'private', label: 'Private' },
+                    ].map(opt => {
+                      const active = movePrivacy === opt.key
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => setMovePrivacy(opt.key)}
+                          className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                            active
+                              ? (opt.key === 'private' ? 'bg-neutral-700 text-neutral-100' : 'bg-purple-700 text-white')
+                              : 'text-neutral-500 hover:text-neutral-300'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
                 {lists.map(list => (
                   <button key={list.id}
                     onClick={() => handleMoveTo(list.id)}
@@ -400,6 +492,31 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
               </div>
             )}
           </div>
+        </>
+      )}
+
+      {/* Bulk privacy flip — only meaningful for already-bookmarked items. The
+          button label reflects the opposite of the current view. */}
+      {onBulkMovePrivacy && articles.some(a => a._listId) && (
+        <>
+          <span className="text-neutral-700 mx-0.5 flex-shrink-0">|</span>
+          <button
+            onClick={handleBulkFlipPrivacy}
+            disabled={busy}
+            className={`text-xs px-2 py-0.5 rounded border disabled:opacity-60 transition-colors inline-flex items-center gap-1 ${
+              privacyStatus === 'error'
+                ? 'border-red-900/60 text-red-400'
+                : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
+            }`}>
+            {privacyStatus === 'flipping' ? (
+              <>
+                <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+                <span>Flipping…</span>
+              </>
+            ) : privacyStatus === 'done' ? '✓ Flipped'
+              : privacyStatus === 'error' ? '⚠️ Failed'
+              : privacyView === 'private' ? 'Make public' : 'Make private'}
+          </button>
         </>
       )}
 

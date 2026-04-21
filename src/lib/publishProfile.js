@@ -8,7 +8,7 @@
  * (bot, zapService, custom, etc.) survive.
  */
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, FALLBACK_RELAYS, signWithTimeout } from './ndk.js'
+import { getNDK, FALLBACK_RELAYS, signWithTimeout, publishToOwnOutbox } from './ndk.js'
 
 // Per-field length caps. These match the UI's maxLength on ProfileEditor
 // inputs but are enforced here too so any caller (scripts, future forms)
@@ -87,7 +87,11 @@ export async function publishProfile({ pubkey, edits }) {
   } catch {}
 
   await signWithTimeout(event)
-  const publishedTo = await event.publish()
+  // Kind 0 is replaceable and keyed only by author, so any copy on a relay
+  // outside the user's write set becomes unreachable the next time they edit
+  // their profile. Publish to their own outbox only so every copy stays
+  // editable later.
+  const publishedTo = await publishToOwnOutbox(event)
   const confirmedRelays = Array.from(publishedTo).map(r => r.url).filter(Boolean)
   const relays = confirmedRelays.length ? confirmedRelays : relayUrls
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
+import { getNDK, signWithTimeout, publishToOwnOutbox } from '../../../../lib/ndk.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
 
@@ -61,7 +61,10 @@ export default function AuthorProfilePanel({ profile, pubkey, user, onAuthorClic
       event.tags = newTags
       event.content = ''
       await signWithTimeout(event)
-      await event.publish()
+      // Kind 3 is replaceable — future follows/unfollows go to the user's
+      // NIP-65 write relays, so publish here to the same set to keep every
+      // copy editable later.
+      await publishToOwnOutbox(event)
 
       setContacts(newTags)
       setFollowing(!following)

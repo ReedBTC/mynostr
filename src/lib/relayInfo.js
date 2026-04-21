@@ -12,7 +12,7 @@
  * sentinel briefly so we don't hammer a flaky relay in a tight render loop.
  */
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, connectAndWait, signWithTimeout, FALLBACK_RELAYS } from './ndk.js'
+import { getNDK, connectAndWait, signWithTimeout, FALLBACK_RELAYS, publishToOwnOutbox } from './ndk.js'
 import { createLRU } from './utils.js'
 
 const NIP11_CACHE   = createLRU(100)
@@ -201,6 +201,10 @@ export async function publishRelayList({ relays }) {
   // the repair to third-party clients.
   await connectAndWait(ndk, 3000)
   await signWithTimeout(event)
+  // Kind 10002 is the one deliberate full-pool publish in the app: if a user's
+  // write relays are broken or stale, we still need the repaired list to
+  // propagate through fallback relays so third-party clients can discover
+  // their new outbox. Comment above already explains this.
   const publishedTo = await event.publish()
   const confirmed = Array.from(publishedTo).map(r => r.url).filter(Boolean)
   return { relays: confirmed.length ? confirmed : [...FALLBACK_RELAYS] }
@@ -266,7 +270,9 @@ export async function publishDmRelayList({ relays }) {
 
   await connectAndWait(ndk, 3000)
   await signWithTimeout(event)
-  const publishedTo = await event.publish()
+  // Kind 10050 is replaceable and the user will edit it — publish to their
+  // own write relays so future edits reach every copy.
+  const publishedTo = await publishToOwnOutbox(event)
   const confirmed = Array.from(publishedTo).map(r => r.url).filter(Boolean)
   return { relays: confirmed.length ? confirmed : [...FALLBACK_RELAYS] }
 }

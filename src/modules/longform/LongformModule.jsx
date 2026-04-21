@@ -67,8 +67,9 @@ export default function LongformModule({ user, sessionUser }) {
     addArticle, addArticlesBulk,
     removeArticle, removeArticlesBulk,
     moveArticle, moveArticlesBulk,
+    movePrivacy, bulkMovePrivacy,
     deleteList, renameList, reorderLists,
-    hiddenIds, hideList, unhideList,
+    hiddenIdsByView, hideList, unhideList,
   } = useReadingLists(user)
 
   // If a logged-out visitor somehow lands on the Write tab (e.g. via back
@@ -250,10 +251,12 @@ export default function LongformModule({ user, sessionUser }) {
           removeArticlesBulk={removeArticlesBulk}
           moveArticle={moveArticle}
           moveArticlesBulk={moveArticlesBulk}
+          movePrivacy={movePrivacy}
+          bulkMovePrivacy={bulkMovePrivacy}
           deleteList={deleteList}
           renameList={renameList}
           reorderLists={reorderLists}
-          hiddenIds={hiddenIds}
+          hiddenIdsByView={hiddenIdsByView}
           hideList={hideList}
           unhideList={unhideList}
           onLoadInEditor={isOwner ? handleLoadArticle : null}
