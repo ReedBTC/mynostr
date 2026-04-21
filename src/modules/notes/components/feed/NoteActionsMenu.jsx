@@ -29,6 +29,11 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
   const [newName, setNewName] = useState('')
   const [copied, setCopied] = useState(null)
   const [pending, setPending] = useState(null) // 'add' | 'remove' | null
+  // Privacy target for the Add submenu. Resets to 'public' on each open
+  // so a previous "Add → Private" doesn't silently persist the next time
+  // the user bookmarks something.
+  const [addPrivacy, setAddPrivacy] = useState('public')
+  useEffect(() => { if (!open) { setAddPrivacy('public'); setSubmenu(false); setRemoveSubmenu(false) } }, [open])
   const mountedRef = useRef(true)
 
   useEffect(() => () => { mountedRef.current = false }, [])
@@ -54,7 +59,7 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
   async function addToCategory(categoryId) {
     setPending('add')
     try {
-      await addNote(categoryId, note.id)
+      await addNote(categoryId, note.id, { privacy: addPrivacy })
     } finally {
       if (mountedRef.current) {
         setPending(null)
@@ -64,10 +69,10 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
     }
   }
 
-  async function removeFromCategory(categoryId) {
+  async function removeFromCategory(categoryId, privacy) {
     setPending('remove')
     try {
-      await removeNote(categoryId, note.id)
+      await removeNote(categoryId, note.id, { privacy })
     } finally {
       if (mountedRef.current) {
         setPending(null)
@@ -83,7 +88,7 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
     setPending('add')
     try {
       const cat = await createCategory(name)
-      if (cat) await addNote(cat.id, note.id)
+      if (cat) await addNote(cat.id, note.id, { privacy: addPrivacy })
       if (mountedRef.current) setNewName('')
     } finally {
       if (mountedRef.current) {
@@ -94,10 +99,10 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
     }
   }
 
-  async function sheetPick(categoryId) {
+  async function sheetPick(categoryId, privacy) {
     setPending('add')
     try {
-      await addNote(categoryId, note.id)
+      await addNote(categoryId, note.id, { privacy: privacy || 'public' })
     } finally {
       if (mountedRef.current) {
         setPending(null)
@@ -107,11 +112,11 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
     }
   }
 
-  async function sheetCreate(name) {
+  async function sheetCreate(name, privacy) {
     setPending('add')
     try {
       const cat = await createCategory(name)
-      if (cat) await addNote(cat.id, note.id)
+      if (cat) await addNote(cat.id, note.id, { privacy: privacy || 'public' })
     } finally {
       if (mountedRef.current) {
         setPending(null)
@@ -147,9 +152,15 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
   // are suppressed everywhere in the Notes module, so filter them too.
   const writableCategories = categories.filter(c => !c.readOnly && !hiddenIds?.has(c.id))
   const showBookmarks = canEdit
-  const containingCategories = writableCategories.filter(c =>
-    c.items?.some(it => it.id === note.id?.toLowerCase())
-  )
+  const noteIdLower = note.id?.toLowerCase()
+  // Flatten to one row per (category, privacy) hit so the remove menu
+  // can offer "Remove from Queue (public)" and "Remove from Queue
+  // (private)" as distinct actions when both happen to hold the note.
+  const containingRows = []
+  for (const c of writableCategories) {
+    if (c.items?.some(it => it.id === noteIdLower)) containingRows.push({ cat: c, privacy: 'public' })
+    if (c.privateItems?.some(it => it.id === noteIdLower)) containingRows.push({ cat: c, privacy: 'private' })
+  }
 
   return (
     <>
@@ -174,16 +185,50 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
           </button>
           {!isMobile && submenu && (
             <div className="border-t border-neutral-700">
-              {writableCategories.map(cat => (
-                <button
-                  key={cat.id}
-                  onClick={() => addToCategory(cat.id)}
-                  disabled={!!pending}
-                  className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
-                >
-                  {cat.title}
-                </button>
-              ))}
+              <div className="px-3 pt-2 pb-1.5 flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-wide text-neutral-500">Save as</span>
+                <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setAddPrivacy('public')}
+                    className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                      addPrivacy === 'public' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    Public
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddPrivacy('private')}
+                    title="NIP-51 encrypted — visible only to you"
+                    className={`text-[10px] px-2 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                      addPrivacy === 'private' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                      <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                      <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                    </svg>
+                    Private
+                  </button>
+                </div>
+              </div>
+              {writableCategories.map(cat => {
+                const heldHere = addPrivacy === 'private'
+                  ? cat.privateItems?.some(it => it.id === noteIdLower)
+                  : cat.items?.some(it => it.id === noteIdLower)
+                return (
+                  <button
+                    key={cat.id}
+                    onClick={() => addToCategory(cat.id)}
+                    disabled={!!pending}
+                    className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50 flex items-center justify-between gap-2"
+                  >
+                    <span className="truncate">{cat.title}</span>
+                    {heldHere && <span className="text-[10px] text-purple-400 shrink-0">✓</span>}
+                  </button>
+                )
+              })}
               {writableCategories.length === 0 && (
                 <p className="px-4 py-1.5 text-[11px] text-neutral-500 italic">No categories yet.</p>
               )}
@@ -208,13 +253,13 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
               </div>
             </div>
           )}
-          {containingCategories.length > 0 && (
+          {containingRows.length > 0 && (
             <>
               <button
                 onClick={() => {
                   if (pending) return
-                  if (containingCategories.length === 1) {
-                    removeFromCategory(containingCategories[0].id)
+                  if (containingRows.length === 1) {
+                    removeFromCategory(containingRows[0].cat.id, containingRows[0].privacy)
                   } else {
                     setRemoveSubmenu(o => !o)
                   }
@@ -228,20 +273,32 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
                   )}
                   {pending === 'remove' ? 'Removing…' : 'Remove from bookmarks'}
                 </span>
-                {containingCategories.length > 1 && pending !== 'remove' && (
+                {containingRows.length > 1 && pending !== 'remove' && (
                   <span className="text-neutral-600 text-[10px]">{removeSubmenu ? '▲' : '▼'}</span>
                 )}
               </button>
-              {removeSubmenu && containingCategories.length > 1 && (
+              {removeSubmenu && containingRows.length > 1 && (
                 <div className="border-t border-neutral-700">
-                  {containingCategories.map(cat => (
+                  {containingRows.map(({ cat, privacy }) => (
                     <button
-                      key={cat.id}
-                      onClick={() => removeFromCategory(cat.id)}
+                      key={`${cat.id}:${privacy}`}
+                      onClick={() => removeFromCategory(cat.id, privacy)}
                       disabled={!!pending}
-                      className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
+                      className="w-full text-left px-4 py-1.5 text-xs text-neutral-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50 flex items-center justify-between gap-2"
                     >
-                      {cat.title}
+                      <span className="truncate">{cat.title}</span>
+                      {privacy === 'private' && (
+                        <span
+                          className="shrink-0 inline-flex items-center text-purple-400"
+                          title="Private bucket"
+                          aria-label="Private"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                            <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                            <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                          </svg>
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>

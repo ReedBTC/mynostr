@@ -33,6 +33,7 @@ export default function BookmarkChipBar({
   hiddenIds,
   onHideCategory,
   onUnhideCategory,
+  privacyView = 'public',
 }) {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -152,7 +153,10 @@ export default function BookmarkChipBar({
           const showManageActions = manageMode && isEditable
           const isConfirmingDelete = confirmDeleteId === cat.id
           const isHidden = !!hiddenIds?.has(cat.id)
-          const itemCount = cat.items?.length || 0
+          const bucketCount = privacyView === 'private'
+            ? (cat.privateItems?.length || 0)
+            : (cat.items?.length || 0)
+          const itemCount = bucketCount
 
           return (
             <div
@@ -175,7 +179,7 @@ export default function BookmarkChipBar({
                 <span className={`ml-1.5 ${
                   isActive ? 'text-purple-200' : isHidden ? 'text-neutral-600' : 'text-neutral-500'
                 }`}>
-                  · {cat.items?.length || 0}
+                  · {bucketCount}
                 </span>
               </button>
               {showManageActions && isConfirmingDelete && (
@@ -183,9 +187,12 @@ export default function BookmarkChipBar({
                   className={`flex items-center pl-2 gap-1 border-l text-xs whitespace-nowrap ${
                     isActive ? 'border-purple-300/40' : 'border-neutral-600/60'
                   }`}
-                  title={itemCount > 0
-                    ? `Its ${itemCount} bookmark${itemCount === 1 ? '' : 's'} will move to Ungrouped`
-                    : 'Delete this empty category'}
+                  title={(() => {
+                    const total = (cat.items?.length || 0) + (cat.privateItems?.length || 0)
+                    return total > 0
+                      ? `Its ${total} bookmark${total === 1 ? '' : 's'} will move to Ungrouped`
+                      : 'Delete this empty category'
+                  })()}
                 >
                   <span className={isActive ? 'text-purple-100' : 'text-neutral-400'}>Delete?</span>
                   <button

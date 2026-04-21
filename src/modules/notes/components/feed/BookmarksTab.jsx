@@ -20,8 +20,12 @@
  * set. We filter feed.items against that Set at render time so a
  * just-removed note drops out instantly (no scroll reset).
  *
- * Private/encrypted bookmarks (NIP-04 payload in kind 10003 `content`) are
- * intentionally not surfaced — we'd need the decrypt flow first.
+ * Public / Private view (owner-only): a pill at the top of the tab
+ * flips between the public `items` bucket and the NIP-51 encrypted
+ * `privateItems` bucket. Every downstream UI affordance (chip counts,
+ * feed content, bulk actions, lock indicator) keys off the active
+ * `privacyView`. Visitors never see private bookmarks — the AuthorPane
+ * only renders the owner's public items.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
@@ -44,12 +48,21 @@ export default function BookmarksTab({ user, isOwner }) {
     bulkMove,
     bulkRemove,
     bulkMoveToNew,
+    bulkMovePrivacy,
     renameCategory,
     deleteCategory,
     hiddenIds,
     hideCategory,
     unhideCategory,
   } = useNoteBookmarksContext()
+
+  // Public / Private view toggle. Owner-only surface. Defaults to public
+  // on every fresh mount — the private bucket is a deliberate opt-in
+  // rather than sticky across sessions (don't leave a shoulder-surfer on
+  // the last known state). Selection + category bucket semantics key off
+  // this, so switching privacy always wipes the selection.
+  const [privacyView, setPrivacyView] = useState('public')
+  const isPrivate = privacyView === 'private'
 
   // Thread stack — clicking any bookmarked note opens the thread view.
   const [threadStack, setThreadStack] = useState([])
@@ -149,11 +162,13 @@ export default function BookmarksTab({ user, isOwner }) {
 
   // Switching categories invalidates the selection (those ids belong to
   // the previous bucket and we don't want to move notes the user can't
-  // see).
+  // see). Same deal when toggling the public/private view — the ids we
+  // had selected live in the other bucket.
   useEffect(() => {
     setSelectedIds(new Set())
     setMoveMenuOpen(false)
-  }, [activeCategoryId])
+    setConfirmBulkRemove(false)
+  }, [activeCategoryId, privacyView])
 
   // Pick a sensible default chip once data is available. Prefer primary
   // if it exists, else the first non-hidden custom category. Also bounce
@@ -182,22 +197,26 @@ export default function BookmarksTab({ user, isOwner }) {
 
   // Owner items carry an addedAt (kind 30003 has per-item timestamps in
   // our JSON content extension; kind 10003 uses the list event's
-  // created_at for every item).
+  // created_at for every item). Private-view reads the parallel
+  // privateItems bucket instead.
   const currentItems = useMemo(() => {
-    return activeCategory ? activeCategory.items : []
-  }, [activeCategory])
+    if (!activeCategory) return []
+    return isPrivate ? (activeCategory.privateItems || []) : (activeCategory.items || [])
+  }, [activeCategory, isPrivate])
 
   const currentIds = useMemo(() => currentItems.map(it => it.id), [currentItems])
 
   // Feed key invalidates the prefetch whenever the active id set shifts
   // — this is how add/remove round-trips into the sorted list. First/
   // last/length fingerprint is cheap and collides vanishingly rarely.
-  // Visitor mode delegates to AuthorBookmarksPane (early-return below) so
-  // this key is only consumed in owner mode.
+  // Privacy view is baked into the key so switching public↔private
+  // rebuilds from the right bucket. Visitor mode delegates to
+  // AuthorBookmarksPane (early-return below) so this key is only
+  // consumed in owner mode.
   const feedKey = useMemo(() => {
     const tag = `${currentIds.length}:${currentIds[0]?.slice(0, 8) || ''}:${currentIds[currentIds.length - 1]?.slice(0, 8) || ''}`
-    return `bookmarks:owner:${pubkey || ''}:${activeCategoryId || ''}:${tag}`
-  }, [pubkey, activeCategoryId, currentIds])
+    return `bookmarks:owner:${pubkey || ''}:${privacyView}:${activeCategoryId || ''}:${tag}`
+  }, [pubkey, privacyView, activeCategoryId, currentIds])
 
   // Prefetched+sorted cache. One fetch per feedKey; pagination is pure
   // local slicing after that. Sort is (addedAt desc, created_at desc)
@@ -265,8 +284,8 @@ export default function BookmarksTab({ user, isOwner }) {
     if (selectedIds.size === 0) return
     const ids = [...selectedIds]
     clearSelection()
-    await bulkMove(targetCategoryId, ids)
-  }, [selectedIds, bulkMove, clearSelection])
+    await bulkMove(targetCategoryId, ids, { privacy: privacyView })
+  }, [selectedIds, bulkMove, clearSelection, privacyView])
 
   // Atomic create + move in one hook call. Splitting it into
   // createCategory → bulkMove would queue two setCategories updates, and
@@ -277,15 +296,25 @@ export default function BookmarksTab({ user, isOwner }) {
     if (!name || selectedIds.size === 0) return
     const ids = [...selectedIds]
     clearSelection()
-    await bulkMoveToNew(name, ids)
-  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection])
+    await bulkMoveToNew(name, ids, { privacy: privacyView })
+  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection, privacyView])
 
   const handleBulkRemove = useCallback(async () => {
     if (selectedIds.size === 0 || !activeCategoryId) return
     const ids = [...selectedIds]
     clearSelection()
-    await bulkRemove(activeCategoryId, ids)
-  }, [selectedIds, activeCategoryId, bulkRemove, clearSelection])
+    await bulkRemove(activeCategoryId, ids, { privacy: privacyView })
+  }, [selectedIds, activeCategoryId, bulkRemove, clearSelection, privacyView])
+
+  // Flip the selection's privacy in place (public ↔ private) within the
+  // current category. One publish regardless of selection size.
+  const handleBulkFlipPrivacy = useCallback(async () => {
+    if (selectedIds.size === 0 || !activeCategoryId) return
+    const ids = [...selectedIds]
+    const target = isPrivate ? 'public' : 'private'
+    clearSelection()
+    await bulkMovePrivacy(activeCategoryId, ids, target)
+  }, [selectedIds, activeCategoryId, bulkMovePrivacy, clearSelection, isPrivate])
 
   // Live filter: drop any already-paginated note that's no longer in the
   // active id set (e.g., user just removed it or moved it).
@@ -341,11 +370,13 @@ export default function BookmarksTab({ user, isOwner }) {
   if (categories.length === 0) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
+        {privacyToggle}
         <BookmarkChipBar
           categories={[]}
           activeCategoryId={null}
           onSelect={setActiveCategoryId}
           onCreateCategory={createCategory}
+          privacyView={privacyView}
         />
         <div className="max-w-xl mx-auto w-full px-4 py-10 text-center">
           <p className="text-xs text-neutral-500">
@@ -357,8 +388,14 @@ export default function BookmarksTab({ user, isOwner }) {
   }
 
   const emptyMessage = activeCategory
-    ? `Nothing in ${activeCategory.title} yet.`
+    ? (isPrivate
+        ? `No private bookmarks in ${activeCategory.title} yet.`
+        : `Nothing in ${activeCategory.title} yet.`)
     : 'You haven’t bookmarked any notes yet.'
+
+  const privacyToggle = (
+    <PrivacyToggle value={privacyView} onChange={setPrivacyView} categories={categories} />
+  )
 
   const moveTargets = categories.filter(
     c => c.id !== activeCategoryId && !hiddenIds.has(c.id),
@@ -367,6 +404,7 @@ export default function BookmarksTab({ user, isOwner }) {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {privacyToggle}
       <BookmarkChipBar
         categories={categories}
         activeCategoryId={activeCategoryId}
@@ -379,6 +417,7 @@ export default function BookmarksTab({ user, isOwner }) {
         hiddenIds={hiddenIds}
         onHideCategory={handleHideCategory}
         onUnhideCategory={handleUnhideCategory}
+        privacyView={privacyView}
       />
 
       {hasSelection && (
@@ -459,6 +498,15 @@ export default function BookmarksTab({ user, isOwner }) {
             )}
           </div>
 
+          <button
+            type="button"
+            onClick={handleBulkFlipPrivacy}
+            title={isPrivate ? 'Move selected to public bookmarks' : 'Move selected to private bookmarks (NIP-51 encrypted)'}
+            className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
+          >
+            {isPrivate ? 'Make public' : 'Make private'}
+          </button>
+
           {confirmBulkRemove ? (
             <div className="flex items-center gap-1 px-2" title={`Remove the selected bookmark${selectedIds.size === 1 ? '' : 's'} from ${activeCategory?.title || 'this category'}`}>
               <span className="text-neutral-400">
@@ -514,7 +562,54 @@ export default function BookmarksTab({ user, isOwner }) {
         selectMode={true}
         selectedIds={selectedIds}
         onToggleSelect={toggleSelect}
+        privateIdSet={isPrivate ? allowedIdSet : null}
       />
+    </div>
+  )
+}
+
+// Top-of-tab Public/Private pill. Total counts across all categories so
+// the user has a rough scale before switching (the per-category count
+// lives on each chip). Private side gets a small lock glyph + purple
+// active state to signal "this bucket is end-to-end encrypted."
+function PrivacyToggle({ value, onChange, categories }) {
+  let totalPublic = 0
+  let totalPrivate = 0
+  for (const c of categories || []) {
+    totalPublic  += c.items?.length || 0
+    totalPrivate += c.privateItems?.length || 0
+  }
+  return (
+    <div className="max-w-xl mx-auto w-full px-4 pt-3 flex items-center gap-2">
+      <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
+        <button
+          type="button"
+          onClick={() => onChange('public')}
+          className={`text-[11px] px-3 py-1 rounded-full transition-colors ${
+            value === 'public'
+              ? 'bg-purple-700 text-white'
+              : 'text-neutral-400 hover:text-neutral-200'
+          }`}
+        >
+          Public · {totalPublic}
+        </button>
+        <button
+          type="button"
+          onClick={() => onChange('private')}
+          className={`text-[11px] px-3 py-1 rounded-full transition-colors inline-flex items-center gap-1 ${
+            value === 'private'
+              ? 'bg-purple-700 text-white'
+              : 'text-neutral-400 hover:text-neutral-200'
+          }`}
+          title="NIP-51 encrypted — visible only to you"
+        >
+          <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+            <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+          </svg>
+          Private · {totalPrivate}
+        </button>
+      </div>
     </div>
   )
 }

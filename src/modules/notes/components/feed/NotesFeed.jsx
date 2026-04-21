@@ -23,6 +23,7 @@ export default function NotesFeed({
   selectMode = false,
   selectedIds,
   onToggleSelect,
+  privateIdSet,
 }) {
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
@@ -68,6 +69,7 @@ export default function NotesFeed({
                   selectable={selectMode}
                   selected={selectMode && !!selectedIds?.has(note.id)}
                   onToggleSelect={onToggleSelect}
+                  isPrivate={!!privateIdSet?.has(note.id)}
                 />
               </li>
             ))}

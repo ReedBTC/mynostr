@@ -22,6 +22,8 @@ const NoteBookmarksContext = createContext({
   createCategory: async () => null,
   addNote: async () => {},
   removeNote: async () => {},
+  movePrivacy: async () => {},
+  bulkMovePrivacy: async () => {},
   deleteCategory: async () => {},
   renameCategory: async () => {},
   canEdit: false,

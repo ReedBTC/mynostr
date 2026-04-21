@@ -63,6 +63,7 @@ export default function NoteCard({
   selectable = false,
   selected = false,
   onToggleSelect,
+  isPrivate = false,
 }) {
   const isMobile = useIsMobile()
   const { openAuthorInSearch } = useNotesNavigationContext()
@@ -185,6 +186,17 @@ export default function NoteCard({
               {handle && <p className="text-[10px] text-neutral-500 truncate">{handle}</p>}
             </div>
           </>
+        )}
+        {isPrivate && (
+          <span
+            className="shrink-0 inline-flex items-center gap-0.5 text-[10px] text-purple-300/80"
+            title="Private bookmark — visible only to you"
+          >
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+              <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+            </svg>
+          </span>
         )}
         <span className="text-[10px] text-neutral-500 shrink-0" title={new Date((note?.created_at || 0) * 1000).toLocaleString()}>
           {timeAgo(note?.created_at)}

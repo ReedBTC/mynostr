@@ -28,7 +28,12 @@ export default function BookmarkPickerSheet({
   pending,
 }) {
   const [newName, setNewName] = useState('')
+  const [privacy, setPrivacy] = useState('public')
   const sheetRef = useRef(null)
+
+  // Reset privacy target whenever the sheet reopens so the prior target
+  // doesn't silently persist. Matches the desktop submenu's behavior.
+  useEffect(() => { if (!open) setPrivacy('public') }, [open])
 
   // Lock body scroll while the sheet is open so the user's drag-to-scroll
   // lands on the sheet's own list, not the feed behind it.
@@ -50,7 +55,7 @@ export default function BookmarkPickerSheet({
   function handleCreate() {
     const name = newName.trim()
     if (!name) return
-    onCreate?.(name)
+    onCreate?.(name, privacy)
     setNewName('')
   }
 
@@ -79,25 +84,59 @@ export default function BookmarkPickerSheet({
           </button>
         </header>
 
+        <div className="px-4 py-2 border-b border-neutral-800 flex items-center justify-between">
+          <span className="text-[10px] uppercase tracking-wide text-neutral-500">Save as</span>
+          <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+            <button
+              type="button"
+              onClick={() => setPrivacy('public')}
+              className={`text-xs px-3 py-1 rounded-full transition-colors ${
+                privacy === 'public' ? 'bg-purple-700 text-white' : 'text-neutral-400'
+              }`}
+            >
+              Public
+            </button>
+            <button
+              type="button"
+              onClick={() => setPrivacy('private')}
+              title="NIP-51 encrypted — visible only to you"
+              className={`text-xs px-3 py-1 rounded-full transition-colors inline-flex items-center gap-1 ${
+                privacy === 'private' ? 'bg-purple-700 text-white' : 'text-neutral-400'
+              }`}
+            >
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+              </svg>
+              Private
+            </button>
+          </div>
+        </div>
+
         <div className="flex-1 overflow-y-auto">
           {ordered.length === 0 && (
             <p className="px-4 py-6 text-xs text-neutral-500 text-center italic">
               No categories yet. Create one below.
             </p>
           )}
-          {ordered.map(cat => (
-            <button
-              key={cat.id}
-              onClick={() => onPick?.(cat.id)}
-              disabled={!!pending}
-              className="w-full text-left px-4 py-3 text-sm text-neutral-200 border-b border-neutral-800 hover:bg-neutral-800 transition-colors disabled:opacity-50 flex items-center justify-between"
-            >
-              <span className="truncate">{cat.title}</span>
-              <span className="text-xs text-neutral-500 ml-2 shrink-0">
-                {cat.items?.length || 0}
-              </span>
-            </button>
-          ))}
+          {ordered.map(cat => {
+            const count = privacy === 'private'
+              ? (cat.privateItems?.length || 0)
+              : (cat.items?.length || 0)
+            return (
+              <button
+                key={cat.id}
+                onClick={() => onPick?.(cat.id, privacy)}
+                disabled={!!pending}
+                className="w-full text-left px-4 py-3 text-sm text-neutral-200 border-b border-neutral-800 hover:bg-neutral-800 transition-colors disabled:opacity-50 flex items-center justify-between"
+              >
+                <span className="truncate">{cat.title}</span>
+                <span className="text-xs text-neutral-500 ml-2 shrink-0">
+                  {count}
+                </span>
+              </button>
+            )
+          })}
         </div>
 
         <div className="px-4 py-3 border-t border-neutral-800 flex gap-2">
