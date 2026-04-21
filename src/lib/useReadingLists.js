@@ -19,6 +19,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout } from './ndk.js'
+import { looksEncrypted } from './privateItems.js'
 
 // Per-pubkey cache so viewing multiple authors on the same machine doesn't
 // leak one person's enriched bookmarks into another's display.
@@ -135,20 +136,29 @@ function eventToList(event) {
   // Parse content JSON. Keep only items with a valid `aTag` as articles;
   // stash everything else (e.g., the notes module's `{id, addedAt}` items)
   // verbatim so republishing preserves them for other modules.
+  //
+  // If content is NIP-51 ciphertext (a notes-module category with private
+  // items), we can't parse it — capture the blob verbatim as rawContent so
+  // publishList preserves it on round-trip. Articles in that case come
+  // from `a`-tags only (losing per-item JSON metadata for that category,
+  // but enrichment re-fetches it anyway).
   let articles = []
   const otherContentItems = []
-  try {
-    const parsed = JSON.parse(event.content || '[]')
-    if (Array.isArray(parsed)) {
-      for (const it of parsed) {
-        if (it?.aTag && typeof it.aTag === 'string') {
-          articles.push(it)
-        } else if (it && typeof it === 'object') {
-          otherContentItems.push(it)
+  const rawContent = looksEncrypted(event.content) ? event.content : ''
+  if (!rawContent) {
+    try {
+      const parsed = JSON.parse(event.content || '[]')
+      if (Array.isArray(parsed)) {
+        for (const it of parsed) {
+          if (it?.aTag && typeof it.aTag === 'string') {
+            articles.push(it)
+          } else if (it && typeof it === 'object') {
+            otherContentItems.push(it)
+          }
         }
       }
-    }
-  } catch {}
+    } catch {}
+  }
 
   // Also parse NIP-51 `a` tags for articles not already in our JSON.
   const existingATags = new Set(articles.map(a => a.aTag))
@@ -176,7 +186,7 @@ function eventToList(event) {
     }
   }
 
-  return { id, title, articles, createdAt: event.created_at, sourceKind: kind, extraTags, otherContentItems }
+  return { id, title, articles, createdAt: event.created_at, sourceKind: kind, extraTags, otherContentItems, rawContent }
 }
 
 // ── Background enrichment ───────────────────────────────────────────────────
@@ -371,6 +381,7 @@ export function useReadingLists(user) {
               existing.sourceKind = list.sourceKind
               existing.extraTags = list.extraTags
               existing.otherContentItems = list.otherContentItems
+              existing.rawContent = list.rawContent
             }
           } else {
             merged.set(list.id, list)
@@ -510,10 +521,17 @@ export function useReadingLists(user) {
           for (const art of list.articles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
-          // Merge our articles with any foreign content items (e.g., the
-          // notes module's `{id, addedAt}`) so they round-trip intact.
-          const mergedContent = [...list.articles, ...(list.otherContentItems || [])]
-          event.content = JSON.stringify(mergedContent)
+          // If the category's content is a NIP-51 encrypted blob (notes
+          // module has private items here), preserve it verbatim. Our
+          // articles live in `a`-tags and don't need the content JSON.
+          // Otherwise, merge our articles with any foreign content items
+          // (e.g., the notes module's `{id, addedAt}`) so they round-trip.
+          if (list.rawContent && looksEncrypted(list.rawContent)) {
+            event.content = list.rawContent
+          } else {
+            const mergedContent = [...list.articles, ...(list.otherContentItems || [])]
+            event.content = JSON.stringify(mergedContent)
+          }
         }
         await signWithTimeout(event)
         await event.publish()

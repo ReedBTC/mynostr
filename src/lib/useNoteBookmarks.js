@@ -29,6 +29,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout } from './ndk.js'
+import {
+  looksEncrypted,
+  encryptPrivateTagArray,
+  decryptPrivateTagArray,
+  noteItemsToTagArray,
+  tagArrayToNoteItems,
+} from './privateItems.js'
 
 // Fetch the freshest kind 10003 event from relays. Used immediately
 // before publishing the primary bookmark list so any data the longform
@@ -69,7 +76,21 @@ function loadFromStorage(pubkey) {
 function saveToStorage(pubkey, categories) {
   const key = storageKeyFor(pubkey)
   if (!key) return
-  try { localStorage.setItem(key, JSON.stringify(categories)) } catch {}
+  try {
+    // Decrypted private items NEVER touch disk — an attacker with
+    // filesystem access to the browser profile shouldn't be able to read
+    // private bookmarks without also compromising the signer. The
+    // privateCiphertext blob is safe to persist (it's still encrypted,
+    // requires the signer to decrypt) and keeping it in the cache avoids
+    // a stale-merge problem on publish: if we lost the ciphertext, adding
+    // a new private item would overwrite any private items written to the
+    // same category by another module.
+    const stripped = (categories || []).map(c => {
+      const { privateItems, ...rest } = c
+      return rest
+    })
+    localStorage.setItem(key, JSON.stringify(stripped))
+  } catch {}
 }
 
 // Per-pubkey list of category ids that the user has client-side-hidden from
@@ -129,6 +150,8 @@ export function parseEventToCategory(event) {
       id: PRIMARY_CATEGORY_ID,
       title: 'Ungrouped',
       items,
+      privateItems: [],
+      privateCiphertext: looksEncrypted(event.content) ? event.content : '',
       createdAt: event.created_at || 0,
       readOnly: false,
       extraTags,
@@ -143,6 +166,14 @@ export function parseEventToCategory(event) {
   const dTag  = event.tags?.find(t => t[0] === 'd')?.[1] || event.id
   const title = event.tags?.find(t => t[0] === 'title')?.[1] || dTag
 
+  // If the content blob is NIP-51 ciphertext, public items parse from
+  // tags only (losing per-item addedAt precision — graceful fallback to
+  // event.created_at) and the ciphertext is preserved for async decrypt.
+  // The content field cannot simultaneously be both our extended JSON
+  // format and an encrypted blob, so detecting ciphertext up-front lets us
+  // skip the JSON.parse path entirely.
+  const encryptedContent = looksEncrypted(event.content) ? event.content : ''
+
   // Prefer the extended JSON content — it carries addedAt per item.
   // Fall back to bare `e` tags if content isn't valid JSON.
   // Round-trip preservation: any content item that isn't our `{id, addedAt}`
@@ -151,18 +182,20 @@ export function parseEventToCategory(event) {
   // data in shared categories.
   const byId = new Map()
   const otherContentItems = []
-  try {
-    const parsed = JSON.parse(event.content || '[]')
-    if (Array.isArray(parsed)) {
-      for (const it of parsed) {
-        if (it?.id && /^[0-9a-f]{64}$/i.test(it.id)) {
-          byId.set(it.id.toLowerCase(), { id: it.id.toLowerCase(), addedAt: Number(it.addedAt) || 0 })
-        } else if (it && typeof it === 'object') {
-          otherContentItems.push(it)
+  if (!encryptedContent) {
+    try {
+      const parsed = JSON.parse(event.content || '[]')
+      if (Array.isArray(parsed)) {
+        for (const it of parsed) {
+          if (it?.id && /^[0-9a-f]{64}$/i.test(it.id)) {
+            byId.set(it.id.toLowerCase(), { id: it.id.toLowerCase(), addedAt: Number(it.addedAt) || 0 })
+          } else if (it && typeof it === 'object') {
+            otherContentItems.push(it)
+          }
         }
       }
-    }
-  } catch {}
+    } catch {}
+  }
   // Same for tags: preserve every non-managed tag (anything that isn't a
   // kind-1 `e` reference or the d/title we rewrite ourselves) so a-tag
   // bookmarks written by longform survive a round-trip.
@@ -179,6 +212,8 @@ export function parseEventToCategory(event) {
     id: dTag,
     title,
     items: Array.from(byId.values()),
+    privateItems: [],
+    privateCiphertext: encryptedContent,
     createdAt: event.created_at || 0,
     readOnly: false,
     sourceKind: event.kind,
@@ -278,6 +313,26 @@ export function useNoteBookmarks(user) {
         if (cancelled) return
         setCategories(result)
         if (!readOnly) saveToStorage(pubkey, result)
+
+        // Async decrypt pass for NIP-51 private items. Sequential (not
+        // parallel) so a bunker that prompts per request doesn't flood the
+        // signer app with N concurrent approvals. We only decrypt for the
+        // owner — visitors can't read anyone else's private items, period.
+        if (!readOnly) {
+          const ndkSigner = ndk.signer
+          const needsDecrypt = result.filter(c => c.privateCiphertext && !c.readOnly)
+          for (const cat of needsDecrypt) {
+            if (cancelled) return
+            if (!ndkSigner) break
+            const tagArray = await decryptPrivateTagArray(cat.privateCiphertext, ndk)
+            if (cancelled) return
+            if (!tagArray) continue
+            const privateItems = tagArrayToNoteItems(tagArray)
+            setCategories(prev => prev.map(c =>
+              c.id === cat.id ? { ...c, privateItems } : c
+            ))
+          }
+        }
       } catch {
         if (cancelled) return
         // On failure, stick with whatever was cached.
@@ -288,40 +343,83 @@ export function useNoteBookmarks(user) {
     return () => { cancelled = true }
   }, [pubkey, readOnly])
 
-  // Publish a category. Primary (kind 10003) preserves original content +
-  // any non-`e` tags so we don't clobber data written by other clients
-  // (NIP-04 encrypted private bookmarks in `content`; `t`/`r`/`a` tags).
-  // Custom categories write as kind 30003 with a d-tag.
+  // Publish a category. Two content strategies coexist:
   //
-  // Returns true iff the relay publish succeeded. Callers that need to
-  // gate a follow-up action (e.g., deleteCategory won't tombstone unless
-  // the merged primary publish was durable) check this; everyone else
-  // can ignore it — local state is updated by the caller independently.
+  //   A) No private items anywhere in the event — content is our JSON-
+  //      extended format ([{id, addedAt}, ...] for notes,
+  //      [{aTag, title, ...}, ...] for longform). Shared categories merge
+  //      both shapes; per-item addedAt precision is preserved.
+  //
+  //   B) Any private items (ours or another module's) — content becomes
+  //      the NIP-51 encrypted tag array. Public items fall back to
+  //      event.created_at for their addedAt (per-item precision lost
+  //      within that category, by design). Longform's `a`-tags stay in
+  //      the event's tags array so their references survive; enrichment
+  //      refetches their title/image/author from 30023 events.
+  //
+  // Cross-module merge (shared categories): on publish we decrypt the
+  // existing ciphertext, filter out `e`-tags (notes owns those), keep
+  // `a`-tags (longform's private items), and re-encrypt the union with
+  // our current private items. If decrypt fails and we have new private
+  // items to save, we bail rather than corrupt the blob.
+  //
+  // Returns true iff the relay publish succeeded.
   const publishCategory = useCallback(async (cat) => {
     if (readOnly || !pubkey) return false
     if (cat.readOnly) return false
     try {
       const ndk = getNDK()
       const event = new NDKEvent(ndk)
+
+      const hasPrivateItems = Array.isArray(cat.privateItems) && cat.privateItems.length > 0
+
+      // Build the encrypted content blob from our current private items
+      // plus any foreign (non-`e`) tags preserved from an existing blob.
+      async function buildEncryptedContent(sourceCiphertext) {
+        let foreignTags = []
+        if (sourceCiphertext && looksEncrypted(sourceCiphertext)) {
+          const existing = await decryptPrivateTagArray(sourceCiphertext, ndk)
+          if (Array.isArray(existing)) {
+            foreignTags = existing.filter(t => Array.isArray(t) && t[0] !== 'e')
+          }
+        }
+        const ourTags = noteItemsToTagArray(cat.privateItems || [])
+        const merged = [...ourTags, ...foreignTags]
+        if (merged.length === 0) return ''
+        return await encryptPrivateTagArray(merged, ndk)
+      }
+
       if (cat.id === PRIMARY_CATEGORY_ID) {
         // Cross-module merge — refetch the latest 10003 so any data the
         // longform module wrote since our load isn't silently clobbered.
         const fresh = await fetchLatestPrimary(pubkey)
         let preservedTags = cat.extraTags || []
         let contentOverride = cat.rawContent || ''
+        const freshContent = fresh ? (fresh.content || '') : ''
+        const freshEncrypted = looksEncrypted(freshContent)
         if (fresh) {
           // Keep every non-`e` tag (longform's `a`-tags, NIP-51 `t`/`r`
           // tags, etc). We rewrite the `e`-tag set completely from our
           // `cat.items`.
           preservedTags = (fresh.tags || []).filter(t => t[0] !== 'e')
-          // Content strategy: if it's a JSON array (shared format
-          // between modules), rebuild it — our `{id,addedAt}` items +
-          // every non-note item (longform's `{aTag,...}`). If it isn't
-          // JSON (likely NIP-04 encrypted private bookmarks that only
-          // the owner's other client can decrypt), preserve verbatim.
+        }
+
+        if (hasPrivateItems || freshEncrypted) {
+          try {
+            contentOverride = await buildEncryptedContent(freshContent)
+          } catch {
+            // Can't decrypt or re-encrypt. If we were trying to save new
+            // private items, bail — better to show an error than corrupt
+            // another module's private items. If we had no new private
+            // items, preserve the existing blob verbatim.
+            if (hasPrivateItems) return false
+            contentOverride = freshContent
+          }
+        } else {
+          // Pure-public path (current behavior).
           let parsed = null
           try {
-            const p = JSON.parse(fresh.content || '[]')
+            const p = JSON.parse(freshContent || '[]')
             if (Array.isArray(p)) parsed = p
           } catch {}
           if (parsed) {
@@ -331,13 +429,13 @@ export function useNoteBookmarks(user) {
               ...longformItems,
             ]
             contentOverride = JSON.stringify(mergedContent)
-          } else if (fresh.content && fresh.content !== '') {
-            // Non-JSON content — almost certainly ciphertext. Don't touch it.
-            contentOverride = fresh.content
+          } else if (freshContent !== '') {
+            contentOverride = freshContent
           } else {
             contentOverride = ''
           }
         }
+
         event.kind = 10003
         event.tags = [...preservedTags]
         for (const it of cat.items) {
@@ -353,10 +451,21 @@ export function useNoteBookmarks(user) {
         for (const it of cat.items) {
           if (it?.id) event.tags.push(['e', it.id])
         }
-        // Merge our items with any foreign content items (e.g., longform's
-        // `{aTag, ...}`) so they round-trip intact.
-        const mergedContent = [...cat.items, ...(cat.otherContentItems || [])]
-        event.content = JSON.stringify(mergedContent)
+
+        const hadCiphertext = !!cat.privateCiphertext
+        if (hasPrivateItems || hadCiphertext) {
+          try {
+            event.content = await buildEncryptedContent(cat.privateCiphertext || '')
+          } catch {
+            if (hasPrivateItems) return false
+            event.content = cat.privateCiphertext || ''
+          }
+        } else {
+          // Merge our items with any foreign content items (e.g., longform's
+          // `{aTag, ...}`) so they round-trip intact.
+          const mergedContent = [...cat.items, ...(cat.otherContentItems || [])]
+          event.content = JSON.stringify(mergedContent)
+        }
       }
       await signWithTimeout(event)
       await event.publish()
@@ -377,6 +486,7 @@ export function useNoteBookmarks(user) {
       id,
       title: trimmed,
       items: [],
+      privateItems: [],
       createdAt: Math.floor(Date.now() / 1000),
       readOnly: false,
     }
@@ -392,32 +502,57 @@ export function useNoteBookmarks(user) {
     return cat
   }, [readOnly, pubkey])
 
-  // Mutually-exclusive bookmarks: a note lives in exactly one bucket at a
-  // time. Adding to target X removes from every other bucket (primary + any
-  // other 30003 set) it was in. We batch the state mutation so the UI sees
-  // one atomic move, then publish each affected bucket in sequence.
+  // Mutually-exclusive bookmarks: a note lives in exactly one (category,
+  // privacy) pair at a time. Adding to target X as privacy P removes it
+  // from every other bucket — every other category AND the other privacy
+  // side within the target. Each affected category gets one publish.
   //
-  // Trade-off: moving between kinds costs two signatures (e.g., 10003 out +
-  // 30003 in). Most NIP-07 extensions auto-approve replaceables; NIP-46
-  // signers surface it as two prompts. Acceptable for v1.
-  const addNote = useCallback(async (categoryId, noteId) => {
+  // Trade-off: moving between kinds or privacy sides costs one publish per
+  // touched category. Most NIP-07 extensions auto-approve replaceables;
+  // NIP-46 signers surface each as a prompt. Acceptable.
+  const addNote = useCallback(async (categoryId, noteId, options = {}) => {
     if (readOnly || !noteId) return
     const id = noteId.toLowerCase()
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     const toPublish = []
     setCategories(prev => {
       const target = prev.find(c => c.id === categoryId)
       if (!target) return prev
 
       const next = prev.map(c => {
+        const publicHas  = (c.items || []).some(it => it.id === id)
+        const privateHas = (c.privateItems || []).some(it => it.id === id)
         if (c.id === categoryId) {
-          if (c.items.some(it => it.id === id)) return c  // already there — no-op
-          const newCat = { ...c, items: [{ id, addedAt: Date.now() }, ...c.items] }
+          if (privacy === 'public' && publicHas) {
+            // Already in the target bucket — still evict from private side.
+            if (!privateHas) return c
+            const newCat = { ...c, privateItems: c.privateItems.filter(it => it.id !== id) }
+            toPublish.push(newCat)
+            return newCat
+          }
+          if (privacy === 'private' && privateHas) {
+            if (!publicHas) return c
+            const newCat = { ...c, items: c.items.filter(it => it.id !== id) }
+            toPublish.push(newCat)
+            return newCat
+          }
+          const now = Date.now()
+          const newItem = { id, addedAt: now }
+          const newCat = {
+            ...c,
+            items:        privacy === 'public'  ? [newItem, ...(c.items || [])]        : (c.items || []).filter(it => it.id !== id),
+            privateItems: privacy === 'private' ? [newItem, ...(c.privateItems || [])] : (c.privateItems || []).filter(it => it.id !== id),
+          }
           toPublish.push(newCat)
           return newCat
         }
-        // Evict from any other bucket that held it.
-        if (c.items.some(it => it.id === id)) {
-          const newCat = { ...c, items: c.items.filter(it => it.id !== id) }
+        // Evict from any other bucket that held it (either privacy side).
+        if (publicHas || privateHas) {
+          const newCat = {
+            ...c,
+            items:        publicHas  ? c.items.filter(it => it.id !== id)        : c.items,
+            privateItems: privateHas ? c.privateItems.filter(it => it.id !== id) : c.privateItems,
+          }
           toPublish.push(newCat)
           return newCat
         }
@@ -431,14 +566,17 @@ export function useNoteBookmarks(user) {
     }
   }, [readOnly, pubkey, publishCategory])
 
-  const removeNote = useCallback(async (categoryId, noteId) => {
+  const removeNote = useCallback(async (categoryId, noteId, options = {}) => {
     if (readOnly || !noteId) return
     const id = noteId.toLowerCase()
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     let updated = null
     setCategories(prev => {
       const cat = prev.find(c => c.id === categoryId)
       if (!cat || cat.readOnly) return prev
-      const newCat = { ...cat, items: cat.items.filter(it => it.id !== id) }
+      const newCat = privacy === 'private'
+        ? { ...cat, privateItems: (cat.privateItems || []).filter(it => it.id !== id) }
+        : { ...cat, items:        (cat.items || []).filter(it => it.id !== id) }
       updated = newCat
       const next = prev.map(c => c.id === categoryId ? newCat : c)
       saveToStorage(pubkey, next)
@@ -447,33 +585,94 @@ export function useNoteBookmarks(user) {
     if (updated) await publishCategory(updated)
   }, [readOnly, pubkey, publishCategory])
 
+  // Flip privacy for one note within a single category. One publish. Use
+  // addNote to move between categories with privacy; use this for in-place
+  // flips.
+  const movePrivacy = useCallback(async (categoryId, noteId, newPrivacy) => {
+    if (readOnly || !noteId) return
+    const id = noteId.toLowerCase()
+    const target = newPrivacy === 'private' ? 'private' : 'public'
+    let updated = null
+    setCategories(prev => {
+      const cat = prev.find(c => c.id === categoryId)
+      if (!cat || cat.readOnly) return prev
+      const publicHas  = (cat.items || []).some(it => it.id === id)
+      const privateHas = (cat.privateItems || []).some(it => it.id === id)
+      if (target === 'private') {
+        if (privateHas) return prev
+        if (!publicHas) return prev
+        const item = cat.items.find(it => it.id === id) || { id, addedAt: Date.now() }
+        const newCat = {
+          ...cat,
+          items:        cat.items.filter(it => it.id !== id),
+          privateItems: [item, ...(cat.privateItems || [])],
+        }
+        updated = newCat
+        const next = prev.map(c => c.id === categoryId ? newCat : c)
+        saveToStorage(pubkey, next)
+        return next
+      } else {
+        if (publicHas) return prev
+        if (!privateHas) return prev
+        const item = cat.privateItems.find(it => it.id === id) || { id, addedAt: Date.now() }
+        const newCat = {
+          ...cat,
+          items:        [item, ...(cat.items || [])],
+          privateItems: cat.privateItems.filter(it => it.id !== id),
+        }
+        updated = newCat
+        const next = prev.map(c => c.id === categoryId ? newCat : c)
+        saveToStorage(pubkey, next)
+        return next
+      }
+    })
+    if (updated) await publishCategory(updated)
+  }, [readOnly, pubkey, publishCategory])
+
   // Bulk move: same mutual-exclusivity semantics as addNote, but for a
   // batch. One state mutation plus one publish per *changed* category
   // (source buckets + destination) — not per note. Moving 20 notes from
   // Ungrouped → Reading Queue is 2 signatures, not 40.
-  const bulkMove = useCallback(async (targetCategoryId, noteIds) => {
+  const bulkMove = useCallback(async (targetCategoryId, noteIds, options = {}) => {
     if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return
     const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
     if (idSet.size === 0) return
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     const toPublish = []
     setCategories(prev => {
       const target = prev.find(c => c.id === targetCategoryId)
       if (!target) return prev
       const now = Date.now()
       const next = prev.map(c => {
+        const pubList  = c.items || []
+        const privList = c.privateItems || []
+        const heldIds = new Set([
+          ...pubList .filter(it => idSet.has(it.id)).map(it => it.id),
+          ...privList.filter(it => idSet.has(it.id)).map(it => it.id),
+        ])
         if (c.id === targetCategoryId) {
-          const existing = new Set(c.items.map(it => it.id))
+          const targetBucket = privacy === 'private' ? privList : pubList
+          const otherBucket  = privacy === 'private' ? pubList  : privList
+          const existing = new Set(targetBucket.map(it => it.id))
           const toAdd = [...idSet].filter(id => !existing.has(id))
-          if (toAdd.length === 0) return c
+          const needsDemote = otherBucket.some(it => idSet.has(it.id))
+          if (toAdd.length === 0 && !needsDemote) return c
+          const newTarget = [...toAdd.map(id => ({ id, addedAt: now })), ...targetBucket]
+          const newOther  = otherBucket.filter(it => !idSet.has(it.id))
           const newCat = {
             ...c,
-            items: [...toAdd.map(id => ({ id, addedAt: now })), ...c.items],
+            items:        privacy === 'private' ? newOther  : newTarget,
+            privateItems: privacy === 'private' ? newTarget : newOther,
           }
           toPublish.push(newCat)
           return newCat
         }
-        if (c.items.some(it => idSet.has(it.id))) {
-          const newCat = { ...c, items: c.items.filter(it => !idSet.has(it.id)) }
+        if (heldIds.size > 0) {
+          const newCat = {
+            ...c,
+            items:        pubList .filter(it => !idSet.has(it.id)),
+            privateItems: privList.filter(it => !idSet.has(it.id)),
+          }
           toPublish.push(newCat)
           return newCat
         }
@@ -487,20 +686,67 @@ export function useNoteBookmarks(user) {
     }
   }, [readOnly, pubkey, publishCategory])
 
-  const bulkRemove = useCallback(async (categoryId, noteIds) => {
+  const bulkRemove = useCallback(async (categoryId, noteIds, options = {}) => {
     if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return
     const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
     if (idSet.size === 0) return
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     let updated = null
     setCategories(prev => {
       const cat = prev.find(c => c.id === categoryId)
       if (!cat || cat.readOnly) return prev
-      const newCat = { ...cat, items: cat.items.filter(it => !idSet.has(it.id)) }
-      if (newCat.items.length === cat.items.length) return prev
+      const newCat = privacy === 'private'
+        ? { ...cat, privateItems: (cat.privateItems || []).filter(it => !idSet.has(it.id)) }
+        : { ...cat, items:        (cat.items || []).filter(it => !idSet.has(it.id)) }
+      const targetLen = privacy === 'private' ? (cat.privateItems || []).length : (cat.items || []).length
+      const nextLen   = privacy === 'private' ? newCat.privateItems.length : newCat.items.length
+      if (nextLen === targetLen) return prev
       updated = newCat
       const next = prev.map(c => c.id === categoryId ? newCat : c)
       saveToStorage(pubkey, next)
       return next
+    })
+    if (updated) await publishCategory(updated)
+  }, [readOnly, pubkey, publishCategory])
+
+  // Bulk flip privacy within a single category. Public items in the set
+  // move to privateItems; already-private items are untouched. One publish.
+  const bulkMovePrivacy = useCallback(async (categoryId, noteIds, newPrivacy) => {
+    if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return
+    const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
+    if (idSet.size === 0) return
+    const target = newPrivacy === 'private' ? 'private' : 'public'
+    let updated = null
+    setCategories(prev => {
+      const cat = prev.find(c => c.id === categoryId)
+      if (!cat || cat.readOnly) return prev
+      const pubList  = cat.items || []
+      const privList = cat.privateItems || []
+      if (target === 'private') {
+        const moving = pubList.filter(it => idSet.has(it.id))
+        if (moving.length === 0) return prev
+        const newCat = {
+          ...cat,
+          items:        pubList.filter(it => !idSet.has(it.id)),
+          privateItems: [...moving, ...privList],
+        }
+        updated = newCat
+        const next = prev.map(c => c.id === categoryId ? newCat : c)
+        saveToStorage(pubkey, next)
+        return next
+      } else {
+        const moving = privList.filter(it => idSet.has(it.id))
+        if (moving.length === 0) return prev
+        const newCat = {
+          ...cat,
+          items:        [...moving, ...pubList],
+          privateItems: privList.filter(it => !idSet.has(it.id)),
+        }
+        updated = newCat
+        const next = prev.map(c => c.id === categoryId ? newCat : c)
+        saveToStorage(pubkey, next)
+        return next
+      }
     })
     if (updated) await publishCategory(updated)
   }, [readOnly, pubkey, publishCategory])
@@ -510,13 +756,14 @@ export function useNoteBookmarks(user) {
   // into one setCategories call, so bulkMove's reducer can never race the
   // creation. If the slug already exists, we move into the existing category
   // (same forgiveness as createCategory).
-  const bulkMoveToNew = useCallback(async (name, noteIds) => {
+  const bulkMoveToNew = useCallback(async (name, noteIds, options = {}) => {
     if (readOnly || !Array.isArray(noteIds) || noteIds.length === 0) return null
     const trimmed = (name || '').trim()
     if (!trimmed) return null
     const id = makeSlug(trimmed)
     const idSet = new Set(noteIds.map(n => n.toLowerCase()).filter(n => /^[0-9a-f]{64}$/.test(n)))
     if (idSet.size === 0) return null
+    const privacy = options.privacy === 'private' ? 'private' : 'public'
     const now = Date.now()
     const toPublish = []
     setCategories(prev => {
@@ -526,35 +773,56 @@ export function useNoteBookmarks(user) {
         // Slug collision — merge into the existing category (respect readOnly).
         if (prev[existingAt].readOnly) return prev
         next = prev.map(c => {
+          const pubList  = c.items || []
+          const privList = c.privateItems || []
           if (c.id === id) {
-            const existing = new Set(c.items.map(it => it.id))
+            const targetBucket = privacy === 'private' ? privList : pubList
+            const otherBucket  = privacy === 'private' ? pubList  : privList
+            const existing = new Set(targetBucket.map(it => it.id))
             const toAdd = [...idSet].filter(iid => !existing.has(iid))
+            const newTarget = [...toAdd.map(iid => ({ id: iid, addedAt: now })), ...targetBucket]
+            const newOther  = otherBucket.filter(it => !idSet.has(it.id))
             const newCat = {
               ...c,
-              items: [...toAdd.map(iid => ({ id: iid, addedAt: now })), ...c.items],
+              items:        privacy === 'private' ? newOther  : newTarget,
+              privateItems: privacy === 'private' ? newTarget : newOther,
             }
             toPublish.push(newCat)
             return newCat
           }
-          if (c.items.some(it => idSet.has(it.id))) {
-            const newCat = { ...c, items: c.items.filter(it => !idSet.has(it.id)) }
-            toPublish.push(newCat)
-            return newCat
+          const heldAny = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
+          if (heldAny) {
+            const pruned = {
+              ...c,
+              items:        pubList .filter(it => !idSet.has(it.id)),
+              privateItems: privList.filter(it => !idSet.has(it.id)),
+            }
+            toPublish.push(pruned)
+            return pruned
           }
           return c
         })
       } else {
+        const newItems = [...idSet].map(iid => ({ id: iid, addedAt: now }))
         const newCat = {
           id,
           title: trimmed,
-          items: [...idSet].map(iid => ({ id: iid, addedAt: now })),
+          items:        privacy === 'private' ? []       : newItems,
+          privateItems: privacy === 'private' ? newItems : [],
           createdAt: Math.floor(Date.now() / 1000),
           readOnly: false,
         }
         toPublish.push(newCat)
         next = [newCat, ...prev.map(c => {
-          if (c.items.some(it => idSet.has(it.id))) {
-            const pruned = { ...c, items: c.items.filter(it => !idSet.has(it.id)) }
+          const pubList  = c.items || []
+          const privList = c.privateItems || []
+          const heldAny = pubList.some(it => idSet.has(it.id)) || privList.some(it => idSet.has(it.id))
+          if (heldAny) {
+            const pruned = {
+              ...c,
+              items:        pubList .filter(it => !idSet.has(it.id)),
+              privateItems: privList.filter(it => !idSet.has(it.id)),
+            }
             toPublish.push(pruned)
             return pruned
           }
@@ -604,7 +872,8 @@ export function useNoteBookmarks(user) {
     if (!cat || cat.readOnly) return
 
     const sourceKind    = cat.sourceKind === 30001 ? 30001 : 30003
-    const itemsToRehome = cat.items || []
+    const publicToRehome  = cat.items || []
+    const privateToRehome = cat.privateItems || []
 
     // ── Atomicity contract ──────────────────────────────────────────────
     // Never leave items with no home. Order of operations:
@@ -617,24 +886,32 @@ export function useNoteBookmarks(user) {
     // relays; items will show in both places on reload (duplication, not
     // loss). User can retry delete.
     let primaryToPublish = null
-    if (itemsToRehome.length > 0) {
+    if (publicToRehome.length > 0 || privateToRehome.length > 0) {
       const primary = current.find(c => c.id === PRIMARY_CATEGORY_ID)
       if (primary) {
-        const existing = new Set(primary.items.map(it => it.id))
-        const merged = [
-          ...itemsToRehome
-            .filter(it => !existing.has(it.id))
+        const existingPub  = new Set((primary.items || []).map(it => it.id))
+        const existingPriv = new Set((primary.privateItems || []).map(it => it.id))
+        const mergedPub = [
+          ...publicToRehome
+            .filter(it => !existingPub.has(it.id))
             .map(it => ({ id: it.id, addedAt: it.addedAt || Date.now() })),
-          ...primary.items,
+          ...(primary.items || []),
         ]
-        primaryToPublish = { ...primary, items: merged }
+        const mergedPriv = [
+          ...privateToRehome
+            .filter(it => !existingPriv.has(it.id))
+            .map(it => ({ id: it.id, addedAt: it.addedAt || Date.now() })),
+          ...(primary.privateItems || []),
+        ]
+        primaryToPublish = { ...primary, items: mergedPub, privateItems: mergedPriv }
       } else {
         // No primary yet — synthesize one. First publish creates the
         // user's kind 10003 event.
         primaryToPublish = {
           id: PRIMARY_CATEGORY_ID,
           title: 'Ungrouped',
-          items: itemsToRehome.map(it => ({ id: it.id, addedAt: it.addedAt || Date.now() })),
+          items:        publicToRehome .map(it => ({ id: it.id, addedAt: it.addedAt || Date.now() })),
+          privateItems: privateToRehome.map(it => ({ id: it.id, addedAt: it.addedAt || Date.now() })),
           createdAt: Math.floor(Date.now() / 1000),
           readOnly: false,
           extraTags: [],
@@ -679,7 +956,7 @@ export function useNoteBookmarks(user) {
     } catch {}
   }, [readOnly, pubkey, publishCategory])
 
-  return { categories, loading, createCategory, addNote, removeNote, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMoveToNew, hiddenIds, hideCategory, unhideCategory }
+  return { categories, loading, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIds, hideCategory, unhideCategory }
 }
 
 export const NOTE_PRIMARY_CATEGORY_ID = PRIMARY_CATEGORY_ID
