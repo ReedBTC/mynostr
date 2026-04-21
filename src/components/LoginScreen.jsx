@@ -3,7 +3,7 @@ import { NDKNip07Signer, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { createNostrConnectURI } from 'nostr-tools/nip46'
 import { QRCodeSVG } from 'qrcode.react'
-import { getNDK, resetNDK, connectAndWait } from '../lib/ndk.js'
+import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import {
   connectViaBunkerUrl,
@@ -176,6 +176,7 @@ export default function LoginScreen({ onLogin }) {
       ])
       await connectAndWait(ndk)
       const pubkey = await signer.user()
+      await ensureUserWriteRelays(ndk, pubkey.pubkey)
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
       saveSession(buildExtensionRecord(pubkey.pubkey))
       onLogin(user)
@@ -215,6 +216,7 @@ export default function LoginScreen({ onLogin }) {
         ndk.signer = signer
         await connectAndWait(ndk)
         const ndkUser = await signer.user()
+        await ensureUserWriteRelays(ndk, ndkUser.pubkey)
         const user = await fetchUserProfile(ndk, ndkUser.pubkey)
         // nsec is in-memory only — intentionally not persisted.
         onLogin(user)
@@ -331,6 +333,7 @@ export default function LoginScreen({ onLogin }) {
       setLoading(true)
       ndk.signer = signer
       await connectAndWait(ndk)
+      await ensureUserWriteRelays(ndk, signer.pubkey)
       const user = await fetchUserProfile(ndk, signer.pubkey)
       const nip46Record = buildNip46Record({
         clientSecret,
@@ -425,6 +428,7 @@ export default function LoginScreen({ onLogin }) {
       })
       ndk.signer = signer
       await connectAndWait(ndk)
+      await ensureUserWriteRelays(ndk, signer.pubkey)
       const user = await fetchUserProfile(ndk, signer.pubkey)
       const nip46Record = buildNip46Record({
         clientSecret,

@@ -41,15 +41,16 @@ export function looksEncrypted(content) {
   return s.length >= 32 && /^[A-Za-z0-9+/=]+$/.test(s)
 }
 
-// The `sender`/`recipient` parameter for ndk.signer.encrypt/decrypt wants
-// either a hex pubkey or an NDKUser object — both extension and bunker
-// wrappers accept either. We hand the hex pubkey string since we already
-// have it from the session.
-async function getSelfPubkey(ndk) {
+// NDK's signer.encrypt/decrypt reads `.pubkey` off the recipient — passing
+// a bare hex string silently resolves to undefined and nukes encryption
+// (extension signers call window.nostr.nip44.encrypt(undefined, …) and
+// PrivateKey signers throw "invalid pubkey"). Always wrap as {pubkey}.
+// Our bunker wrapper accepts either form; the {pubkey} wrap works for all.
+async function getSelfRecipient(ndk) {
   if (!ndk?.signer) throw new Error('No signer attached')
-  if (ndk.signer.pubkey) return ndk.signer.pubkey
-  const user = await ndk.signer.user()
-  return user?.pubkey
+  const pubkey = ndk.signer.pubkey || (await ndk.signer.user())?.pubkey
+  if (!pubkey) throw new Error('Cannot resolve signer pubkey')
+  return { pubkey }
 }
 
 /**
@@ -62,13 +63,12 @@ async function getSelfPubkey(ndk) {
 export async function encryptPrivateTagArray(tagArray, ndk) {
   if (!Array.isArray(tagArray)) throw new Error('tagArray must be an array')
   const plaintext = JSON.stringify(tagArray)
-  const selfPubkey = await getSelfPubkey(ndk)
-  if (!selfPubkey) throw new Error('Cannot resolve signer pubkey')
+  const self = await getSelfRecipient(ndk)
   try {
-    return await ndk.signer.encrypt(selfPubkey, plaintext, 'nip44')
+    return await ndk.signer.encrypt(self, plaintext, 'nip44')
   } catch (err44) {
     try {
-      return await ndk.signer.encrypt(selfPubkey, plaintext, 'nip04')
+      return await ndk.signer.encrypt(self, plaintext, 'nip04')
     } catch (err04) {
       // Surface the NIP-44 error since that was the preferred path.
       throw err44
@@ -87,14 +87,14 @@ export async function encryptPrivateTagArray(tagArray, ndk) {
 export async function decryptPrivateTagArray(ciphertext, ndk) {
   if (!ciphertext || typeof ciphertext !== 'string') return null
   if (!ndk?.signer) return null
-  const selfPubkey = await getSelfPubkey(ndk)
-  if (!selfPubkey) return null
+  let self
+  try { self = await getSelfRecipient(ndk) } catch { return null }
 
   const looksNip04 = /\?iv=[A-Za-z0-9+/=]+$/.test(ciphertext)
   const order = looksNip04 ? ['nip04', 'nip44'] : ['nip44', 'nip04']
   for (const scheme of order) {
     try {
-      const plaintext = await ndk.signer.decrypt(selfPubkey, ciphertext, scheme)
+      const plaintext = await ndk.signer.decrypt(self, ciphertext, scheme)
       if (!plaintext) continue
       const parsed = JSON.parse(plaintext)
       if (Array.isArray(parsed)) return parsed

@@ -1,6 +1,6 @@
 import { NDKNip07Signer } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { getNDK, resetNDK, connectAndWait } from './ndk.js'
+import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from './ndk.js'
 import { fetchProfiles } from './primal.js'
 import { sanitizeRelayUrls } from './publishNote.js'
 import { restoreFromSession } from './nip46Signer.js'
@@ -130,6 +130,7 @@ export async function restoreSession(record) {
       // login screen can re-auth as whoever the extension is currently set to.
       if (ndkUser.pubkey !== record.pubkey) return null
       await connectAndWait(ndk)
+      await ensureUserWriteRelays(ndk, ndkUser.pubkey)
       return await fetchUserProfile(ndk, ndkUser.pubkey)
     } catch {
       return null
@@ -178,6 +179,7 @@ export async function restoreSession(record) {
       })
       ndk.signer = signer
       await connectAndWait(ndk)
+      await ensureUserWriteRelays(ndk, userPubkey)
       return await fetchUserProfile(ndk, userPubkey)
     } catch {
       return null

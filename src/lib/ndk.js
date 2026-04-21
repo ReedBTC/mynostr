@@ -55,6 +55,39 @@ export async function signWithTimeout(event, timeoutMs = SIGN_TIMEOUT_MS) {
   }
 }
 
+// Add the signed-in user's kind-10002 write relays to NDK's explicit pool.
+// This is the outbox model (NIP-65): events the user publishes should go
+// to the relays their followers already read from, not just our fallbacks.
+//
+// Without this, every publish — bookmarks, profile edits, notes, reading
+// lists — only hits the four FALLBACK_RELAYS. If a user writes to 12
+// relays, readers watching the other 8 never see the update.
+//
+// Safe to call multiple times; addExplicitRelay dedupes by URL. No-op if
+// the user has no 10002 or the lookup times out. Doesn't block on the
+// new relays completing their WS handshake — NDK connects them in the
+// background, so this call returns as soon as the 10002 is parsed.
+export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = {}) {
+  if (!ndk || !pubkey) return []
+  try {
+    const relayListEvent = await Promise.race([
+      ndk.fetchEvent({ kinds: [10002], authors: [pubkey] }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
+    ])
+    if (!relayListEvent) return []
+    const writeRelays = (relayListEvent.tags || [])
+      .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
+      .map(t => t[1])
+      .filter(u => typeof u === 'string' && /^wss:\/\//i.test(u))
+    for (const url of writeRelays) {
+      try { ndk.addExplicitRelay(url) } catch {}
+    }
+    return writeRelays
+  } catch {
+    return []
+  }
+}
+
 // Call on logout to close relay connections, detach the signer,
 // and force a fresh NDK instance on next login.
 export function resetNDK() {
