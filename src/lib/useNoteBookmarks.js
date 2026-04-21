@@ -93,25 +93,50 @@ function saveToStorage(pubkey, categories) {
   } catch {}
 }
 
-// Per-pubkey list of category ids that the user has client-side-hidden from
-// the Notes module. Hidden is purely a display preference — the underlying
-// 30001/30003 events stay on relays and other clients/modules still see
-// them. Primary (_primary) is never hideable.
+// Per-pubkey hidden chips, split by privacy view. Hiding is a display
+// preference — the underlying 30001/30003 events stay on relays and
+// other clients/modules still see them. Primary (_primary) is never
+// hideable.
+//
+// Per-view because a user may want a category to appear only in their
+// private bookmarks (e.g., a "Sensitive" set they keep off their public
+// chip bar) or only in their public (a noisy archive they never want to
+// scroll past when reviewing private saves).
+//
+// Storage shape: `{ public: string[], private: string[] }`. Migration:
+// a bare array from the pre-split schema maps to the public bucket so a
+// user upgrading doesn't see previously-hidden chips pop back onto their
+// public view.
 function hiddenStorageKeyFor(pubkey) {
   return pubkey ? `${HIDDEN_STORAGE_KEY_PREFIX}${pubkey}` : null
 }
 function loadHiddenFromStorage(pubkey) {
   const key = hiddenStorageKeyFor(pubkey)
-  if (!key) return []
+  const empty = { public: [], private: [] }
+  if (!key) return empty
   try {
-    const raw = JSON.parse(localStorage.getItem(key) || '[]')
-    return Array.isArray(raw) ? raw.filter(id => typeof id === 'string') : []
-  } catch { return [] }
+    const raw = JSON.parse(localStorage.getItem(key) || 'null')
+    if (Array.isArray(raw)) {
+      return { public: raw.filter(id => typeof id === 'string'), private: [] }
+    }
+    if (raw && typeof raw === 'object') {
+      return {
+        public:  Array.isArray(raw.public)  ? raw.public .filter(id => typeof id === 'string') : [],
+        private: Array.isArray(raw.private) ? raw.private.filter(id => typeof id === 'string') : [],
+      }
+    }
+    return empty
+  } catch { return empty }
 }
-function saveHiddenToStorage(pubkey, ids) {
+function saveHiddenToStorage(pubkey, hiddenByView) {
   const key = hiddenStorageKeyFor(pubkey)
   if (!key) return
-  try { localStorage.setItem(key, JSON.stringify([...ids])) } catch {}
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      public:  [...(hiddenByView.public  || [])],
+      private: [...(hiddenByView.private || [])],
+    }))
+  } catch {}
 }
 
 function makeSlug(name) {
@@ -229,7 +254,14 @@ export function parseEventToCategory(event) {
 export function useNoteBookmarks(user) {
   const [categories, setCategories] = useState([])
   const [loading, setLoading] = useState(true)
-  const [hiddenIds, setHiddenIds] = useState(() => new Set())
+  // Split by privacy view. Consumers pick `hiddenIdsByView[privacyView]`
+  // when they know which bucket they're rendering; cross-cutting consumers
+  // (e.g., the Add-to-bookmarks picker inside a note's three-dot menu) can
+  // pick based on the target privacy of the action they're offering.
+  const [hiddenIdsByView, setHiddenIdsByView] = useState(() => ({
+    public: new Set(),
+    private: new Set(),
+  }))
   // Mirror of `categories` so async flows (deleteCategory) can read the
   // current value without wrapping logic in a setState reducer.
   const categoriesRef = useRef([])
@@ -240,28 +272,41 @@ export function useNoteBookmarks(user) {
 
   // Load per-pubkey hidden set whenever the session user changes.
   useEffect(() => {
-    if (!pubkey) { setHiddenIds(new Set()); return }
-    setHiddenIds(new Set(loadHiddenFromStorage(pubkey)))
+    if (!pubkey) {
+      setHiddenIdsByView({ public: new Set(), private: new Set() })
+      return
+    }
+    const stored = loadHiddenFromStorage(pubkey)
+    setHiddenIdsByView({
+      public:  new Set(stored.public),
+      private: new Set(stored.private),
+    })
   }, [pubkey])
 
-  const hideCategory = useCallback((categoryId) => {
+  const hideCategory = useCallback((categoryId, view = 'public') => {
     if (!categoryId || categoryId === PRIMARY_CATEGORY_ID) return
-    setHiddenIds(prev => {
-      if (prev.has(categoryId)) return prev
-      const next = new Set(prev)
-      next.add(categoryId)
-      saveHiddenToStorage(pubkey, next)
+    const bucket = view === 'private' ? 'private' : 'public'
+    setHiddenIdsByView(prev => {
+      const current = prev[bucket]
+      if (current.has(categoryId)) return prev
+      const nextBucket = new Set(current)
+      nextBucket.add(categoryId)
+      const next = { ...prev, [bucket]: nextBucket }
+      saveHiddenToStorage(pubkey, { public: next.public, private: next.private })
       return next
     })
   }, [pubkey])
 
-  const unhideCategory = useCallback((categoryId) => {
+  const unhideCategory = useCallback((categoryId, view = 'public') => {
     if (!categoryId) return
-    setHiddenIds(prev => {
-      if (!prev.has(categoryId)) return prev
-      const next = new Set(prev)
-      next.delete(categoryId)
-      saveHiddenToStorage(pubkey, next)
+    const bucket = view === 'private' ? 'private' : 'public'
+    setHiddenIdsByView(prev => {
+      const current = prev[bucket]
+      if (!current.has(categoryId)) return prev
+      const nextBucket = new Set(current)
+      nextBucket.delete(categoryId)
+      const next = { ...prev, [bucket]: nextBucket }
+      saveHiddenToStorage(pubkey, { public: next.public, private: next.private })
       return next
     })
   }, [pubkey])
@@ -367,6 +412,17 @@ export function useNoteBookmarks(user) {
   const publishCategory = useCallback(async (cat) => {
     if (readOnly || !pubkey) return false
     if (cat.readOnly) return false
+
+    // Every branch below used to swallow failures in a bare `catch {}` —
+    // including the one where encrypt would silently throw "undefined
+    // recipient". Hoisted so it's in scope for every try/catch in here.
+    const logFailure = (where, err) => {
+      try {
+        // eslint-disable-next-line no-console
+        console.error(`[bookmarks] ${where} failed for category "${cat.title}" (${cat.id}):`, err)
+      } catch {}
+    }
+
     try {
       const ndk = getNDK()
       const event = new NDKEvent(ndk)
@@ -407,7 +463,8 @@ export function useNoteBookmarks(user) {
         if (hasPrivateItems || freshEncrypted) {
           try {
             contentOverride = await buildEncryptedContent(freshContent)
-          } catch {
+          } catch (err) {
+            logFailure('encrypt (primary)', err)
             // Can't decrypt or re-encrypt. If we were trying to save new
             // private items, bail — better to show an error than corrupt
             // another module's private items. If we had no new private
@@ -456,7 +513,8 @@ export function useNoteBookmarks(user) {
         if (hasPrivateItems || hadCiphertext) {
           try {
             event.content = await buildEncryptedContent(cat.privateCiphertext || '')
-          } catch {
+          } catch (err) {
+            logFailure('encrypt (category)', err)
             if (hasPrivateItems) return false
             event.content = cat.privateCiphertext || ''
           }
@@ -468,9 +526,15 @@ export function useNoteBookmarks(user) {
         }
       }
       await signWithTimeout(event)
-      await event.publish()
+      const publishedTo = await event.publish()
+      const reached = Array.from(publishedTo || []).map(r => r.url).filter(Boolean)
+      if (reached.length === 0) {
+        logFailure('publish', new Error('no relays acknowledged the event'))
+        return false
+      }
       return true
-    } catch {
+    } catch (err) {
+      logFailure('sign/publish', err)
       // Best-effort — local state is already updated; republish on next
       // mutation.
       return false
@@ -956,7 +1020,7 @@ export function useNoteBookmarks(user) {
     } catch {}
   }, [readOnly, pubkey, publishCategory])
 
-  return { categories, loading, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIds, hideCategory, unhideCategory }
+  return { categories, loading, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
 }
 
 export const NOTE_PRIMARY_CATEGORY_ID = PRIMARY_CATEGORY_ID

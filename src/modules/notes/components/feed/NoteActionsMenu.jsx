@@ -21,7 +21,7 @@ import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
 
 export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed = false }) {
-  const { categories, createCategory, addNote, removeNote, canEdit, hiddenIds } = useNoteBookmarksContext()
+  const { categories, createCategory, addNote, removeNote, canEdit, hiddenIdsByView } = useNoteBookmarksContext()
   const isMobile = useIsMobile()
   const [submenu, setSubmenu] = useState(false)
   const [removeSubmenu, setRemoveSubmenu] = useState(false)
@@ -148,16 +148,23 @@ export default function NoteActionsMenu({ open, onClose, note, inBookmarksFeed =
 
   // Hide the bookmarks submenu for read-only / logged-out views — the
   // lists we'd list would belong to the viewed user, not the viewer, and
-  // writing to them would require a signer we don't have. Hidden chips
-  // are suppressed everywhere in the Notes module, so filter them too.
-  const writableCategories = categories.filter(c => !c.readOnly && !hiddenIds?.has(c.id))
+  // writing to them would require a signer we don't have.
+  //
+  // Per-view hiding: the Add submenu filters by the hidden set matching
+  // the user's current Add-privacy pill, so you only add into categories
+  // visible in the bucket you're adding as. The Remove submenu below
+  // unions both sets so you can always remove from a category that
+  // already holds the note — hidden is a display preference, not a ban.
+  const addHiddenSet = hiddenIdsByView?.[addPrivacy] || new Set()
+  const writableCategories = categories.filter(c => !c.readOnly && !addHiddenSet.has(c.id))
+  const removableCategories = categories.filter(c => !c.readOnly)
   const showBookmarks = canEdit
   const noteIdLower = note.id?.toLowerCase()
   // Flatten to one row per (category, privacy) hit so the remove menu
   // can offer "Remove from Queue (public)" and "Remove from Queue
   // (private)" as distinct actions when both happen to hold the note.
   const containingRows = []
-  for (const c of writableCategories) {
+  for (const c of removableCategories) {
     if (c.items?.some(it => it.id === noteIdLower)) containingRows.push({ cat: c, privacy: 'public' })
     if (c.privateItems?.some(it => it.id === noteIdLower)) containingRows.push({ cat: c, privacy: 'private' })
   }

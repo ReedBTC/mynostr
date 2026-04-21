@@ -26,6 +26,9 @@ const NoteBookmarksContext = createContext({
   bulkMovePrivacy: async () => {},
   deleteCategory: async () => {},
   renameCategory: async () => {},
+  hiddenIdsByView: { public: new Set(), private: new Set() },
+  hideCategory: () => {},
+  unhideCategory: () => {},
   canEdit: false,
 })
 

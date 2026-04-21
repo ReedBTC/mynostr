@@ -51,7 +51,7 @@ export default function BookmarksTab({ user, isOwner }) {
     bulkMovePrivacy,
     renameCategory,
     deleteCategory,
-    hiddenIds,
+    hiddenIdsByView,
     hideCategory,
     unhideCategory,
   } = useNoteBookmarksContext()
@@ -63,6 +63,13 @@ export default function BookmarksTab({ user, isOwner }) {
   // this, so switching privacy always wipes the selection.
   const [privacyView, setPrivacyView] = useState('public')
   const isPrivate = privacyView === 'private'
+
+  // Hiding is per-privacy-view: a category hidden on public can still be
+  // visible on private (e.g., a "Sensitive" set you never want on your
+  // public chip bar). `hiddenIds` below is always the active view's set;
+  // the hide/unhide handlers pass the active view down to the hook so
+  // the write lands in the right bucket.
+  const hiddenIds = hiddenIdsByView?.[privacyView] || new Set()
 
   // Thread stack — clicking any bookmarked note opens the thread view.
   const [threadStack, setThreadStack] = useState([])
@@ -78,6 +85,11 @@ export default function BookmarksTab({ user, isOwner }) {
   const [moveMenuOpen, setMoveMenuOpen] = useState(false)
   const [creatingNewMoveTarget, setCreatingNewMoveTarget] = useState(false)
   const [newMoveTargetName, setNewMoveTargetName] = useState('')
+  // Destination privacy for the Move-to menu. Defaults to the current
+  // view so the common case ("move these private bookmarks to Category
+  // X, keep them private") is a single click. Reset whenever the menu
+  // closes so the next open doesn't remember a prior cross-bucket move.
+  const [moveTargetPrivacy, setMoveTargetPrivacy] = useState('public')
   // Inline confirm state for bulk-remove — the Remove button flips to
   // "Confirm?  Yes / No" on first click instead of popping a native
   // browser prompt (matches the longform module's pattern).
@@ -102,6 +114,15 @@ export default function BookmarksTab({ user, isOwner }) {
     setConfirmBulkRemove(false)
   }, [])
 
+  // "Select all" grabs every id in the current category bucket — not
+  // just the paginated slice — so bulk ops operate on the whole
+  // category even if the user hasn't scrolled the feed to the bottom.
+  // No-op when there's nothing to select.
+  const selectAll = useCallback((ids) => {
+    if (!ids || ids.length === 0) return
+    setSelectedIds(new Set(ids))
+  }, [])
+
   // Close move dropdown on outside click.
   useEffect(() => {
     if (!moveMenuOpen) return
@@ -115,6 +136,14 @@ export default function BookmarksTab({ user, isOwner }) {
     document.addEventListener('pointerdown', onDown, true)
     return () => document.removeEventListener('pointerdown', onDown, true)
   }, [moveMenuOpen])
+
+  // Whenever the Move-to menu opens, seed the destination privacy with
+  // the active view — the common case is "same bucket, different
+  // category." Closing the menu resets it so a prior session doesn't
+  // leak across opens.
+  useEffect(() => {
+    if (moveMenuOpen) setMoveTargetPrivacy(privacyView)
+  }, [moveMenuOpen, privacyView])
 
   useEffect(() => {
     if (creatingNewMoveTarget) newMoveInputRef.current?.focus()
@@ -142,12 +171,12 @@ export default function BookmarksTab({ user, isOwner }) {
     if (!manageMode && activeCategoryId === categoryId) {
       setActiveCategoryId(NOTE_PRIMARY_CATEGORY_ID)
     }
-    hideCategory(categoryId)
-  }, [manageMode, activeCategoryId, hideCategory])
+    hideCategory(categoryId, privacyView)
+  }, [manageMode, activeCategoryId, hideCategory, privacyView])
 
   const handleUnhideCategory = useCallback((categoryId) => {
-    unhideCategory(categoryId)
-  }, [unhideCategory])
+    unhideCategory(categoryId, privacyView)
+  }, [unhideCategory, privacyView])
 
   // The ChipBar now owns the inline "Delete?" confirmation UI (matches the
   // pattern used by the longform BookmarksPanel), so this handler fires
@@ -283,9 +312,10 @@ export default function BookmarksTab({ user, isOwner }) {
   const handleBulkMove = useCallback(async (targetCategoryId) => {
     if (selectedIds.size === 0) return
     const ids = [...selectedIds]
+    const privacy = moveTargetPrivacy
     clearSelection()
-    await bulkMove(targetCategoryId, ids, { privacy: privacyView })
-  }, [selectedIds, bulkMove, clearSelection, privacyView])
+    await bulkMove(targetCategoryId, ids, { privacy })
+  }, [selectedIds, bulkMove, clearSelection, moveTargetPrivacy])
 
   // Atomic create + move in one hook call. Splitting it into
   // createCategory → bulkMove would queue two setCategories updates, and
@@ -295,9 +325,10 @@ export default function BookmarksTab({ user, isOwner }) {
     const name = newMoveTargetName.trim()
     if (!name || selectedIds.size === 0) return
     const ids = [...selectedIds]
+    const privacy = moveTargetPrivacy
     clearSelection()
-    await bulkMoveToNew(name, ids, { privacy: privacyView })
-  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection, privacyView])
+    await bulkMoveToNew(name, ids, { privacy })
+  }, [newMoveTargetName, selectedIds, bulkMoveToNew, clearSelection, moveTargetPrivacy])
 
   const handleBulkRemove = useCallback(async () => {
     if (selectedIds.size === 0 || !activeCategoryId) return
@@ -323,6 +354,19 @@ export default function BookmarksTab({ user, isOwner }) {
     () => feed.items.filter(n => allowedIdSet.has(n.id)),
     [feed.items, allowedIdSet],
   )
+
+  // Hoisted ahead of render because the zero-categories branch renders
+  // the toggle too — if we declared these after the early returns the
+  // zero-cats path would trip over the const TDZ.
+  const privacyToggle = (
+    <PrivacyToggle value={privacyView} onChange={setPrivacyView} categories={categories} />
+  )
+
+  const emptyMessage = activeCategory
+    ? (isPrivate
+        ? `No private bookmarks in ${activeCategory.title} yet.`
+        : `Nothing in ${activeCategory.title} yet.`)
+    : 'You haven’t bookmarked any notes yet.'
 
   // ── Render ─────────────────────────────────────────────────────────
   if (threadStack.length > 0) {
@@ -387,20 +431,21 @@ export default function BookmarksTab({ user, isOwner }) {
     )
   }
 
-  const emptyMessage = activeCategory
-    ? (isPrivate
-        ? `No private bookmarks in ${activeCategory.title} yet.`
-        : `Nothing in ${activeCategory.title} yet.`)
-    : 'You haven’t bookmarked any notes yet.'
-
-  const privacyToggle = (
-    <PrivacyToggle value={privacyView} onChange={setPrivacyView} categories={categories} />
-  )
-
-  const moveTargets = categories.filter(
-    c => c.id !== activeCategoryId && !hiddenIds.has(c.id),
-  )
+  // Move targets: normally exclude the active category (you can't
+  // "move" within the same bucket of the same category — that's a no-op).
+  // But when the user chose a destination privacy that differs from the
+  // current view, the active category IS a meaningful target: it flips
+  // the selection's bucket in place, same as the "Make public/private"
+  // button. Include it so the Move-to menu is the single source of
+  // truth for "where do these go next."
+  const moveTargets = categories.filter(c => {
+    if (hiddenIds.has(c.id)) return false
+    if (c.id === activeCategoryId && moveTargetPrivacy === privacyView) return false
+    return true
+  })
   const hasSelection = selectedIds.size > 0
+  const allSelected = currentIds.length > 0 && selectedIds.size === currentIds.length
+  const canShowBulkBar = currentIds.length > 0
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -420,130 +465,196 @@ export default function BookmarksTab({ user, isOwner }) {
         privacyView={privacyView}
       />
 
-      {hasSelection && (
+      {canShowBulkBar && (
         <div className="max-w-xl mx-auto w-full px-4 py-2 border-b border-neutral-800 flex items-center gap-2 text-xs">
-          <span className="text-neutral-300 shrink-0">
-            {selectedIds.size} selected
-          </span>
-
-          <div ref={moveMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={() => setMoveMenuOpen(v => !v)}
-              className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
-            >
-              Move to…
-            </button>
-            {moveMenuOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-lg z-20 min-w-[200px] max-h-72 overflow-y-auto">
-                {moveTargets.map(cat => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => handleBulkMove(cat.id)}
-                    className="block w-full text-left px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-800"
-                  >
-                    {cat.title}
-                  </button>
-                ))}
-
-                {moveTargets.length > 0 && <div className="border-t border-neutral-800" />}
-
-                {creatingNewMoveTarget ? (
-                  <div className="px-2 py-2">
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        ref={newMoveInputRef}
-                        type="text"
-                        value={newMoveTargetName}
-                        onChange={e => setNewMoveTargetName(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') handleBulkMoveToNew()
-                          if (e.key === 'Escape') {
-                            setCreatingNewMoveTarget(false)
-                            setNewMoveTargetName('')
-                          }
-                        }}
-                        placeholder="New category name…"
-                        maxLength={60}
-                        className="flex-1 min-w-0 text-xs px-2 py-1.5 rounded bg-neutral-950 border border-purple-500 text-neutral-100 focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleBulkMoveToNew}
-                        disabled={!newMoveTargetName.trim()}
-                        title="Create category + move selection"
-                        aria-label="Create category and move selection"
-                        className="shrink-0 w-7 h-7 rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-                          <path d="M3 7.5l3 3 5-7" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </button>
-                    </div>
-                    <p className="mt-1 text-[10px] text-neutral-500">
-                      Enter / ✓ to confirm · Esc to cancel
-                    </p>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setCreatingNewMoveTarget(true)}
-                    className="block w-full text-left px-3 py-2 text-xs text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
-                  >
-                    + New category…
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={handleBulkFlipPrivacy}
-            title={isPrivate ? 'Move selected to public bookmarks' : 'Move selected to private bookmarks (NIP-51 encrypted)'}
-            className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
-          >
-            {isPrivate ? 'Make public' : 'Make private'}
-          </button>
-
-          {confirmBulkRemove ? (
-            <div className="flex items-center gap-1 px-2" title={`Remove the selected bookmark${selectedIds.size === 1 ? '' : 's'} from ${activeCategory?.title || 'this category'}`}>
-              <span className="text-neutral-400">
-                Remove {selectedIds.size}?
+          {hasSelection ? (
+            <>
+              <span className="text-neutral-300 shrink-0">
+                {selectedIds.size} selected
               </span>
               <button
                 type="button"
-                onClick={handleBulkRemove}
-                className="px-1.5 text-red-400 hover:text-red-300 transition-colors"
+                onClick={() => allSelected ? clearSelection() : selectAll(currentIds)}
+                className="text-neutral-400 hover:text-neutral-200 transition-colors"
               >
-                Yes
+                {allSelected ? 'Deselect all' : `Select all (${currentIds.length})`}
               </button>
+
+              <div ref={moveMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setMoveMenuOpen(v => !v)}
+                  className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
+                >
+                  Move to…
+                </button>
+                {moveMenuOpen && (
+                  <div className="absolute top-full left-0 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-lg z-20 min-w-[240px] max-h-80 overflow-y-auto">
+                    {/* Save-as privacy pill mirrors the NoteActionsMenu Add
+                        submenu. Users can move selected bookmarks to a
+                        different category AND flip their privacy in one
+                        publish; defaults to the current view on open. */}
+                    <div className="px-3 py-2 border-b border-neutral-800 flex items-center justify-between gap-2">
+                      <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+                        Save as
+                      </span>
+                      <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setMoveTargetPrivacy('public')}
+                          className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                            moveTargetPrivacy === 'public'
+                              ? 'bg-purple-700 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          Public
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setMoveTargetPrivacy('private')}
+                          title="NIP-51 encrypted — visible only to you"
+                          className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                            moveTargetPrivacy === 'private'
+                              ? 'bg-purple-700 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                            <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                            <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                          </svg>
+                          Private
+                        </button>
+                      </div>
+                    </div>
+
+                    {moveTargets.map(cat => {
+                      const isSameCat = cat.id === activeCategoryId
+                      return (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => handleBulkMove(cat.id)}
+                          className="flex items-center justify-between w-full text-left px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-800"
+                        >
+                          <span className="truncate">{cat.title}</span>
+                          {isSameCat && (
+                            <span className="ml-2 shrink-0 text-[10px] text-neutral-500 italic">
+                              flip bucket
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+
+                    {moveTargets.length > 0 && <div className="border-t border-neutral-800" />}
+
+                    {creatingNewMoveTarget ? (
+                      <div className="px-2 py-2">
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            ref={newMoveInputRef}
+                            type="text"
+                            value={newMoveTargetName}
+                            onChange={e => setNewMoveTargetName(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') handleBulkMoveToNew()
+                              if (e.key === 'Escape') {
+                                setCreatingNewMoveTarget(false)
+                                setNewMoveTargetName('')
+                              }
+                            }}
+                            placeholder="New category name…"
+                            maxLength={60}
+                            className="flex-1 min-w-0 text-xs px-2 py-1.5 rounded bg-neutral-950 border border-purple-500 text-neutral-100 focus:outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleBulkMoveToNew}
+                            disabled={!newMoveTargetName.trim()}
+                            title="Create category + move selection"
+                            aria-label="Create category and move selection"
+                            className="shrink-0 w-7 h-7 rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+                              <path d="M3 7.5l3 3 5-7" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                          </button>
+                        </div>
+                        <p className="mt-1 text-[10px] text-neutral-500">
+                          Enter / ✓ to confirm · Esc to cancel
+                        </p>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setCreatingNewMoveTarget(true)}
+                        className="block w-full text-left px-3 py-2 text-xs text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800"
+                      >
+                        + New category…
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <button
                 type="button"
-                onClick={() => setConfirmBulkRemove(false)}
-                className="px-1.5 text-neutral-500 hover:text-neutral-300 transition-colors"
+                onClick={handleBulkFlipPrivacy}
+                title={isPrivate ? 'Move selected to public bookmarks' : 'Move selected to private bookmarks (NIP-51 encrypted)'}
+                className="px-3 py-1 rounded border border-neutral-700 text-neutral-200 hover:bg-neutral-800 transition-colors"
               >
-                No
+                {isPrivate ? 'Make public' : 'Make private'}
               </button>
-            </div>
+
+              {confirmBulkRemove ? (
+                <div className="flex items-center gap-1 px-2" title={`Remove the selected bookmark${selectedIds.size === 1 ? '' : 's'} from ${activeCategory?.title || 'this category'}`}>
+                  <span className="text-neutral-400">
+                    Remove {selectedIds.size}?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleBulkRemove}
+                    className="px-1.5 text-red-400 hover:text-red-300 transition-colors"
+                  >
+                    Yes
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmBulkRemove(false)}
+                    className="px-1.5 text-neutral-500 hover:text-neutral-300 transition-colors"
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmBulkRemove(true)}
+                  className="px-3 py-1 rounded border border-red-900/60 text-red-400 hover:bg-red-950/50 transition-colors"
+                >
+                  Remove
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="ml-auto text-neutral-400 hover:text-neutral-200"
+              >
+                Clear
+              </button>
+            </>
           ) : (
             <button
               type="button"
-              onClick={() => setConfirmBulkRemove(true)}
-              className="px-3 py-1 rounded border border-red-900/60 text-red-400 hover:bg-red-950/50 transition-colors"
+              onClick={() => selectAll(currentIds)}
+              className="text-neutral-400 hover:text-neutral-200 transition-colors"
             >
-              Remove
+              Select all ({currentIds.length})
             </button>
           )}
-
-          <button
-            type="button"
-            onClick={clearSelection}
-            className="ml-auto text-neutral-400 hover:text-neutral-200"
-          >
-            Clear
-          </button>
         </div>
       )}
 
