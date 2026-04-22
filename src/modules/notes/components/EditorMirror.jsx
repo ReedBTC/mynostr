@@ -30,7 +30,7 @@ export default function EditorMirror({ content, mentionNames }) {
     if (m.index > cursor) {
       parts.push(<span key={cursor} className="text-neutral-100">{content.slice(cursor, m.index)}</span>)
     }
-    parts.push(<span key={m.index} className="text-purple-400 font-medium">{m[0]}</span>)
+    parts.push(<span key={m.index} className="text-purple-400">{m[0]}</span>)
     cursor = m.index + m[0].length
   }
   if (cursor < content.length) {
