@@ -53,6 +53,7 @@ export default function NotesModule({ user, sessionUser }) {
     createDraft,
     updateDraftWith,
     deleteDraft,
+    deleteAllDrafts,
     clearDraft,
     publishOne,
     publishAll,
@@ -186,6 +187,7 @@ export default function NotesModule({ user, sessionUser }) {
               onSelectDraft={setCurrentDraftId}
               onCreateDraft={() => createDraft()}
               onDeleteDraft={deleteDraft}
+              onDeleteAllDrafts={deleteAllDrafts}
               onPublishAll={publishAll}
             />
           )}
@@ -212,6 +214,7 @@ export default function NotesModule({ user, sessionUser }) {
               onSelectDraft={setCurrentDraftId}
               onCreateDraft={() => createDraft()}
               onDeleteDraft={deleteDraft}
+              onDeleteAllDrafts={deleteAllDrafts}
               onPublishAll={publishAll}
             />
           )}

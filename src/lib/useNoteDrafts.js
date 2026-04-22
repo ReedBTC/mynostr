@@ -210,6 +210,13 @@ export function useNoteDrafts(pubkey) {
     publishAllCancelled.current = true
   }, [])
 
+  // Wipe every draft and seed a fresh empty one — "Clear all drafts" in the tray.
+  const deleteAllDrafts = useCallback(() => {
+    const fresh = makeDraft()
+    setDrafts([fresh])
+    setCurrentId(fresh.id)
+  }, [])
+
   // Remove all drafts whose last publish succeeded — cleanup after a batch.
   const clearPublished = useCallback(() => {
     setDrafts(prev => {
@@ -233,6 +240,7 @@ export function useNoteDrafts(pubkey) {
     updateDraft,
     updateDraftWith,
     deleteDraft,
+    deleteAllDrafts,
     clearDraft,
     publishOne,
     publishAll,
