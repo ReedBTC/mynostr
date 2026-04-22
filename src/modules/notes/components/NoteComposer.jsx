@@ -210,6 +210,75 @@ export default function NoteComposer({
     const autoTagTypes = new Set(['p', 't', 'e', 'a', 'zap', 'client'])
     setManualTags(tags.filter(t => !autoTagTypes.has(t[0])))
 
+    // Restore Reply-to and Quote fields so export→import (and import-by-ID)
+    // keep their threading. Relies on NIP-10 markers only — bare positional
+    // e-tags can't be distinguished from pure-quote e-tags.
+    const eTagsForReply = tags.filter(
+      t => t[0] === 'e' && typeof t[1] === 'string' && /^[0-9a-f]{64}$/i.test(t[1])
+    )
+    const aTagsForReply = tags.filter(t => t[0] === 'a' && typeof t[1] === 'string')
+    const markedEReply = eTagsForReply.find(t => t[3] === 'reply')
+    const markedERoot  = eTagsForReply.find(t => t[3] === 'root')
+    const markedAReply = aTagsForReply.find(t => t[3] === 'reply')
+    const markedARoot  = aTagsForReply.find(t => t[3] === 'root')
+
+    let replyInputValue = ''
+    let replyTargetIdOrCoord = ''
+    if (markedEReply || markedERoot) {
+      // Prefer the immediate parent ('reply') over the thread root.
+      const tag = markedEReply || markedERoot
+      const id = tag[1].toLowerCase()
+      const hint = typeof tag[2] === 'string' && tag[2].startsWith('wss://') ? tag[2] : ''
+      try {
+        replyInputValue = nip19.neventEncode({ id, relays: hint ? [hint] : [] })
+        replyTargetIdOrCoord = id
+      } catch {}
+    } else if (markedAReply || markedARoot) {
+      const tag = markedAReply || markedARoot
+      const [kindStr, pubkey, identifier = ''] = (tag[1] || '').split(':')
+      const kindNum = Number(kindStr)
+      const hint = typeof tag[2] === 'string' && tag[2].startsWith('wss://') ? tag[2] : ''
+      if (Number.isFinite(kindNum) && /^[0-9a-f]{64}$/i.test(pubkey || '')) {
+        try {
+          replyInputValue = nip19.naddrEncode({
+            kind: kindNum,
+            pubkey,
+            identifier,
+            relays: hint ? [hint] : [],
+          })
+          replyTargetIdOrCoord = `${kindNum}:${pubkey.toLowerCase()}:${identifier}`
+        } catch {}
+      }
+    }
+    setReplyToInput(replyInputValue)
+
+    // Quote — the composer appends the quote URI to content on publish, so
+    // the exported content still carries it. Pick the last note1/nevent1/naddr1
+    // URI that isn't the reply target. Content stays untouched; the composer's
+    // "already in content" guard prevents a duplicate append on re-publish.
+    let quoteInputValue = ''
+    const nostrUriRe = /nostr:((?:note1|nevent1|naddr1)[a-z0-9]+)/g
+    const uriMatches = [...(eventObj.content || '').matchAll(nostrUriRe)]
+    for (let i = uriMatches.length - 1; i >= 0; i--) {
+      const bech = uriMatches[i][1]
+      try {
+        const decoded = nip19.decode(bech)
+        let idOrCoord = ''
+        if (decoded.type === 'note') {
+          idOrCoord = decoded.data.toLowerCase()
+        } else if (decoded.type === 'nevent') {
+          idOrCoord = decoded.data.id.toLowerCase()
+        } else if (decoded.type === 'naddr') {
+          const { kind, pubkey, identifier = '' } = decoded.data
+          idOrCoord = `${kind}:${(pubkey || '').toLowerCase()}:${identifier}`
+        }
+        if (idOrCoord && idOrCoord === replyTargetIdOrCoord) continue
+        quoteInputValue = bech
+        break
+      } catch {}
+    }
+    setQuoteInput(quoteInputValue)
+
     if (allZaps.length > 0) setShowAdvanced(true)
   }, [user?.pubkey])
 
