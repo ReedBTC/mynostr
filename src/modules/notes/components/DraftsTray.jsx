@@ -11,7 +11,7 @@
  * "+ New" seeds an empty draft and focuses it. "Publish all" opens a
  * confirmation modal before iterating through every draft with text.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 function previewText(content) {
   const trimmed = (content || '').trim()
@@ -146,6 +146,8 @@ export default function DraftsTray({
   onCreateDraft,
   onDeleteDraft,
   onDeleteAllDrafts,
+  onImportDrafts,
+  onExportAllDrafts,
   onPublishAll,
   isMobileOpen = false,
   onMobileClose,
@@ -153,7 +155,12 @@ export default function DraftsTray({
 }) {
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false)
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
+  const [importStatus, setImportStatus] = useState(null)
+  const [exportStatus, setExportStatus] = useState(null)
+  const [importing, setImporting] = useState(false)
+  const importInputRef = useRef(null)
   const publishable = drafts.filter(d => d.publishable?.content?.trim() && d.status !== 'published')
+  const exportable = drafts.filter(d => d.publishable?.content?.trim())
   const anyPublishing = drafts.some(d => d.status === 'publishing')
   // Nothing to clear when the only draft is a fresh empty one.
   const canClearAll = drafts.length > 1 || Boolean(drafts[0]?.snapshot?.content?.trim())
@@ -175,6 +182,28 @@ export default function DraftsTray({
     setConfirmClearOpen(false)
     onDeleteAllDrafts?.()
     if (isMobile && onMobileClose) onMobileClose()
+  }
+
+  async function handleImportFiles(files) {
+    if (!onImportDrafts || files.length === 0) return
+    setImportStatus(null)
+    setImporting(true)
+    try {
+      const r = await onImportDrafts(files)
+      setImportStatus(r)
+      if (r.errors.length === 0 && r.imported > 0) {
+        setTimeout(() => setImportStatus(null), 3000)
+      }
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  function handleExportAll() {
+    if (!onExportAllDrafts || exportable.length === 0) return
+    const r = onExportAllDrafts()
+    setExportStatus(r)
+    setTimeout(() => setExportStatus(null), 3000)
   }
 
   const list = (
@@ -208,6 +237,39 @@ export default function DraftsTray({
       </div>
 
       <div className="border-t border-neutral-800 p-2 space-y-1.5">
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,application/json"
+          multiple
+          className="hidden"
+          onChange={async (e) => {
+            const files = [...(e.target.files || [])]
+            e.target.value = ''
+            await handleImportFiles(files)
+          }}
+        />
+        <button
+          onClick={() => importInputRef.current?.click()}
+          disabled={importing || anyPublishing}
+          className="w-full text-xs py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 disabled:text-neutral-600 disabled:pointer-events-none transition-colors"
+        >
+          {importing ? 'Importing…' : 'Multi-JSON Import'}
+        </button>
+        <button
+          onClick={handleExportAll}
+          disabled={exportable.length === 0 || anyPublishing}
+          className="w-full text-xs py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 disabled:text-neutral-600 disabled:pointer-events-none transition-colors"
+        >
+          Export All Drafts{exportable.length > 0 ? ` (${exportable.length})` : ''}
+        </button>
+        <button
+          onClick={requestClearAll}
+          disabled={!canClearAll || anyPublishing}
+          className="w-full text-xs py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-red-400 hover:border-red-900 disabled:text-neutral-600 disabled:pointer-events-none transition-colors"
+        >
+          Clear all drafts
+        </button>
         <button
           onClick={requestPublishAll}
           disabled={publishable.length === 0 || anyPublishing}
@@ -215,13 +277,31 @@ export default function DraftsTray({
         >
           {anyPublishing ? 'Publishing…' : `Publish all (${publishable.length})`}
         </button>
-        <button
-          onClick={requestClearAll}
-          disabled={!canClearAll || anyPublishing}
-          className="w-full text-[11px] py-1 text-neutral-500 hover:text-red-400 disabled:text-neutral-700 disabled:pointer-events-none transition-colors"
-        >
-          Clear all drafts
-        </button>
+        {importStatus && (importStatus.imported > 0 || importStatus.errors.length > 0) && (
+          <div className="text-[10px] text-neutral-400 pt-1">
+            {importStatus.imported > 0 && (
+              <p className="text-green-500">Imported {importStatus.imported} draft{importStatus.imported === 1 ? '' : 's'}</p>
+            )}
+            {importStatus.errors.length > 0 && (
+              <details className="mt-0.5">
+                <summary className="text-red-400 cursor-pointer">
+                  {importStatus.errors.length} file{importStatus.errors.length === 1 ? '' : 's'} skipped
+                </summary>
+                <ul className="mt-1 space-y-0.5 text-red-300">
+                  {importStatus.errors.map((err, i) => (
+                    <li key={i} className="truncate">{err}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+        {exportStatus && exportStatus.exported > 0 && (
+          <p className="text-[10px] text-green-500 pt-1">
+            Exported {exportStatus.exported} draft{exportStatus.exported === 1 ? '' : 's'}
+            {exportStatus.skipped > 0 ? ` (${exportStatus.skipped} skipped — empty)` : ''}
+          </p>
+        )}
       </div>
     </>
   )

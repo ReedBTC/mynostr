@@ -27,6 +27,8 @@ import { NotesNavigationProvider } from './notesNavigationContext.jsx'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import { useNoteDrafts } from '../../lib/useNoteDrafts.js'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
+import { buildDraftSnapshotFromEvent } from '../../lib/draftFromEvent.js'
+import { validateKind1Event } from '../../lib/noteParser.js'
 
 export default function NotesModule({ user, sessionUser }) {
   const { isOwner } = useOwnerContext()
@@ -93,6 +95,74 @@ export default function NotesModule({ user, sessionUser }) {
     if (location.state?.initialMode) setNotesInitialMode(location.state.initialMode)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.state, location.pathname, navigate])
+
+  // Multi-JSON import — each file becomes a new draft. Size-capped per file
+  // to match the single-file import path. Returns a summary so the tray can
+  // surface per-file errors without blocking the successful ones.
+  const handleImportDrafts = useCallback(async (files) => {
+    const result = { imported: 0, errors: [] }
+    for (const file of files) {
+      const name = file.name || 'file'
+      if (!name.endsWith('.json') && file.type !== 'application/json') {
+        result.errors.push(`${name}: not a .json file`)
+        continue
+      }
+      if (file.size > 1_000_000) {
+        result.errors.push(`${name}: over 1 MB`)
+        continue
+      }
+      try {
+        const text = await file.text()
+        const json = JSON.parse(text)
+        const { valid, errors, event } = validateKind1Event(json)
+        if (!valid) {
+          result.errors.push(`${name}: ${errors.join('; ')}`)
+          continue
+        }
+        const snapshot = await buildDraftSnapshotFromEvent(event, sessionUser?.pubkey)
+        // Seed publishable directly from the imported event so Export-all
+        // and Publish-all work immediately, before the user opens the draft.
+        createDraft({
+          snapshot,
+          publishable: { content: event.content || '', tags: event.tags || [] },
+        })
+        result.imported++
+      } catch (e) {
+        result.errors.push(`${name}: ${e.message || 'invalid JSON'}`)
+      }
+    }
+    return result
+  }, [createDraft, sessionUser?.pubkey])
+
+  // Export every draft with a valid publishable payload as its own JSON file.
+  // Staggered downloads give the browser's "allow multiple downloads" prompt
+  // a single moment to fire rather than one per file.
+  const handleExportAllDrafts = useCallback(() => {
+    const eligible = drafts.filter(d => d.publishable?.content?.trim())
+    const result = { exported: 0, skipped: drafts.length - eligible.length }
+    eligible.forEach((d, idx) => {
+      const { content, tags } = d.publishable
+      const event = {
+        kind: 1,
+        pubkey: sessionUser?.pubkey || '',
+        created_at: Math.floor(Date.now() / 1000),
+        content,
+        tags,
+      }
+      const blob = new Blob([JSON.stringify(event, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const preview = (content.trim().split('\n')[0] || '')
+        .slice(0, 24)
+        .replace(/[^a-zA-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `note-${String(idx + 1).padStart(2, '0')}${preview ? `-${preview}` : ''}.json`
+      setTimeout(() => { a.click(); URL.revokeObjectURL(url) }, idx * 150)
+      result.exported++
+    })
+    return result
+  }, [drafts, sessionUser?.pubkey])
 
   const openAuthorInSearch = useCallback((author) => {
     if (!isOwner || !author?.pubkey) return
@@ -188,6 +258,8 @@ export default function NotesModule({ user, sessionUser }) {
               onCreateDraft={() => createDraft()}
               onDeleteDraft={deleteDraft}
               onDeleteAllDrafts={deleteAllDrafts}
+              onImportDrafts={handleImportDrafts}
+              onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={publishAll}
             />
           )}
@@ -215,6 +287,8 @@ export default function NotesModule({ user, sessionUser }) {
               onCreateDraft={() => createDraft()}
               onDeleteDraft={deleteDraft}
               onDeleteAllDrafts={deleteAllDrafts}
+              onImportDrafts={handleImportDrafts}
+              onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={publishAll}
             />
           )}
