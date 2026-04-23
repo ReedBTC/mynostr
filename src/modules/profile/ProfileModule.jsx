@@ -78,6 +78,9 @@ export default function ProfileModule({ user }) {
   // occasionally returns early (missing weeks), so the card needs a way
   // to refetch without a full page reload.
   const [cadenceNonce, setCadenceNonce] = useState(0)
+  // Activity card (stats + zap aggregates) shares a nonce so its refresh
+  // button can force a re-run of the same effect without touching cadence.
+  const [activityNonce, setActivityNonce] = useState(0)
 
   // When the preview target changes, seed the per-user state from cache
   // immediately — otherwise we'd show the previous user's numbers for a
@@ -97,11 +100,17 @@ export default function ProfileModule({ user }) {
     setLoading(true)
     setZapLoading(true)
     ;(async () => {
+      const startedAt = Date.now()
       const [s, c, b] = await Promise.all([
         fetchAggregateUserStats(viewingPubkey),
         fetchUserContentCounts(viewingPubkey),
         fetchUserBookmarkCounts(viewingPubkey),
       ])
+      if (cancelled) return
+      // Minimum 500ms loading so the refresh button has perceptible
+      // feedback even when Primal returned fast (matches cadence pattern).
+      const elapsed = Date.now() - startedAt
+      if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed))
       if (cancelled) return
       if (s) { STATS_CACHE.set(viewingPubkey, s);  setStats(s) }
       if (c) { COUNTS_CACHE.set(viewingPubkey, c); setContentCounts(c) }
@@ -112,17 +121,23 @@ export default function ProfileModule({ user }) {
     // zap events per direction) and we don't want them blocking the
     // faster stats/counts from rendering.
     ;(async () => {
+      const startedAt = Date.now()
       const z = await fetchUserZapAggregates(viewingPubkey).catch(() => null)
+      if (cancelled) return
+      const elapsed = Date.now() - startedAt
+      if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed))
       if (cancelled) return
       // Guard: an all-zero response almost always means Primal dedupe'd a
       // concurrent REQ and gave us empty EOSE. Never let that overwrite a
-      // previously good result (either in memory or in cache).
-      const hasData = z && z.receivedSample > 0
+      // previously good result — and never cache a truncated fetch, since
+      // a later visit would pin bad data in place.
+      const hasData = z && z.receivedSample > 0 && !z.truncated
       if (hasData) { ZAP_AGGREGATES_CACHE.set(viewingPubkey, z); setZapAggregates(z) }
+      else if (z && z.receivedSample > 0) { setZapAggregates(z) } // show but don't cache
       setZapLoading(false)
     })()
     return () => { cancelled = true }
-  }, [viewingPubkey])
+  }, [viewingPubkey, activityNonce])
 
   // Posting cadence — separate effect so the refresh button can force a
   // refetch by bumping cadenceNonce without also re-running stats/zaps.
@@ -132,16 +147,28 @@ export default function ProfileModule({ user }) {
     let cancelled = false
     setCadenceLoading(true)
     ;(async () => {
+      const startedAt = Date.now()
       const c = await fetchAuthorPostingCadence(viewingPubkey).catch(() => null)
       if (cancelled) return
+      // Keep the skeleton visible for at least 500ms so the refresh button
+      // has perceptible feedback even when Primal served a deduped/cached
+      // response and returned in a few dozen ms. Without this the chart
+      // just re-renders the same pixels and looks like nothing happened.
+      const elapsed = Date.now() - startedAt
+      if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed))
+      if (cancelled) return
       if (c && c.buckets && c.buckets.size > 0) {
-        CADENCE_CACHE.set(viewingPubkey, c)
+        // Show it either way so the user sees something, but only persist to
+        // cache when the fetch didn't bail mid-stream — otherwise a truncated
+        // run would stick around and mask real activity on later visits.
+        if (!c.truncated) CADENCE_CACHE.set(viewingPubkey, c)
         setCadence(c)
       } else if (c) {
         // Zero posts in window is a valid result, but only save it if we
         // didn't already have a better cached value (same dedup-safety
-        // philosophy as the zap aggregates guard above).
-        if (!CADENCE_CACHE.has(viewingPubkey)) {
+        // philosophy as the zap aggregates guard above) AND the fetch
+        // actually completed.
+        if (!c.truncated && !CADENCE_CACHE.has(viewingPubkey)) {
           CADENCE_CACHE.set(viewingPubkey, c)
           setCadence(c)
         }
@@ -151,14 +178,28 @@ export default function ProfileModule({ user }) {
     return () => { cancelled = true }
   }, [viewingPubkey, cadenceNonce])
 
+  const refreshActivity = useCallback(() => {
+    if (!viewingPubkey) return
+    // Drop the cached values for everything the Activity card consumes and
+    // flip loading flags synchronously so the card's skeleton renders on the
+    // same tick as the click — same pattern as refreshCadence.
+    STATS_CACHE.delete(viewingPubkey)
+    ZAP_AGGREGATES_CACHE.delete(viewingPubkey)
+    setStats(null)
+    setZapAggregates(null)
+    setLoading(true)
+    setZapLoading(true)
+    setActivityNonce(n => n + 1)
+  }, [viewingPubkey])
+
   const refreshCadence = useCallback(() => {
     if (!viewingPubkey) return
-    // Drop the cached value so a partial result can't re-show on a later
-    // visit, and flip loading on *synchronously* — the effect's own
-    // setCadenceLoading(true) only runs post-render, which caused a
-    // one-frame "not loading" flash where feedback was absent. Keep the
-    // old cadence visible but dimmed so the chart doesn't flash empty.
+    // Drop the cached value and clear the in-memory chart so the card routes
+    // through the skeleton branch (same visual as first open). Flip loading
+    // on synchronously — the effect's own setCadenceLoading(true) only runs
+    // post-render, which caused a one-frame "not loading" flash otherwise.
     CADENCE_CACHE.delete(viewingPubkey)
+    setCadence(null)
     setCadenceLoading(true)
     setCadenceNonce(n => n + 1)
   }, [viewingPubkey])
@@ -266,6 +307,7 @@ export default function ProfileModule({ user }) {
       bookmarkCounts={bookmarkCounts}
       zapAggregates={zapAggregates}
       zapLoading={zapLoading}
+      onRefreshActivity={refreshActivity}
       cadence={cadence}
       cadenceLoading={cadenceLoading}
       onRefreshCadence={refreshCadence}
@@ -287,7 +329,7 @@ export default function ProfileModule({ user }) {
   return view
 }
 
-function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, cadence, cadenceLoading, onRefreshCadence, loading }) {
+function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading }) {
   const profile = user?.profile || {}
   const displayName = profile.displayName || profile.name || 'Anonymous'
   const handle = profile.nip05 || (profile.name ? `@${profile.name}` : null)
@@ -469,6 +511,7 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
           zapAggregates={zapAggregates}
           loading={loading}
           zapLoading={zapLoading}
+          onRefresh={onRefreshActivity}
         />
 
         <PostingCadenceCard

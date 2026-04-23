@@ -16,6 +16,12 @@
 
 const PRIMAL_WS_URL = 'wss://cache1.primal.net/v1'
 
+// Small spacing between retry attempts so back-to-back traffic at the same
+// WS doesn't hammer Primal when it's rate-limiting or recovering from a
+// transient fault.
+const RETRY_DELAY_MS = 250
+const retryDelay = () => new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+
 // Singleton WS state
 let ws = null
 let connPromise = null
@@ -524,9 +530,16 @@ export async function fetchUserStats(pubkey) {
     }
   }
 
-  try { absorb(await query('user_profile', { pubkey }, 6000)) } catch {}
+  // Retry once on the primary query — a single timeout used to leave
+  // fields like total_satszapped and content_zap_count empty, which showed
+  // up as "2 zaps received" for active accounts when Primal's index actually
+  // had the data but the one attempt just happened to drop.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { absorb(await query('user_profile', { pubkey }, 12000)); break } catch {}
+    if (attempt === 0) await retryDelay()
+  }
   if (merged.followers_count == null) {
-    try { absorb(await query('user_infos', { pubkeys: [pubkey] }, 6000)) } catch {}
+    try { absorb(await query('user_infos', { pubkeys: [pubkey] }, 12000)) } catch {}
   }
 
   return Object.keys(merged).length > 0 ? merged : null
@@ -556,7 +569,19 @@ const KIND_ZAP_EVENT = 10000129
 export async function fetchUserZapAggregates(pubkey, { limit = 1000 } = {}) {
   if (!pubkey) return null
 
-  const events = await query('user_zaps_by_satszapped', { receiver: pubkey, limit }, 8000).catch(() => [])
+  // Retry once on timeout/error. A flakey Primal response used to silently
+  // zero out the whole card; with retries + a 12s timeout we recover from the
+  // common transient cases and surface genuine truncation via the flag.
+  let events = null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      events = await query('user_zaps_by_satszapped', { receiver: pubkey, limit }, 12000)
+      break
+    } catch {}
+    if (attempt === 0) await retryDelay()
+  }
+  const truncated = events == null
+  if (events == null) events = []
 
   let total = 0
   let sample = 0
@@ -574,6 +599,9 @@ export async function fetchUserZapAggregates(pubkey, { limit = 1000 } = {}) {
     satsReceived:    total,
     receivedSample:  sample,
     receivedLimited: sample >= limit,
+    // True when both query attempts failed — caller should avoid caching this
+    // as a definitive result.
+    truncated,
   }
 }
 
@@ -605,13 +633,23 @@ export async function fetchAuthorPostingCadence(pubkey, { weeks = 21, maxPages =
     let until = null
     let pages = 0
     let exhausted = false
+    let truncated = false
 
     for (let page = 0; page < maxPages; page++) {
       const params = { pubkey, notes: mode, limit: pageLimit }
       if (until) params.until = until
 
-      let batch = []
-      try { batch = await query('feed', params, 6000) } catch { break }
+      // Single retry on timeout/error. A flakey single page used to silently
+      // break out of the loop and truncate all subsequent history, which is
+      // what made the card oscillate between "3 notes/day" and "<1 note/day"
+      // on reload.
+      let batch = null
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try { batch = await query('feed', params, 12000); break } catch {}
+        if (attempt === 0) await retryDelay()
+      }
+      if (batch == null) { truncated = true; break }
+
       const kind1s = batch.filter(e => e.kind === 1)
       if (kind1s.length === 0) { exhausted = true; break }
       pages++
@@ -627,7 +665,7 @@ export async function fetchAuthorPostingCadence(pubkey, { weeks = 21, maxPages =
       until = oldestInPage - 1
     }
 
-    return { events, pages, exhausted }
+    return { events, pages, exhausted, truncated }
   }
 
   const [authored, replies] = await Promise.all([
@@ -653,13 +691,18 @@ export async function fetchAuthorPostingCadence(pubkey, { weeks = 21, maxPages =
   }
 
   const capped = (!authored.exhausted && authored.pages >= maxPages) ||
-                 (!replies.exhausted  && replies.pages  >= maxPages)
+                 (!replies.exhausted  && replies.pages  >= maxPages) ||
+                 authored.truncated || replies.truncated
 
   const result = {
     buckets, total, oldestTs, newestTs,
     windowWeeks:   weeks,
     windowSinceTs: cutoff,
     capped,
+    // True when a page gave up after retries — caller should avoid caching
+    // this as a definitive result because a future refetch will likely do
+    // better.
+    truncated: authored.truncated || replies.truncated,
   }
 
   // Dev-only probe so the console has a cheap way to inspect what came back.

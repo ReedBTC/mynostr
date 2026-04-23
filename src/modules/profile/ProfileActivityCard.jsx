@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { formatCount, formatSats } from '../../lib/utils.js'
+import InfoDot from './InfoDot.jsx'
 
 /**
  * ProfileActivityCard — zap + engagement summary for the viewed user.
@@ -13,7 +15,7 @@ import { formatCount, formatSats } from '../../lib/utils.js'
  * Layout: header + "since" pill → mirrored balance sheet (zapped/earned)
  * → zap count bars → media/relays tiles.
  */
-export default function ProfileActivityCard({ stats, zapAggregates, loading, zapLoading }) {
+export default function ProfileActivityCard({ stats, zapAggregates, loading, zapLoading, onRefresh }) {
   const joined       = stats?.time_joined
   const satsSent     = stats?.total_satszapped
   const zapsSent     = stats?.total_zap_count
@@ -23,19 +25,86 @@ export default function ProfileActivityCard({ stats, zapAggregates, loading, zap
 
   const maxZaps = Math.max(zapsSent || 0, zapsReceived || 0)
 
-  return (
-    <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
+  // Instant visual feedback that doesn't depend on parent state propagation —
+  // mirrors the pattern in PostingCadenceCard so clicks always register
+  // visibly even if the parent's loading flag arrives slightly late. Cleared
+  // as soon as the parent's loading/zapLoading flips true; a 1.5s safety
+  // timer catches cache-hit paths where parent never signals loading.
+  const [forceSkeleton, setForceSkeleton] = useState(false)
+  useEffect(() => {
+    if (!forceSkeleton) return
+    if (loading || zapLoading) {
+      setForceSkeleton(false)
+      return
+    }
+    const t = setTimeout(() => setForceSkeleton(false), 1500)
+    return () => clearTimeout(t)
+  }, [forceSkeleton, loading, zapLoading])
+  function handleRefreshClick() {
+    if (loading || zapLoading) return
+    setForceSkeleton(true)
+    onRefresh?.()
+  }
 
-      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
-        <h2 className="text-sm font-semibold text-neutral-200">Activity</h2>
-        <JoinedBadge ts={joined} loading={loading && joined == null} />
+  const busy = loading || zapLoading || forceSkeleton
+
+  return (
+    <div className={`border rounded-lg bg-neutral-950 overflow-hidden transition-colors ${
+      forceSkeleton ? 'border-purple-600/60' : 'border-neutral-800'
+    }`}>
+
+      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 gap-3">
+        <h2 className="text-sm font-semibold text-neutral-200 inline-flex items-center gap-1.5">
+          Activity
+          <InfoDot align="left">
+            <p>
+              Zap counts and sats totals come from Primal's indexer. The
+              indexed count can lag real activity, so counts may be lower
+              than reality until Primal catches up. Hit refresh to retry.
+            </p>
+          </InfoDot>
+        </h2>
+        <div className="flex items-center gap-2 shrink-0">
+          {busy ? (
+            <span className="text-[11px] text-purple-300 inline-flex items-center gap-1.5 whitespace-nowrap">
+              <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
+              Refreshing…
+            </span>
+          ) : (
+            <JoinedBadge ts={joined} loading={false} />
+          )}
+          {onRefresh && (
+            <button
+              onClick={handleRefreshClick}
+              disabled={busy}
+              aria-label="Refresh activity"
+              title="Refresh — Primal's index can lag; retry to pull fresh totals"
+              className={`${busy ? 'text-purple-300' : 'text-neutral-500 hover:text-neutral-200'} disabled:cursor-not-allowed transition-colors p-1 -m-1`}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={busy ? 'animate-spin' : ''}
+              >
+                <path d="M21 12a9 9 0 1 1-3-6.7" />
+                <polyline points="21 3 21 9 15 9" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       <BalanceSheet
         satsSent={satsSent}
         satsReceived={satsReceived}
-        loading={loading && satsSent == null}
-        zapLoading={zapLoading}
+        loading={(loading && satsSent == null) || forceSkeleton}
+        zapLoading={zapLoading || forceSkeleton}
       />
 
       <div className="px-4 py-4 border-t border-neutral-800 space-y-3">
@@ -44,14 +113,14 @@ export default function ProfileActivityCard({ stats, zapAggregates, loading, zap
           count={zapsSent}
           max={maxZaps}
           colorClass="bg-amber-500"
-          loading={loading && zapsSent == null}
+          loading={(loading && zapsSent == null) || forceSkeleton}
         />
         <ZapBar
           label="Zaps received"
           count={zapsReceived}
           max={maxZaps}
           colorClass="bg-emerald-500"
-          loading={loading && zapsReceived == null}
+          loading={(loading && zapsReceived == null) || forceSkeleton}
         />
       </div>
     </div>

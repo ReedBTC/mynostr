@@ -53,6 +53,21 @@ const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenSto
 const STORAGE_KEY_PREFIX = 'mynostr_note_bookmarks:'
 const PRIMARY_CATEGORY_ID = '_primary'
 
+// Defense-in-depth cap on relay-sourced bookmark content before JSON.parse.
+// Our own bookmark blobs are well under 100 KB even for heavy users; a
+// multi-MB string on kind 10003/30001/30003 from a malicious relay in the
+// user's pool could burn memory and stall the hook. 2 MB is ~20× the
+// realistic ceiling — anything larger is treated as empty.
+const MAX_CONTENT_BYTES = 2_000_000
+function safeParseContentArray(content) {
+  if (typeof content !== 'string' || !content) return null
+  if (content.length > MAX_CONTENT_BYTES) return null
+  try {
+    const parsed = JSON.parse(content)
+    return Array.isArray(parsed) ? parsed : null
+  } catch { return null }
+}
+
 function storageKeyFor(pubkey) {
   return pubkey ? `${STORAGE_KEY_PREFIX}${pubkey}` : null
 }
@@ -168,18 +183,16 @@ export function parseEventToCategory(event) {
   const byId = new Map()
   const otherContentItems = []
   if (!encryptedContent) {
-    try {
-      const parsed = JSON.parse(event.content || '[]')
-      if (Array.isArray(parsed)) {
-        for (const it of parsed) {
-          if (it?.id && /^[0-9a-f]{64}$/i.test(it.id)) {
-            byId.set(it.id.toLowerCase(), { id: it.id.toLowerCase(), addedAt: Number(it.addedAt) || 0 })
-          } else if (it && typeof it === 'object') {
-            otherContentItems.push(it)
-          }
+    const parsed = safeParseContentArray(event.content || '[]')
+    if (parsed) {
+      for (const it of parsed) {
+        if (it?.id && /^[0-9a-f]{64}$/i.test(it.id)) {
+          byId.set(it.id.toLowerCase(), { id: it.id.toLowerCase(), addedAt: Number(it.addedAt) || 0 })
+        } else if (it && typeof it === 'object') {
+          otherContentItems.push(it)
         }
       }
-    } catch {}
+    }
   }
   // Same for tags: preserve every non-managed tag (anything that isn't a
   // kind-1 `e` reference or the d/title we rewrite ourselves) so a-tag
@@ -481,11 +494,7 @@ export function useNoteBookmarks(user) {
           contentOverride = freshContent
         } else {
           // Pure-public path (current behavior).
-          let parsed = null
-          try {
-            const p = JSON.parse(freshContent || '[]')
-            if (Array.isArray(p)) parsed = p
-          } catch {}
+          const parsed = safeParseContentArray(freshContent || '[]')
           if (parsed) {
             const longformItems = parsed.filter(it => it && typeof it === 'object' && it.aTag)
             const mergedContent = [

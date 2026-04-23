@@ -73,6 +73,9 @@ export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick 
   const [bookmarkMenuOpen, setBookmarkMenuOpen] = useState(false)
   const [creatingNewTarget, setCreatingNewTarget] = useState(false)
   const [newTargetName, setNewTargetName] = useState('')
+  // Destination privacy for the dropdown — resets to 'public' each time the
+  // menu opens so a prior 'private' pick doesn't silently persist.
+  const [targetPrivacy, setTargetPrivacy] = useState('public')
   const bookmarkMenuRef = useRef(null)
   const newTargetInputRef = useRef(null)
 
@@ -114,23 +117,29 @@ export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick 
   }, [bookmarkMenuOpen])
 
   useEffect(() => {
+    if (!bookmarkMenuOpen) setTargetPrivacy('public')
+  }, [bookmarkMenuOpen])
+
+  useEffect(() => {
     if (creatingNewTarget) newTargetInputRef.current?.focus()
   }, [creatingNewTarget])
 
   const handleBulkBookmarkTo = useCallback(async (targetCategoryId) => {
     if (selectedIds.size === 0) return
     const ids = [...selectedIds]
+    const privacy = targetPrivacy
     clearSelection()
-    await bulkMove(targetCategoryId, ids)
-  }, [selectedIds, bulkMove, clearSelection])
+    await bulkMove(targetCategoryId, ids, { privacy })
+  }, [selectedIds, targetPrivacy, bulkMove, clearSelection])
 
   const handleBulkBookmarkToNew = useCallback(async () => {
     const name = newTargetName.trim()
     if (!name || selectedIds.size === 0) return
     const ids = [...selectedIds]
+    const privacy = targetPrivacy
     clearSelection()
-    await bulkMoveToNew(name, ids)
-  }, [newTargetName, selectedIds, bulkMoveToNew, clearSelection])
+    await bulkMoveToNew(name, ids, { privacy })
+  }, [newTargetName, selectedIds, targetPrivacy, bulkMoveToNew, clearSelection])
 
   // Feed key invalidates the prefetch whenever the active id set shifts.
   const feedKey = useMemo(() => {
@@ -242,7 +251,42 @@ export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick 
               Bookmark to…
             </button>
             {bookmarkMenuOpen && (
-              <div className="absolute top-full left-0 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-lg z-20 min-w-[200px] max-h-72 overflow-y-auto">
+              <div className="absolute top-full left-0 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-lg z-20 min-w-[220px] max-h-80 overflow-y-auto">
+                <div className="px-3 py-2 border-b border-neutral-800 flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+                    Save as
+                  </span>
+                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTargetPrivacy('public')}
+                      className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                        targetPrivacy === 'public'
+                          ? 'bg-purple-700 text-white'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      Public
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTargetPrivacy('private')}
+                      title="NIP-51 encrypted — visible only to you"
+                      className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                        targetPrivacy === 'private'
+                          ? 'bg-purple-700 text-white'
+                          : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                        <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                        <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                      </svg>
+                      Private
+                    </button>
+                  </div>
+                </div>
+
                 {ownCategories.map(cat => (
                   <button
                     key={cat.id}

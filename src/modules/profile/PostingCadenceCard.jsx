@@ -13,6 +13,8 @@
  *     total, oldestTs, newestTs, capped
  *   }
  */
+import { useEffect, useState } from 'react'
+import InfoDot from './InfoDot.jsx'
 
 function dateKey(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -57,6 +59,31 @@ export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
   const total    = cadence?.total  || 0
   const maxCount = weeks.reduce((m, w) => Math.max(m, w.count), 0)
 
+  // Instant click feedback that doesn't depend on parent state propagation —
+  // if the parent's loading flag is slow to arrive, we still drop straight
+  // into skeleton mode. Also gives a purple ring flash so the click is
+  // visually undeniable. Handed off to the parent's `loading` prop as soon
+  // as that flips true (no fixed duration); a 1.5s safety timer catches
+  // cache-hit paths where parent never signals loading.
+  const [forceSkeleton, setForceSkeleton] = useState(false)
+  useEffect(() => {
+    if (!forceSkeleton) return
+    if (loading) {
+      setForceSkeleton(false)
+      return
+    }
+    const t = setTimeout(() => setForceSkeleton(false), 1500)
+    return () => clearTimeout(t)
+  }, [forceSkeleton, loading])
+  function handleRefreshClick() {
+    if (loading) return
+    setForceSkeleton(true)
+    onRefresh?.()
+  }
+
+  const showSkeleton = (loading && !cadence) || forceSkeleton
+  const showSpinnerText = loading || forceSkeleton
+
   // Month boundaries: mark week columns where the month flips vs. prior week.
   const monthBoundaries = []
   let lastMonth = -1
@@ -69,15 +96,26 @@ export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
   })
 
   return (
-    <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
+    <div className={`border rounded-lg bg-neutral-950 overflow-hidden transition-colors ${
+      forceSkeleton ? 'border-purple-600/60' : 'border-neutral-800'
+    }`}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 gap-3">
         <div className="flex items-baseline gap-2 min-w-0">
-          <h2 className="text-sm font-semibold text-neutral-200">Posting cadence</h2>
+          <h2 className="text-sm font-semibold text-neutral-200 inline-flex items-center gap-1.5">
+            Posting cadence
+            <InfoDot align="left">
+              <p>
+                Kind 1 notes are paginated from Primal's cache and bucketed by
+                week. Primal can return partial history on busy accounts, and
+                new notes may not appear immediately — hit refresh to retry.
+              </p>
+            </InfoDot>
+          </h2>
           <span className="text-[10px] text-neutral-500 whitespace-nowrap">notes per week · past {windowWeeks} weeks</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className="text-[11px] whitespace-nowrap">
-            {loading ? (
+            {showSpinnerText ? (
               <span className="text-purple-300 inline-flex items-center gap-1.5">
                 <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
                 Refreshing…
@@ -97,11 +135,11 @@ export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
           </span>
           {onRefresh && (
             <button
-              onClick={onRefresh}
-              disabled={loading}
+              onClick={handleRefreshClick}
+              disabled={loading || forceSkeleton}
               aria-label="Refresh posting cadence"
               title="Refresh — Primal's paginated fetch sometimes returns partial history"
-              className={`${loading ? 'text-purple-300' : 'text-neutral-500 hover:text-neutral-200'} disabled:cursor-not-allowed transition-colors p-1 -m-1`}
+              className={`${showSpinnerText ? 'text-purple-300' : 'text-neutral-500 hover:text-neutral-200'} disabled:cursor-not-allowed transition-colors p-1 -m-1`}
             >
               <svg
                 width="14"
@@ -112,7 +150,7 @@ export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
                 strokeWidth="2"
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className={loading ? 'animate-spin' : ''}
+                className={showSpinnerText ? 'animate-spin' : ''}
               >
                 <path d="M21 12a9 9 0 1 1-3-6.7" />
                 <polyline points="21 3 21 9 15 9" />
@@ -122,8 +160,8 @@ export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
         </div>
       </div>
 
-      <div className={`px-4 py-4 relative transition-opacity ${loading && cadence ? 'opacity-40' : ''}`}>
-        {loading && !cadence ? (
+      <div className="px-4 py-4 relative">
+        {showSkeleton ? (
           <ChartSkeleton />
         ) : (
           <Chart weeks={weeks} maxCount={maxCount} monthBoundaries={monthBoundaries} />
@@ -237,13 +275,16 @@ function Chart({ weeks, maxCount, monthBoundaries }) {
 }
 
 function ChartSkeleton() {
+  // Bars use a tinted purple so the pulse is visibly distinct from the card
+  // background — the previous bg-neutral-900 on bg-neutral-950 card was
+  // nearly invisible, which made the refresh look like a no-op.
   return (
     <div>
       <div className="h-28 flex items-end gap-[2px]">
         {Array.from({ length: 20 }).map((_, i) => (
           <div
             key={i}
-            className="flex-1 bg-neutral-900 rounded-sm animate-pulse"
+            className="flex-1 bg-purple-950/70 rounded-sm animate-pulse"
             style={{ height: `${30 + (i * 37) % 60}%` }}
           />
         ))}

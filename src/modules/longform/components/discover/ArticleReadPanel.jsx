@@ -52,6 +52,13 @@ export default function ArticleReadPanel({
   const [newListInput,   setNewListInput]   = useState(false)
   const [newListName,    setNewListName]    = useState('')
   const [menuOpen,       setMenuOpen]       = useState(false)
+  // Destination privacy pill — defaults to the article's current bucket (or
+  // the active view for new saves) so the user sees their "same-bucket" intent
+  // on open. Reset to that default whenever the dropdown re-opens so a prior
+  // flip doesn't silently carry across articles.
+  const [targetPrivacy,  setTargetPrivacy]  = useState(
+    article._privacy || defaultPrivacy,
+  )
   const menuRef = useRef(null)
   const listMenuRef = useRef(null)
 
@@ -94,6 +101,13 @@ export default function ArticleReadPanel({
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [listMenuOpen])
+
+  // Reset the destination-privacy pill to the article's current bucket (or
+  // active view) every time the dropdown closes, so reopening on a different
+  // article never inherits a stale flip.
+  useEffect(() => {
+    if (!listMenuOpen) setTargetPrivacy(article._privacy || defaultPrivacy)
+  }, [listMenuOpen, article._privacy, defaultPrivacy])
 
   // Close repost popup on outside click
   const repostRef = useRef(null)
@@ -146,10 +160,10 @@ export default function ArticleReadPanel({
   const date = formatDate(getPublishedAt(effectiveArticle))
 
   // ── Bookmark ────────────────────────────────────────────────────────────────
-  // New saves respect the current view — saving while viewing Private lands
-  // the item in the private bucket. Existing bookmarks use whichever bucket
-  // the item is actually in (article._privacy) for move/remove targeting.
-  const saveBucket   = article._privacy || defaultPrivacy
+  // Destination privacy comes from the pill (user-controlled). Remove still
+  // targets whichever bucket the item actually lives in (article._privacy) —
+  // the pill doesn't apply to removal.
+  const saveBucket   = targetPrivacy
   const removeBucket = article._privacy || defaultPrivacy
 
   // Wrap any bookmark-write promise with the publish-before-commit status
@@ -231,7 +245,7 @@ export default function ArticleReadPanel({
   // Inline Move-to handler — same status pattern, closes dropdown on success.
   async function handleInlineMoveTo(toListId) {
     await runBookmarkOp(
-      () => onMoveArticle(article._listId, toListId, aTag, { privacy: removeBucket }),
+      () => onMoveArticle(article._listId, toListId, aTag, { privacy: saveBucket }),
       () => setListMenuOpen(false),
     )
   }
@@ -247,7 +261,7 @@ export default function ArticleReadPanel({
         if (!list) return false
         const articleMeta = { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags: article.tags?.filter(t => t[0] === 't').map(t => t[1]) || [] }
         if (mode === 'move' && article._listId && onMoveArticle) {
-          const r = await onMoveArticle(article._listId, list.id, aTag, { privacy: removeBucket })
+          const r = await onMoveArticle(article._listId, list.id, aTag, { privacy: saveBucket })
           if (r === false) return false
         } else {
           const r = await onAddToList(list.id, articleMeta, { privacy: saveBucket })
@@ -557,7 +571,44 @@ export default function ArticleReadPanel({
                 const isBookmarked = !!article._listId
                 const otherLists = isBookmarked ? lists.filter(l => l.id !== article._listId) : lists
                 return (
-                  <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[200px] max-h-[70vh] overflow-y-auto">
+                  <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[220px] max-h-[70vh] overflow-y-auto">
+                    <div className="px-3 py-2 border-b border-neutral-700 flex items-center justify-between gap-2">
+                      <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+                        Save as
+                      </span>
+                      <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setTargetPrivacy('public')}
+                          disabled={bookmarkStatus === 'saving'}
+                          className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                            targetPrivacy === 'public'
+                              ? 'bg-purple-700 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          Public
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTargetPrivacy('private')}
+                          disabled={bookmarkStatus === 'saving'}
+                          title="NIP-51 encrypted — visible only to you"
+                          className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                            targetPrivacy === 'private'
+                              ? 'bg-purple-700 text-white'
+                              : 'text-neutral-400 hover:text-neutral-200'
+                          }`}
+                        >
+                          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                            <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                            <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                          </svg>
+                          Private
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Move to — only for bookmarked items */}
                     {isBookmarked && onMoveArticle && otherLists.length > 0 && (
                       <>

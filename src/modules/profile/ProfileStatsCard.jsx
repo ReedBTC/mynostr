@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { formatCount } from '../../lib/utils.js'
+import InfoDot from './InfoDot.jsx'
 
 /**
  * ProfileStatsCard — two labeled sections:
@@ -97,7 +98,19 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
 
   return (
     <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
-      <Section label="Posts" cells={postCells} loading={loading} />
+      <Section
+        label="Posts"
+        cells={postCells}
+        loading={loading}
+        info={(
+          <p>
+            Counts come from Primal's indexer (Notes / Comments / Articles)
+            and related counts for Events / Market. Primal's index can lag
+            new activity by minutes to hours, so very recent content may not
+            show up yet.
+          </p>
+        )}
+      />
       <div className="border-t border-neutral-800" />
       <Section
         label="Public Curation"
@@ -105,12 +118,20 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
         cells={bookmarkCells}
         loading={loading}
         variant="curation"
+        info={(
+          <p>
+            Public bookmark counts are read from this user's NIP-51 lists
+            (kind 10003 and 30003) fetched directly from relays. Numbers
+            reflect whatever our relay pool can reach — a list that hasn't
+            propagated everywhere may undercount.
+          </p>
+        )}
       />
     </div>
   )
 }
 
-function Section({ label, sublabel, cells, loading, variant }) {
+function Section({ label, sublabel, cells, loading, variant, info }) {
   const isCuration = variant === 'curation'
   return (
     <div className={`px-4 py-3 ${isCuration ? 'bg-purple-950/10' : ''}`}>
@@ -118,6 +139,7 @@ function Section({ label, sublabel, cells, loading, variant }) {
         <div className="text-[10px] uppercase tracking-wider text-neutral-400 font-medium flex items-center gap-1.5">
           {isCuration && <BookmarkIcon className="w-3 h-3 text-purple-400" />}
           {label}
+          {info && <InfoDot align="left">{info}</InfoDot>}
         </div>
         {sublabel && (
           <div className="text-[10px] text-neutral-500 normal-case tracking-normal">{sublabel}</div>

@@ -261,21 +261,21 @@ export default function DraftsTray({
           disabled={exportable.length === 0 || anyPublishing}
           className="w-full text-xs py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 disabled:text-neutral-600 disabled:pointer-events-none transition-colors"
         >
-          Export All Drafts{exportable.length > 0 ? ` (${exportable.length})` : ''}
+          Export All Drafts ({exportable.length})
         </button>
         <button
           onClick={requestClearAll}
           disabled={!canClearAll || anyPublishing}
           className="w-full text-xs py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-red-400 hover:border-red-900 disabled:text-neutral-600 disabled:pointer-events-none transition-colors"
         >
-          Clear all drafts
+          Clear All Drafts ({drafts.length})
         </button>
         <button
           onClick={requestPublishAll}
           disabled={publishable.length === 0 || anyPublishing}
           className="w-full text-xs py-1.5 rounded bg-purple-700/90 hover:bg-purple-600 disabled:bg-neutral-800 disabled:text-neutral-600 text-white transition-colors"
         >
-          {anyPublishing ? 'Publishing…' : `Publish all (${publishable.length})`}
+          {anyPublishing ? 'Publishing…' : `Publish All (${publishable.length})`}
         </button>
         {importStatus && (importStatus.imported > 0 || importStatus.errors.length > 0) && (
           <div className="text-[10px] text-neutral-400 pt-1">
@@ -324,7 +324,7 @@ export default function DraftsTray({
           <ConfirmDialog
             title={`Publish ${publishable.length} draft${publishable.length === 1 ? '' : 's'}?`}
             body="Each draft will be signed and published in order. This can't be undone — notes on Nostr relays aren't reliably deletable."
-            confirmLabel="Publish all"
+            confirmLabel="Publish All"
             onCancel={() => setConfirmPublishOpen(false)}
             onConfirm={doPublishAll}
           />

@@ -37,8 +37,12 @@ export function looksEncrypted(content) {
   if (s[0] === '[' || s[0] === '{') return false
   // Strong signal: NIP-04 payloads have a `?iv=` suffix.
   if (/\?iv=[A-Za-z0-9+/=]+$/.test(s)) return true
-  // Weak signal: base64-only and long enough to be ciphertext.
-  return s.length >= 32 && /^[A-Za-z0-9+/=]+$/.test(s)
+  // Weak signal for raw NIP-44 base64: must be base64-shaped (length % 4 == 0)
+  // AND at least ~88 chars — the minimum for a NIP-44 v2 payload (1B version
+  // + 32B nonce + 32B MAC + ≥1B ciphertext, base64-encoded). Tighter than a
+  // bare 32-char threshold so short legacy/debug strings don't false-match
+  // and get stashed as unrecoverable ciphertext.
+  return s.length >= 88 && s.length % 4 === 0 && /^[A-Za-z0-9+/=]+$/.test(s)
 }
 
 // NDK's signer.encrypt/decrypt reads `.pubkey` off the recipient — passing
