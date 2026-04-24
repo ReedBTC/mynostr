@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 // Trust note: events returned by Primal are rendered without local signature
@@ -28,6 +29,34 @@ function defaultFeedWidth() {
 }
 
 function authorKey(pubkey) { return `mynostr_last_author_${pubkey}` }
+
+// Recipe detection. Two match modes, any hit flips an article into the
+// Recipes bucket:
+//
+//   1. Prefix match on `zapcooking*` and `nostrcooking*` — catches the
+//      root tag (`zapcooking`) AND every sub-category the client writes
+//      (`zapcooking-chicken`, `zapcooking-dinner`, `nostrcooking-italian`,
+//      etc.). Future sub-categories come along for free; no list to
+//      maintain. zap.cooking (current, live) uses `zapcooking`;
+//      nostr.cooking (its fork predecessor, still has older recipes on
+//      relays) uses `nostrcooking`.
+//
+//   2. Exact match on `recipe` / `recipes` — catches a MyNostr user who
+//      tags their article naturally without knowing either namespace.
+//
+// All comparisons case-insensitive.
+const RECIPE_EXACT_TAGS = new Set(['recipe', 'recipes'])
+function isRecipeArticle(article) {
+  const tags = article?.tags
+  if (!Array.isArray(tags)) return false
+  for (const t of tags) {
+    if (t?.[0] !== 't') continue
+    const v = String(t[1] || '').toLowerCase()
+    if (v.startsWith('zapcooking') || v.startsWith('nostrcooking')) return true
+    if (RECIPE_EXACT_TAGS.has(v)) return true
+  }
+  return false
+}
 function articleKey(pubkey) { return `mynostr_last_article_${pubkey}` }
 
 function loadLastAuthor(pubkey) {
@@ -168,6 +197,33 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
   // the toggle doesn't carry across unrelated authors.
   const [authorViewMode, setAuthorViewMode] = useState('articles') // 'articles' | 'collection'
   useEffect(() => { setAuthorViewMode('articles') }, [authorFilter?.pubkey])
+
+  // ── Content filter: Writing vs Recipes ───────────────────────────────────
+  // URL-synced via ?type=recipes so the filtered view is shareable. Absent
+  // param = 'writing' (default). Unknown values fall back to 'writing'.
+  //
+  // Only meaningful on author-articles feeds (mine + search > author-
+  // articles); elsewhere it's inert but we still read the param so it
+  // survives tab switches.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const contentFilter = searchParams.get('type') === 'recipes' ? 'recipes' : 'writing'
+  const supportsContentFilter =
+    !!authorFilter &&
+    (feedMode === 'mine' || (feedMode === 'search' && authorViewMode === 'articles'))
+
+  function setContentFilter(next) {
+    const params = new URLSearchParams(searchParams)
+    if (next === 'recipes') params.set('type', 'recipes')
+    else params.delete('type')
+    // replace so the back button doesn't feel stuttery when toggling.
+    setSearchParams(params, { replace: true })
+    // Selection + currently-open article belong to the pre-toggle result
+    // set; flipping filters should reset both so the user doesn't find
+    // themselves with phantom checks or a reader pane for an article
+    // that's no longer in the visible feed.
+    setSearchCheckedIds(new Set())
+    setSelectedRaw(null)
+  }
 
   // Read-only fetch of the *searched* author's reading lists. Hook handles
   // null pubkey by returning empty lists, so we gate the pubkey to only
@@ -389,9 +445,21 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
     setSearchResults([])
     setSelectedRaw(null)
     try {
-      // Primal's indexer has every author's articles pre-collected from all
-      // the relays it crawls — single fast WebSocket call, no EOSE timing
-      // games. This is the primary source.
+      // Two-stage fetch:
+      //   1. Primal — fast (< 500ms typical). Renders immediately so the
+      //      feed isn't blocked on slower relay EOSEs. Good enough for the
+      //      common case.
+      //   2. Direct relay pull — augments Primal's results. Primal's
+      //      `long_form_content_feed` under-indexes articles from some
+      //      clients (zap.cooking recipes were the pathological case that
+      //      surfaced this — Primal returned 6 of the author's articles
+      //      but none of their zap.cooking-published recipes, even though
+      //      the events exist on common relays). Merged via
+      //      dedupeReplaceable so duplicates collapse to newest-by-d-tag.
+      //
+      // Relay pull always runs; no longer gated on Primal returning zero.
+      // The cost is ~3–4s of background work; the UI is already interactive
+      // after Primal's response so the user doesn't feel it.
       const primal = await fetchAuthorLongformFeed(authorPubkey, null, 100)
       if (genRef.current !== gen) return
 
@@ -399,31 +467,64 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
         .sort((a, b) => getPublishedAt(b) - getPublishedAt(a))
       const profiles = new Map(primal.profiles || new Map())
 
-      // Show Primal results immediately — the common case is "done".
+      // Track whether we've already flipped loading off within this
+      // invocation. Can't rely on reading `searchLoading` from the
+      // closure below — it's captured at render time and doesn't see the
+      // setSearchLoading(true) we fired at the top of this function, nor
+      // the setSearchLoading(false) we may fire below. Local bool is the
+      // only honest signal.
+      let loadingFlipped = false
+
+      // Show Primal results immediately — the common case is "done" once
+      // the relay augment lands and just adds a few more rows in place.
       if (articles.length > 0) {
         setSearchResults(articles)
         setSearchProfiles(profiles)
         setSearchLoading(false)
+        loadingFlipped = true
         restoreSelectedFromSaved(articles)
       }
 
-      // Fallback only when Primal returned nothing (rare — brand-new author,
-      // or Primal outage). Don't block the UI on it.
-      if (articles.length === 0) {
-        const ndk = getNDK()
-        await connectAndWait(ndk, 3000).catch(() => {})
-        if (genRef.current !== gen) return
+      // Relay augment — fires for every author, not just on Primal=0.
+      // Merge results into the already-rendered list via
+      // dedupeReplaceable so any zap.cooking / other-client recipes
+      // Primal missed slide into the feed without displacing what's
+      // already there.
+      const ndk = getNDK()
+      await connectAndWait(ndk, 3000).catch(() => {})
+      if (genRef.current !== gen) return
 
-        const articleSub = trackSub(collectFromRelays(
-          ndk, { kinds: [30023], authors: [authorPubkey] }, 3000
-        ))
-        const rawArticles = await articleSub.promise
-        if (genRef.current !== gen) return
+      const articleSub = trackSub(collectFromRelays(
+        ndk, { kinds: [30023], authors: [authorPubkey] }, 3000
+      ))
+      const rawRelayArticles = await articleSub.promise
+      if (genRef.current !== gen) return
 
-        articles = dedupeReplaceable(rawArticles)
-          .sort((a, b) => getPublishedAt(b) - getPublishedAt(a))
+      const combined = dedupeReplaceable([...articles, ...rawRelayArticles])
+        .sort((a, b) => getPublishedAt(b) - getPublishedAt(a))
+
+      // Only call setSearchResults if the merge actually added anything —
+      // keeps React from re-rendering the feed for no reason.
+      if (combined.length !== articles.length) {
+        articles = combined
         setSearchResults(articles)
-        restoreSelectedFromSaved(articles)
+        // Flip loading off + restore selection only when Primal-empty →
+        // relay-has-data path; Primal-already-had-data path already did
+        // both up top. `loadingFlipped` keeps us honest about which is
+        // which without relying on stale closure state.
+        if (articles.length > 0 && !loadingFlipped) {
+          setSearchLoading(false)
+          loadingFlipped = true
+          restoreSelectedFromSaved(articles)
+        }
+      }
+
+      // If BOTH Primal and relays returned nothing, we're in the clear-
+      // empty state; flip loading off so the empty state can render.
+      if (articles.length === 0) {
+        setSearchResults([])
+        setSearchLoading(false)
+        loadingFlipped = true
       }
 
       // Fetch profile from relays only if Primal didn't include it.
@@ -502,7 +603,15 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
 
   const displayArticles = (() => {
     if (inAuthorCollectionView) return buildBookmarkArticles(authorCollection.lists, 'public')
-    if (isAuthorFeed) return searchResults
+    if (isAuthorFeed) {
+      // Writing pill hides recipes; Recipes pill shows only recipes. There's
+      // no "all" — that was the explicit design: every article lands in
+      // exactly one of the two buckets, matching zap.cooking's own mental
+      // model where recipes are a first-class content type.
+      return contentFilter === 'recipes'
+        ? searchResults.filter(isRecipeArticle)
+        : searchResults.filter(a => !isRecipeArticle(a))
+    }
 
     const items = buildBookmarkArticles(lists, privacyView)
     const lq = titleQuery.trim().toLowerCase()
@@ -705,30 +814,61 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
           {isAuthorFeed ? (
             authorFilter ? (
               <>
-                {/* Author/Collection pill — search mode only. 'mine' pins the
-                    viewing user so a "their bookmarks" view would just duplicate
-                    the Collection tab. */}
-                {feedMode === 'search' && (
-                  <div className="flex items-center px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0">
-                    <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
-                      {[
-                        { key: 'articles',   label: 'Author' },
-                        { key: 'collection', label: 'Collection' },
-                      ].map(opt => (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          onClick={() => setAuthorViewMode(opt.key)}
-                          className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
-                            authorViewMode === opt.key
-                              ? 'bg-purple-700 text-white'
-                              : 'text-neutral-400 hover:text-neutral-200'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
-                    </div>
+                {/* Top-of-feed pill row.
+                      • Author/Collection (search mode only) — switches
+                        the feed between the picked author's articles and
+                        their reading lists. 'mine' pins the viewing user
+                        so the equivalent "their bookmarks" would just
+                        duplicate the Collection tab.
+                      • Writing/Recipes (both mine + search > author-
+                        articles) — partitions kind-30023 events by
+                        whether they carry a recipe t-tag. Hidden in
+                        Author's Collection view because collection items
+                        go through a separate parsing path. */}
+                {(feedMode === 'search' || supportsContentFilter) && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 border-b border-neutral-800/60 flex-shrink-0 flex-wrap">
+                    {feedMode === 'search' && (
+                      <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
+                        {[
+                          { key: 'articles',   label: 'Author' },
+                          { key: 'collection', label: 'Collection' },
+                        ].map(opt => (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => setAuthorViewMode(opt.key)}
+                            className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                              authorViewMode === opt.key
+                                ? 'bg-purple-700 text-white'
+                                : 'text-neutral-400 hover:text-neutral-200'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {supportsContentFilter && (
+                      <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
+                        {[
+                          { key: 'writing', label: 'Writing' },
+                          { key: 'recipes', label: 'Recipes' },
+                        ].map(opt => (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            onClick={() => setContentFilter(opt.key)}
+                            className={`text-[11px] px-2.5 py-0.5 rounded-full transition-colors ${
+                              contentFilter === opt.key
+                                ? 'bg-purple-700 text-white'
+                                : 'text-neutral-400 hover:text-neutral-200'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
