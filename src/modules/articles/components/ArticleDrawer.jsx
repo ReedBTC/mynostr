@@ -3,7 +3,7 @@ import JSZip from 'jszip'
 import { nip19 } from 'nostr-tools'
 import { getNDK } from '../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../lib/epub.js'
-import { isSafeUrl, titleToSlug, buildFrontmatter } from '../../../lib/utils.js'
+import { isSafeUrl, titleToSlug, buildFrontmatter, withTimeout } from '../../../lib/utils.js'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -54,10 +54,10 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
       try {
         const ndk = getNDK()
         try {
-          const relayListEvent = await Promise.race([
+          const relayListEvent = await withTimeout(
             ndk.fetchEvent({ kinds: [10002], authors: [user.pubkey] }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
-          ])
+            4000,
+          )
           if (relayListEvent) {
             const writeRelays = relayListEvent.tags
               .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
@@ -69,10 +69,10 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
           }
         } catch {}
 
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [30023], authors: [user.pubkey] }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
-        ])
+          10000,
+        )
         const sorted = Array.from(events).sort((a, b) => b.created_at - a.created_at)
         setArticles(sorted)
       } catch (err) {

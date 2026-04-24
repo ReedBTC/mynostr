@@ -28,6 +28,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
+import { withTimeout } from './utils.js'
 import {
   looksEncrypted,
   encryptPrivateTagArray,
@@ -277,10 +278,10 @@ async function enrichBookmarkItems(lists) {
       try {
         const dTags = items.map(i => i.dTag)
         const kinds = [...new Set(items.map(i => i.kind))]
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds, authors: [pubkey], '#d': dTags }),
-          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
-        ])
+          10000,
+        )
         for (const ev of Array.from(events)) {
           const d = getTag(ev, 'd')
           const aTag = `${ev.kind}:${ev.pubkey}:${d}`
@@ -295,10 +296,10 @@ async function enrichBookmarkItems(lists) {
   const profileMap = new Map()
   if (allPubkeys.size > 0) {
     try {
-      const profileEvents = await Promise.race([
+      const profileEvents = await withTimeout(
         ndk.fetchEvents({ kinds: [0], authors: Array.from(allPubkeys) }),
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
-      ])
+        10000,
+      )
       for (const ev of Array.from(profileEvents)) {
         try { profileMap.set(ev.pubkey, JSON.parse(ev.content)) } catch {}
       }
@@ -749,8 +750,14 @@ export function useReadingLists(user) {
         // keep curating them. Publish only to their NIP-65 write relays so
         // every copy lives where future edits and deletes will land — a copy
         // on a fallback outside their write set would keep the pre-edit state
-        // visible to other clients after we move on.
-        const publishedTo = await publishToOwnOutbox(event)
+        // visible to other clients after we move on. 15s hard timeout so a
+        // relay black-hole surfaces as a clean failure instead of an
+        // indefinite spinner.
+        const publishedTo = await withTimeout(
+          publishToOwnOutbox(event),
+          15000,
+          'publish timeout (15s)',
+        )
         const reached = Array.from(publishedTo || []).map(r => r.url).filter(Boolean)
         if (reached.length === 0) {
           logFailure('publish', new Error('no relays acknowledged the event'))

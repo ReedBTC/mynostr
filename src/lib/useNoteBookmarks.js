@@ -29,6 +29,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
+import { withTimeout } from './utils.js'
 import {
   looksEncrypted,
   encryptPrivateTagArray,
@@ -301,10 +302,10 @@ export function useNoteBookmarks(user) {
     ;(async () => {
       try {
         const ndk = getNDK()
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [10003, 30001, 30003], authors: [pubkey] }),
-          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-        ])
+          6000,
+        )
         if (cancelled) return
 
         // Tombstone filter: a locally-recorded tombstone outranks any fetched

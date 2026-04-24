@@ -21,6 +21,7 @@
  */
 import { useState, useEffect, useCallback } from 'react'
 import { getNDK } from './ndk.js'
+import { withTimeout } from './utils.js'
 
 const LIKE_FETCH_LIMIT = 500
 
@@ -41,10 +42,10 @@ export function useUserReactions(user) {
     ;(async () => {
       try {
         const ndk = getNDK()
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [7], authors: [pubkey], limit: LIKE_FETCH_LIMIT }),
-          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-        ])
+          6000,
+        )
         if (cancelled) return
         const ids = new Set()
         for (const ev of events) {

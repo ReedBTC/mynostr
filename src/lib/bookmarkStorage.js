@@ -10,6 +10,7 @@
  * keeps its own namespace without sharing keys.
  */
 import { getNDK } from './ndk.js'
+import { withTimeout } from './utils.js'
 
 // Bound the tombstone map so a churn-heavy user (or a script pasted into
 // devtools) can't push it past the ~5MB localStorage quota. 500 is far
@@ -106,10 +107,10 @@ export async function fetchLatestPrimary(pubkey) {
   if (!pubkey) return null
   try {
     const ndk = getNDK()
-    const events = await Promise.race([
+    const events = await withTimeout(
       ndk.fetchEvents({ kinds: [10003], authors: [pubkey] }),
-      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-    ])
+      5000,
+    )
     let fresh = null
     for (const ev of events) {
       if (!fresh || (ev.created_at || 0) > (fresh.created_at || 0)) fresh = ev

@@ -4,9 +4,10 @@ import MDEditor from '@uiw/react-md-editor'
 import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { isSafeUrl, getPublishedAt } from '../../../../lib/utils.js'
+import { isSafeUrl, getPublishedAt, withTimeout } from '../../../../lib/utils.js'
 import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
+import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
 function getTag(event, name) {
@@ -39,6 +40,7 @@ export default function ArticleReadPanel({
   onClose,
   onAuthorClick,
   readOnly,
+  canBookmark,
   user,
   isMobile,
 }) {
@@ -80,11 +82,15 @@ export default function ArticleReadPanel({
   // no explicit reset needed, fresh useState(false) gives us a clean flag.
   const [coverBroken,      setCoverBroken]      = useState(false)
 
-  // Close three-dots menu on outside click
+  // Close three-dots menu on outside click. Menu is portaled to body
+  // (when triggerRef is wired below), so menuRef.contains misses clicks
+  // inside the portaled menu — check for the data-attribute too.
   useEffect(() => {
     if (!menuOpen) return
     function handler(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false)
+      if (menuRef.current?.contains(e.target)) return
+      if (e.target.closest?.('[data-article-actions-menu="true"]')) return
+      setMenuOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -128,10 +134,10 @@ export default function ArticleReadPanel({
         const aTag = article._aTag
         const [, pubkey, ...dParts] = aTag.split(':')
         const ndk = getNDK()
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [30023], authors: [pubkey], '#d': [dParts.join(':')] }),
-          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 7000)),
-        ])
+          7000,
+        )
         const event = Array.from(events)[0]
         if (event?.content) setDisplayContent(event.content)
         if (event?.tags) setResolvedTags(event.tags)
@@ -166,6 +172,23 @@ export default function ArticleReadPanel({
   const saveBucket   = targetPrivacy
   const removeBucket = article._privacy || defaultPrivacy
 
+  // Every (list, privacy) pair in MY lists that currently holds this
+  // aTag. Hoisted here (not inside the dropdown IIFE) so the button
+  // label + border color can reflect the persisted "is bookmarked"
+  // state, not just the this-session savedToList flag.
+  const bookmarkContainingRows = []
+  if (aTag) {
+    for (const l of (lists || [])) {
+      if ((l.articles || []).some(a => a.aTag === aTag)) {
+        bookmarkContainingRows.push({ list: l, privacy: 'public' })
+      }
+      if ((l.privateArticles || []).some(a => a.aTag === aTag)) {
+        bookmarkContainingRows.push({ list: l, privacy: 'private' })
+      }
+    }
+  }
+  const isAlreadyBookmarked = bookmarkContainingRows.length > 0
+
   // Wrap any bookmark-write promise with the publish-before-commit status
   // pattern: spinner while pending, stay-open-with-error on failure, close
   // the dropdown only after a successful publish. `onOk` fires only on true
@@ -192,12 +215,9 @@ export default function ArticleReadPanel({
 
   async function handleAddToList(listId) {
     const tTags = effectiveTags?.filter(t => t[0] === 't').map(t => t[1]) || []
+    const articleMeta = { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags, publishedAt: getPublishedAt(effectiveArticle) }
     const ok = await runBookmarkOp(
-      () => onAddToList(
-        listId,
-        { aTag, title, image, author: authorName, authorPic, addedAt: Date.now(), tTags, publishedAt: getPublishedAt(effectiveArticle) },
-        { privacy: saveBucket },
-      ),
+      () => onAddToList(listId, articleMeta, { privacy: saveBucket }),
       () => {
         setSavedToList(listId)
         setListMenuOpen(false)
@@ -234,11 +254,16 @@ export default function ArticleReadPanel({
     return ok
   }
 
-  async function handleRemoveFromBookmark() {
-    if (!article._listId || !article._aTag) return
+  // Remove from any list currently holding this aTag. Called once per
+  // containing (list, privacy) pair in the dropdown. Doesn't close the
+  // article pane on success — the user may want to remove from several
+  // lists in a row, and closing mid-chain is disorienting. Leaves the
+  // menu open as well so subsequent clicks aren't fumbled.
+  async function handleRemoveFromList(listId, privacy) {
+    if (!aTag) return
     await runBookmarkOp(
-      () => onRemoveFromList(article._listId, article._aTag, { privacy: removeBucket }),
-      () => onClose(),
+      () => onRemoveFromList(listId, aTag, { privacy: privacy || 'public' }),
+      null,
     )
   }
 
@@ -376,10 +401,10 @@ export default function ArticleReadPanel({
     setZapFetching(true)
     try {
       const ndk = getNDK()
-      const events = await Promise.race([
+      const events = await withTimeout(
         ndk.fetchEvents({ kinds: [0], authors: [article.pubkey] }),
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-      ])
+        5000,
+      )
       const event = Array.from(events)[0]
       if (event) {
         try {
@@ -541,8 +566,11 @@ export default function ArticleReadPanel({
 
         {/* Right-aligned: bookmark + three-dots menu */}
         <div className="ml-auto flex items-center gap-1">
-          {/* Bookmark button + dropdown */}
-          {!readOnly && (
+          {/* Bookmark button + dropdown. Gated on canBookmark (session
+              can publish) rather than !readOnly (viewer owns the page).
+              Logged-in visitors can bookmark someone else's article to
+              their own list — onAddToList is session-scoped upstream. */}
+          {canBookmark && (
             <div className="relative" ref={listMenuRef}>
               <button
                 onClick={() => {
@@ -553,8 +581,8 @@ export default function ArticleReadPanel({
                 className={`text-xs px-2 py-1 rounded border transition-colors inline-flex items-center gap-1 disabled:opacity-60 ${
                   bookmarkStatus === 'error'
                     ? 'border-red-900/60 text-red-400'
-                    : savedToList
-                    ? 'border-amber-800 text-amber-400'
+                    : (savedToList || isAlreadyBookmarked)
+                    ? 'border-blue-800 text-blue-400'
                     : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
                 }`}
               >
@@ -563,13 +591,25 @@ export default function ArticleReadPanel({
                     <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
                     <span>Saving…</span>
                   </>
-                ) : bookmarkStatus === 'error' ? '⚠️ Failed'
-                  : savedToList ? '🔖 Saved'
-                  : '🔖 Bookmark'}
+                ) : bookmarkStatus === 'error' ? (
+                  <span>⚠️ Failed</span>
+                ) : (
+                  <>
+                    <BookmarkIcon filled={savedToList || isAlreadyBookmarked} className={(savedToList || isAlreadyBookmarked) ? 'text-blue-400' : ''} />
+                    <span>{(savedToList || isAlreadyBookmarked) ? 'Saved' : 'Bookmark'}</span>
+                  </>
+                )}
               </button>
               {listMenuOpen && (() => {
-                const isBookmarked = !!article._listId
-                const otherLists = isBookmarked ? lists.filter(l => l.id !== article._listId) : lists
+                // containingRows + isFromOwnList — computed from the
+                // hoisted `bookmarkContainingRows` so this mirrors exactly
+                // what the button above showed. `isFromOwnList` keeps
+                // Move/Copy behavior available on the owner's own
+                // Collection without pushing the user through remove +
+                // re-add.
+                const containingRows = bookmarkContainingRows
+                const isFromOwnList = !!article._listId
+                const otherLists = isFromOwnList ? lists.filter(l => l.id !== article._listId) : lists
                 return (
                   <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[220px] max-h-[70vh] overflow-y-auto">
                     <div className="px-3 py-2 border-b border-neutral-700 flex items-center justify-between gap-2">
@@ -609,8 +649,13 @@ export default function ArticleReadPanel({
                       </div>
                     </div>
 
-                    {/* Move to — only for bookmarked items */}
-                    {isBookmarked && onMoveArticle && otherLists.length > 0 && (
+                    {/* Move to — only when we came FROM a specific list
+                        (owner viewing own collection), so we know the
+                        source. For articles found via search that happen
+                        to already be bookmarked, there's no single
+                        "source" to move from — the user uses Remove +
+                        Add via the other sections instead. */}
+                    {isFromOwnList && onMoveArticle && otherLists.length > 0 && (
                       <>
                         <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Move to</p>
                         {otherLists.map(list => (
@@ -630,8 +675,8 @@ export default function ArticleReadPanel({
                       </>
                     )}
 
-                    {/* Copy to — for bookmarked items */}
-                    {isBookmarked && otherLists.length > 0 && (
+                    {/* Copy to — owner-viewing-own-list case only. */}
+                    {isFromOwnList && otherLists.length > 0 && (
                       <>
                         <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Copy to</p>
                         {otherLists.map(list => (
@@ -651,8 +696,12 @@ export default function ArticleReadPanel({
                       </>
                     )}
 
-                    {/* Add to — for non-bookmarked items (search results) */}
-                    {!isBookmarked && (
+                    {/* Add to — shown when the article wasn't opened from
+                        a specific list. Still shown even if the article
+                        is already in some of my lists (via containingRows
+                        below) so the user can bookmark it to additional
+                        ones without going through Copy-to. */}
+                    {!isFromOwnList && (
                       <>
                         <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Add to</p>
                         {lists.length === 0 ? (
@@ -698,19 +747,39 @@ export default function ArticleReadPanel({
                       </div>
                     )}
 
-                    {/* Remove from current list */}
-                    {isBookmarked && onRemoveFromList && (
-                      <button
-                        onClick={handleRemoveFromBookmark}
-                        disabled={bookmarkStatus === 'saving'}
-                        className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-red-950/40 transition-colors disabled:opacity-50 inline-flex items-center gap-1.5">
-                        {bookmarkStatus === 'saving' ? (
-                          <>
-                            <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
-                            <span>Removing…</span>
-                          </>
-                        ) : `Remove from "${article._listTitle || 'list'}"`}
-                      </button>
+                    {/* Remove from — one button per (list, privacy) pair
+                        currently holding this aTag. Replaces the old
+                        single "Remove from {_listTitle}" that only worked
+                        when the article was opened from a specific list.
+                        Private buckets get a lock icon so the user can
+                        distinguish which copy they're removing. */}
+                    {containingRows.length > 0 && onRemoveFromList && (
+                      <>
+                        <div className="border-t border-neutral-700" />
+                        <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">Remove from</p>
+                        {containingRows.map(({ list, privacy }) => (
+                          <button
+                            key={`rm-${list.id}-${privacy}`}
+                            onClick={() => handleRemoveFromList(list.id, privacy)}
+                            disabled={bookmarkStatus === 'saving'}
+                            className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-red-950/40 transition-colors disabled:opacity-50 inline-flex items-center justify-between gap-2"
+                          >
+                            <span className="truncate">{list.title}</span>
+                            {privacy === 'private' && (
+                              <span
+                                className="shrink-0 inline-flex items-center text-red-400"
+                                title="Private bucket"
+                                aria-label="Private"
+                              >
+                                <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                                  <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                                  <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                                </svg>
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </>
                     )}
                   </div>
                 )
@@ -718,14 +787,21 @@ export default function ArticleReadPanel({
             </div>
           )}
 
-          {/* ⋯ Three-dots menu */}
+          {/* ⋯ Three-dots menu — horizontal-dot SVG + notes-style bare
+              hover button, matching the feed/collection item menus for
+              cross-surface consistency. */}
           <div className="relative" ref={menuRef}>
             <button
               onClick={() => setMenuOpen(o => !o)}
-              className="text-xs px-2 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors"
+              className="p-1 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
               aria-label="More options"
+              title="Actions"
             >
-              ···
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <circle cx="3" cy="8" r="1.4" />
+                <circle cx="8" cy="8" r="1.4" />
+                <circle cx="13" cy="8" r="1.4" />
+              </svg>
             </button>
             <ArticleActionsMenu
               open={menuOpen}
@@ -741,6 +817,7 @@ export default function ArticleReadPanel({
               authorName={authorName}
               authorPic={authorPic}
               onLoadInEditor={onLoadInEditor}
+              triggerRef={menuRef}
             />
           </div>
         </div>

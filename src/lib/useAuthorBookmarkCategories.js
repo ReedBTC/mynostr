@@ -15,6 +15,7 @@
  */
 import { useEffect, useState } from 'react'
 import { getNDK, connectAndWait } from './ndk.js'
+import { withTimeout } from './utils.js'
 import { parseEventToCategory, NOTE_PRIMARY_CATEGORY_ID } from './useNoteBookmarks.js'
 
 export function useAuthorBookmarkCategories(pubkey) {
@@ -35,10 +36,10 @@ export function useAuthorBookmarkCategories(pubkey) {
       try {
         const ndk = getNDK()
         await connectAndWait(ndk, 3000).catch(() => {})
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [10003, 30001, 30003], authors: [pubkey] }),
-          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-        ])
+          6000,
+        )
         if (cancelled) return
 
         // Drop tombstones (delete signals published as an empty replaceable

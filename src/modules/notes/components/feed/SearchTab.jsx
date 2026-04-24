@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
-import { isSafeUrl } from '../../../../lib/utils.js'
+import { isSafeUrl, withTimeout } from '../../../../lib/utils.js'
 import { nip19 } from 'nostr-tools'
 import NoteSearch from './NoteSearch.jsx'
 import AuthorNotesPane from './AuthorNotesPane.jsx'
@@ -208,10 +208,7 @@ function SingleNoteCard({ id, authorHint, onNoteClick }) {
           const ndk = getNDK()
           await connectAndWait(ndk, 3000).catch(() => {})
           if (tokenRef.current !== token) return
-          const ev = await Promise.race([
-            ndk.fetchEvent({ ids: [id] }),
-            new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-          ]).catch(() => null)
+          const ev = await withTimeout(ndk.fetchEvent({ ids: [id] }), 6000).catch(() => null)
           if (tokenRef.current !== token) return
           if (ev) {
             found = { id: ev.id, pubkey: ev.pubkey, created_at: ev.created_at, content: ev.content, tags: ev.tags, kind: ev.kind }

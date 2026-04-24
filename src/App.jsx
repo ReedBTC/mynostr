@@ -7,18 +7,17 @@ import {
   Link,
   useParams,
   useNavigate,
-  useLocation,
 } from 'react-router-dom'
-import LoginScreen from './components/LoginScreen.jsx'
 import AppShell from './components/AppShell.jsx'
 import HomeScreen from './components/HomeScreen.jsx'
+import { LoginModalProvider } from './components/LoginModalContext.jsx'
 import {
   OwnerProvider,
   decodeNpubParam,
   useViewedUser,
   clearViewedUserCache,
 } from './lib/ownerContext.jsx'
-import { connectAndWait, getNDK } from './lib/ndk.js'
+import { connectAndWait, getNDK, resetNDK } from './lib/ndk.js'
 import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
 
 // Lazy-load each module so only the active tab's code is fetched
@@ -59,16 +58,9 @@ const MODULES_WITH_WRITE = new Set(['notes', 'articles'])
 export default function App() {
   const [sessionUser, setSessionUser] = useState(null)
   // `restoring` covers the async auto-resume on boot. Render a spinner during
-  // it rather than flashing the login screen — otherwise a signed-in user
-  // sees LoginScreen for 100–3000ms before auto-login completes.
-  //
-  // Skip restore when the URL is /login: a user who hits that route is
-  // explicitly asking to switch accounts; blocking them behind a spinner
-  // until a possibly-stale bunker connection resolves is hostile.
-  const [restoring, setRestoring] = useState(() => {
-    if (typeof window !== 'undefined' && window.location?.pathname === '/login') return false
-    return !!loadSession()
-  })
+  // it rather than flashing the homepage — otherwise a signed-in user might
+  // see the landing page for 100–3000ms before auto-login completes.
+  const [restoring, setRestoring] = useState(() => !!loadSession())
 
   useEffect(() => {
     if (!restoring) return
@@ -91,6 +83,11 @@ export default function App() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLogout() {
+    // Centralized logout — called from every surface (sidebar, mobile
+    // drawer, homepage). Tears down NDK signer state first so no
+    // post-logout fetches run under the departing identity, then purges
+    // localStorage residue, then clears session state.
+    //
     // Purge every mynostr_* localStorage entry that the departing session
     // touched. Two categories:
     //   (a) session-scoped keys ending in the session pubkey (drafts, etc.)
@@ -98,6 +95,7 @@ export default function App() {
     //       (mynostr_last_author_*, mynostr_last_article_*,
     //        mynostr_reading_lists:*) — these reveal what pages the session
     //       visited and are cleared regardless of which pubkey is embedded.
+    resetNDK()
     const pk = sessionUser?.pubkey
     try {
       const suffix      = pk ? `_${pk}` : null
@@ -124,37 +122,39 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <Routes>
-        <Route
-          path="/login"
-          element={<LoginRoute sessionUser={sessionUser} onLogin={setSessionUser} />}
-        />
-        <Route
-          path="/"
-          element={<RootRoute sessionUser={sessionUser} onLogout={handleLogout} />}
-        />
-        <Route
-          path="/:npub"
-          element={<NpubRootRoute />}
-        />
-        {/* Legacy /longform → /articles. Covers both /:npub/longform and
-            /:npub/longform/<subtab> so old bookmarked URLs keep working. */}
-        <Route path="/:npub/longform" element={<LongformLegacyRedirect />} />
-        <Route path="/:npub/longform/:subtab" element={<LongformLegacyRedirect />} />
-        <Route
-          path="/:npub/:module"
-          element={
-            <ModuleRoute sessionUser={sessionUser} onLogout={handleLogout} />
-          }
-        />
-        <Route
-          path="/:npub/:module/:subtab"
-          element={
-            <ModuleRoute sessionUser={sessionUser} onLogout={handleLogout} />
-          }
-        />
-        <Route path="*" element={<NotFoundRoute />} />
-      </Routes>
+      <LoginModalProvider onLogin={setSessionUser}>
+        <Routes>
+          {/* Legacy /login URL — modal replaces the dedicated route. Old
+              bookmarks land on the homepage; from there the Login button
+              opens the modal. */}
+          <Route path="/login" element={<Navigate to="/" replace />} />
+          <Route
+            path="/"
+            element={<RootRoute sessionUser={sessionUser} onLogout={handleLogout} />}
+          />
+          <Route
+            path="/:npub"
+            element={<NpubRootRoute />}
+          />
+          {/* Legacy /longform → /articles. Covers both /:npub/longform and
+              /:npub/longform/<subtab> so old bookmarked URLs keep working. */}
+          <Route path="/:npub/longform" element={<LongformLegacyRedirect />} />
+          <Route path="/:npub/longform/:subtab" element={<LongformLegacyRedirect />} />
+          <Route
+            path="/:npub/:module"
+            element={
+              <ModuleRoute sessionUser={sessionUser} onLogout={handleLogout} />
+            }
+          />
+          <Route
+            path="/:npub/:module/:subtab"
+            element={
+              <ModuleRoute sessionUser={sessionUser} onLogout={handleLogout} />
+            }
+          />
+          <Route path="*" element={<NotFoundRoute />} />
+        </Routes>
+      </LoginModalProvider>
     </BrowserRouter>
   )
 }
@@ -208,32 +208,13 @@ function HomeRoute({ sessionUser, onLogout }) {
       onModuleChange={handleModuleClick}
       onLogout={onLogout}
     >
-      <HomeScreen searchInputRef={searchInputRef} />
+      <HomeScreen
+        searchInputRef={searchInputRef}
+        sessionUser={sessionUser}
+        onLogout={onLogout}
+      />
     </AppShell>
   )
-}
-
-function LoginRoute({ sessionUser, onLogin }) {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const from = location.state?.from || null
-
-  // Navigate away from /login once a session exists. Runs both on mount
-  // (already-logged-in user hit /login) and when setSessionUser fires from
-  // LoginScreen — we rely on the render triggered by the state change rather
-  // than calling navigate() synchronously inside the login handler, so
-  // LoginScreen's async flows can unwind cleanly before unmount.
-  useEffect(() => {
-    if (!sessionUser?.npub) return
-    let dest = `/${sessionUser.npub}`
-    if (from) {
-      const fromNpub = from.split('/').filter(Boolean)[0]
-      if (fromNpub === sessionUser.npub) dest = from
-    }
-    navigate(dest, { replace: true })
-  }, [sessionUser, from, navigate])
-
-  return <LoginScreen onLogin={onLogin} />
 }
 
 // /:npub resolves to the user's landing page. Until the Profile module exists,
@@ -256,19 +237,10 @@ function ModuleRoute({ sessionUser, onLogout }) {
     connectAndWait(getNDK()).catch(() => {})
   }, [])
 
-  // Invalid npub in URL.
-  if (!decodeNpubParam(npub)) return <InvalidNpubScreen />
-
-  // Unknown module — bounce to the default on that npub.
-  if (!MODULE_COMPONENTS[moduleId]) {
-    return <Navigate to={`/${npub}/${DEFAULT_MODULE}`} replace />
-  }
-
-  // Still resolving the viewed user's profile — show a spinner rather than
-  // flashing an empty shell.
-  if (loading && !viewedUser) return <FullscreenSpinner />
-  if (!viewedUser) return <FullscreenSpinner />
-
+  // Hooks must run before any early returns below, otherwise the second
+  // render (once viewedUser resolves) calls more hooks than the first
+  // (spinner) render and React throws. Neither callback depends on
+  // viewedUser so it's safe to derive them up here.
   const viewingOwnPage = sessionUser?.npub && sessionUser.npub === npub
 
   const handleModuleChange = useCallback((id) => {
@@ -281,8 +253,24 @@ function ModuleRoute({ sessionUser, onLogout }) {
 
   const handleLogoutAndLeave = useCallback(() => {
     onLogout()
-    navigate('/login', { replace: true })
+    // Land on the homepage after logout — staying on the current page
+    // would leave the user viewing an owner-gated URL they no longer
+    // have permission for, and there's no /login page to fall back to.
+    navigate('/', { replace: true })
   }, [onLogout, navigate])
+
+  // Invalid npub in URL.
+  if (!decodeNpubParam(npub)) return <InvalidNpubScreen />
+
+  // Unknown module — bounce to the default on that npub.
+  if (!MODULE_COMPONENTS[moduleId]) {
+    return <Navigate to={`/${npub}/${DEFAULT_MODULE}`} replace />
+  }
+
+  // Still resolving the viewed user's profile — show a spinner rather than
+  // flashing an empty shell.
+  if (loading && !viewedUser) return <FullscreenSpinner />
+  if (!viewedUser) return <FullscreenSpinner />
 
   const ActiveComponent = MODULE_COMPONENTS[moduleId]
 

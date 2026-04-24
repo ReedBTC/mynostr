@@ -1,5 +1,6 @@
 import { fetchUserStats as fetchPrimalStats } from './primal.js'
 import { getNDK, connectAndWait } from './ndk.js'
+import { withTimeout } from './utils.js'
 
 /**
  * Aggregate profile stats (notes, replies, followers, follows, …) for a
@@ -43,10 +44,10 @@ export async function fetchAggregateUserStats(pubkey) {
 
 async function fetchLatestContacts(ndk, pubkey) {
   try {
-    return await Promise.race([
+    return await withTimeout(
       ndk.fetchEvent({ kinds: [3], authors: [pubkey] }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
-    ])
+      4000,
+    )
   } catch {
     return null
   }

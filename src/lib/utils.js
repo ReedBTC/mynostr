@@ -112,11 +112,19 @@ export function getPublishedAtDate(ev) {
 // Race a promise against a timeout. Rejects with the given label if the
 // inner promise hasn't settled in `ms` milliseconds. Use for relay fetches
 // that can otherwise hang indefinitely when no EOSE arrives.
+//
+// Clears the timer in `finally` so that when the inner promise wins, the
+// timer doesn't keep ticking and fire a late rejection that nothing is
+// awaiting — that's an "Unhandled promise rejection" browser warning,
+// and on strict Node hosts it can terminate the process.
 export function withTimeout(promise, ms, label = 'timeout') {
-  return Promise.race([
-    promise,
-    new Promise((_, rej) => setTimeout(() => rej(new Error(label)), ms)),
-  ])
+  let timer
+  const timeout = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(label)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 // Copy text to the clipboard. Tries the async Clipboard API first, then

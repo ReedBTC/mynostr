@@ -1,4 +1,5 @@
 import NDK, { NDKRelaySet } from '@nostr-dev-kit/ndk'
+import { withTimeout } from './utils.js'
 
 // Fallback relays used when user has no Kind 10002 relay list
 export const FALLBACK_RELAYS = [
@@ -102,10 +103,10 @@ export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = 
     } catch {}
   }
   try {
-    const relayListEvent = await Promise.race([
+    const relayListEvent = await withTimeout(
       ndk.fetchEvent({ kinds: [10002], authors: [pubkey] }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs)),
-    ])
+      timeoutMs,
+    )
     if (!relayListEvent) {
       warn('no kind 10002 relay list')
       return []

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import JSZip from 'jszip'
 import { getNDK } from '../../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../../lib/epub.js'
-import { titleToSlug } from '../../../../lib/utils.js'
+import { titleToSlug, withTimeout } from '../../../../lib/utils.js'
+import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -22,10 +23,10 @@ async function resolveContent(article) {
   const [, pubkey, ...dParts] = aTag.split(':')
   try {
     const ndk = getNDK()
-    const events = await Promise.race([
+    const events = await withTimeout(
       ndk.fetchEvents({ kinds: [30023], authors: [pubkey], '#d': [dParts.join(':')] }),
-      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-    ])
+      6000,
+    )
     return Array.from(events)[0]?.content || ''
   } catch { return '' }
 }
@@ -362,7 +363,7 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
               disabled={busy}
               className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:opacity-60 inline-flex items-center gap-1 ${
                 bookmarkStatus === 'done'
-                  ? 'border-amber-800 text-amber-400'
+                  ? 'border-blue-800 text-blue-400'
                   : bookmarkStatus === 'error'
                   ? 'border-red-900/60 text-red-400'
                   : 'border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500'
@@ -373,38 +374,48 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
                   <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
                   <span>Saving…</span>
                 </>
-              ) : bookmarkStatus === 'done' ? '🔖 Bookmarked'
-                : bookmarkStatus === 'error' ? '⚠️ Failed'
-                : '🔖 Bookmark'}
+              ) : bookmarkStatus === 'error' ? (
+                <span>⚠️ Failed</span>
+              ) : (
+                <>
+                  <BookmarkIcon filled className="text-blue-400" />
+                  <span>{bookmarkStatus === 'done' ? 'Bookmarked' : 'Bookmark'}</span>
+                </>
+              )}
             </button>
             {bookmarkOpen && (
-              <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
-                <div className="px-3 py-1.5 flex items-center justify-center border-b border-neutral-700">
-                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
-                    {[
-                      { key: 'public',  label: 'Public'  },
-                      { key: 'private', label: 'Private' },
-                    ].map(opt => {
-                      const active = bookmarkPrivacy === opt.key
-                      return (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          onClick={() => setBookmarkPrivacy(opt.key)}
-                          className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-                            active
-                              ? (opt.key === 'private' ? 'bg-neutral-700 text-neutral-100' : 'bg-purple-700 text-white')
-                              : 'text-neutral-500 hover:text-neutral-300'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      )
-                    })}
+              <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[200px]">
+                {/* Save as: public/private pill — matches NoteActionsMenu. */}
+                <div className="px-3 pt-2 pb-1.5 flex items-center justify-between gap-2 border-b border-neutral-700">
+                  <span className="text-[10px] uppercase tracking-wide text-neutral-500">Save as</span>
+                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setBookmarkPrivacy('public')}
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                        bookmarkPrivacy === 'public' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      Public
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBookmarkPrivacy('private')}
+                      title="NIP-51 encrypted — visible only to you"
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                        bookmarkPrivacy === 'private' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                        <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                      </svg>
+                      Private
+                    </button>
                   </div>
                 </div>
                 {lists.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-neutral-500">No lists yet.</p>
+                  <p className="px-3 py-2 text-xs text-neutral-500">No collections yet.</p>
                 ) : (
                   lists.map(list => (
                     <button key={list.id} onClick={() => handleAddAllToList(list.id)}
@@ -417,7 +428,7 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
                   <div className="px-2 py-2 border-t border-neutral-700 flex gap-1">
                     <input autoFocus type="text" value={newListName} onChange={e => setNewListName(e.target.value)}
                       onKeyDown={e => e.key === 'Enter' && handleCreateAndAddAll()}
-                      placeholder="List name…" maxLength={60}
+                      placeholder="New collection name…" maxLength={60}
                       className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none" />
                     <button onClick={handleCreateAndAddAll} disabled={!newListName.trim()}
                       className="text-xs px-2 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors">✓</button>
@@ -425,7 +436,7 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
                 ) : (
                   <button onClick={() => setNewListInput(true)}
                     className="w-full text-left px-3 py-2 text-xs text-neutral-500 hover:text-neutral-300 border-t border-neutral-700 hover:bg-neutral-700 transition-colors">
-                    + New list
+                    + New collection
                   </button>
                 )}
               </div>
@@ -457,29 +468,34 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
                 : 'Move to'}
             </button>
             {moveOpen && (
-              <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[180px]">
-                <div className="px-3 py-1.5 flex items-center justify-center border-b border-neutral-700">
-                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
-                    {[
-                      { key: 'public',  label: 'Public'  },
-                      { key: 'private', label: 'Private' },
-                    ].map(opt => {
-                      const active = movePrivacy === opt.key
-                      return (
-                        <button
-                          key={opt.key}
-                          type="button"
-                          onClick={() => setMovePrivacy(opt.key)}
-                          className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
-                            active
-                              ? (opt.key === 'private' ? 'bg-neutral-700 text-neutral-100' : 'bg-purple-700 text-white')
-                              : 'text-neutral-500 hover:text-neutral-300'
-                          }`}
-                        >
-                          {opt.label}
-                        </button>
-                      )
-                    })}
+              <div className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[200px]">
+                {/* Save as: public/private pill — matches NoteActionsMenu. */}
+                <div className="px-3 pt-2 pb-1.5 flex items-center justify-between gap-2 border-b border-neutral-700">
+                  <span className="text-[10px] uppercase tracking-wide text-neutral-500">Save as</span>
+                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setMovePrivacy('public')}
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-colors ${
+                        movePrivacy === 'public' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      Public
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMovePrivacy('private')}
+                      title="NIP-51 encrypted — visible only to you"
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 ${
+                        movePrivacy === 'private' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                        <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                      </svg>
+                      Private
+                    </button>
                   </div>
                 </div>
                 {lists.map(list => (

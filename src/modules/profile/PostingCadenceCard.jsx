@@ -54,7 +54,9 @@ function buildWeeks(buckets, windowWeeks) {
 }
 
 export default function PostingCadenceCard({ cadence, loading, onRefresh }) {
-  const windowWeeks = cadence?.windowWeeks || 52
+  // Fallback matches the default in fetchAuthorPostingCadence so the
+  // loading-state header doesn't lie about the window size.
+  const windowWeeks = cadence?.windowWeeks || 21
   const weeks    = buildWeeks(cadence?.buckets, windowWeeks)
   const total    = cadence?.total  || 0
   const maxCount = weeks.reduce((m, w) => Math.max(m, w.count), 0)

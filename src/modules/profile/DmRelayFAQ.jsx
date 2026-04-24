@@ -64,9 +64,14 @@ const ITEMS = [
         Fewer and higher-quality is better than many. Suggested properties:
         <ul className="list-disc pl-5 mt-2 space-y-1.5">
           <li>
-            <span className="text-neutral-100">Not auth-gated.</span> If a
-            relay requires NIP-42 auth, strangers can't write DMs to you and
-            your messages silently fail. Avoid these for DMs.
+            <span className="text-neutral-100">No allowlist on writes.</span>{' '}
+            If a relay sets <code className="text-neutral-300">restricted_writes</code>{' '}
+            (pubkey allowlist, payment required on every event, PoW gate),
+            people outside the allowed set can't send you DMs — that's the
+            real blocker. NIP-42 auth alone is <em>not</em> a blocker, and
+            an auth-required DM inbox is actually the NIP-17-recommended
+            setup: it keeps scrapers from harvesting your gift-wrap
+            metadata while still letting any authenticated sender write.
           </li>
           <li>
             <span className="text-neutral-100">Generous message limits.</span>{' '}
@@ -96,10 +101,10 @@ const ITEMS = [
         is encoded as a regular event kind (1059, the "gift wrap"), and any
         relay that accepts generic event kinds handles it — but operators
         don't think of it as a feature worth advertising. We can only
-        eliminate relays that <em>definitely won't</em> work (auth-gated,
-        write-restricted) and rely on practical experience for the rest.
-        If a DM relay starts failing in practice, remove it and add a known
-        alternative.
+        flag relays that <em>definitely won't</em> work (a write allowlist
+        via <code className="text-neutral-300">restricted_writes</code>) and
+        rely on practical experience for the rest. If a DM relay starts
+        failing in practice, remove it and add a known alternative.
       </>
     ),
   },

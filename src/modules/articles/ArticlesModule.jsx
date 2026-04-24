@@ -8,6 +8,7 @@ import DiscoverView from './components/discover/DiscoverView.jsx'
 import { useDraft } from '../../lib/useDraft.js'
 import { useReadingLists } from '../../lib/useReadingLists.js'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
+import { ArticleBookmarksProvider } from './articleBookmarksContext.jsx'
 
 /**
  * ArticlesModule — Module 0.
@@ -73,16 +74,52 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
   const draftPubkey = isOwner ? sessionUser?.pubkey : null
   const { saveDraft, loadDraft, clearDraft } = useDraft(draftPubkey)
 
-  // ── Reading lists ─────────────────────────────────────────────────────────────
+  // ── Reading lists ─────────────────────────────────────────────────────
+  // Session hook — the sole source of truth for MY reading lists + every
+  // write. Exposed to the whole module tree via ArticleBookmarksContext so
+  // three-dot menus, the reader pane, and bulk-action bars all land writes
+  // here and see the resulting state change immediately (no stale display).
+  // Matches NotesModule's single-context pattern.
+  const canBookmark = !!sessionUser?.pubkey && !sessionUser?.readOnly
+  const viewingOwnPage = canBookmark && sessionUser.pubkey === user?.pubkey
+  const sessionHook = useReadingLists(canBookmark ? sessionUser : null)
+
+  // Visitor read-only hook — loads the *viewed* user's lists so their
+  // public Collection renders in the left panel. Gated on !viewingOwnPage
+  // so on my own page we don't run a second concurrent fetch for the same
+  // pubkey; that would give us two independent state copies of the same
+  // data, and a write through the session hook (via the context) wouldn't
+  // show up in the owner's Collection until the second instance refetched
+  // on reload — exactly the stale-display bug.
+  const viewedHook = useReadingLists(
+    viewingOwnPage ? null : (user ? { ...user, readOnly: true } : null)
+  )
+
+  // Display source: session hook on my own page (so writes propagate
+  // live into the Collection view), viewed hook when visiting someone
+  // else (readOnly; owner mutators become no-ops automatically).
   const {
-    lists, createList,
-    addArticle, addArticlesBulk,
-    removeArticle, removeArticlesBulk,
+    lists, removeArticle, removeArticlesBulk,
     moveArticle, moveArticlesBulk,
     movePrivacy, bulkMovePrivacy,
     deleteList, renameList, reorderLists,
     hiddenIdsByView, hideList, unhideList,
-  } = useReadingLists(user)
+  } = viewingOwnPage ? sessionHook : viewedHook
+
+  const bookmarksContextValue = {
+    myLists:         sessionHook.lists,
+    loading:         sessionHook.loading,
+    addArticle:      sessionHook.addArticle,
+    addArticlesBulk: sessionHook.addArticlesBulk,
+    createList:      sessionHook.createList,
+    // Remove-from-my-list needs to be reachable from every surface that
+    // shows "Remove from bookmarks" (reader pane + three-dot menu),
+    // including when the article was found via search rather than opened
+    // from the user's own Collection. Routing it through the context so
+    // the target is always MY lists (session), not the viewed user's.
+    removeArticle:   sessionHook.removeArticle,
+    canBookmark,
+  }
 
   // If a visitor lands on an owner-only URL (e.g. /articles/write via stale
   // share or browser back after logout), redirect to the default view.
@@ -174,6 +211,7 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
       ]
 
   return (
+    <ArticleBookmarksProvider value={bookmarksContextValue}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar — always visible ── */}
@@ -265,9 +303,6 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
         <DiscoverView
           user={user}
           lists={lists}
-          addArticle={addArticle}
-          addArticlesBulk={addArticlesBulk}
-          createList={createList}
           removeArticle={removeArticle}
           removeArticlesBulk={removeArticlesBulk}
           moveArticle={moveArticle}
@@ -289,5 +324,6 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
         />
       </div>
     </div>
+    </ArticleBookmarksProvider>
   )
 }

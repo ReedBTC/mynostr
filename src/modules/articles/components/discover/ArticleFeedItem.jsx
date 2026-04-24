@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { isSafeUrl, getPublishedAt } from '../../../../lib/utils.js'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
@@ -35,6 +35,7 @@ export default function ArticleFeedItem({
   // Menu state: controlled from parent if props provided, otherwise local
   const [localMenuOpen, setLocalMenuOpen] = useState(false)
   const menuOpen = onMenuToggle ? !!menuOpenProp : localMenuOpen
+  const menuTriggerRef = useRef(null)
   function setMenuOpen(open) {
     if (onMenuToggle) onMenuToggle(open)
     else setLocalMenuOpen(open)
@@ -110,17 +111,18 @@ export default function ArticleFeedItem({
         </div>
       </button>
 
-      {/* Three-dot menu */}
-      <div className="flex-shrink-0 pr-2 relative" onMouseDown={e => e.stopPropagation()}>
+      {/* Three-dot menu — horizontal dots, notes-style bare button.
+          menuTriggerRef anchors the portaled ArticleActionsMenu. */}
+      <div className="flex-shrink-0 pr-2 relative" ref={menuTriggerRef} onMouseDown={e => e.stopPropagation()}>
         <button
           onClick={e => { e.stopPropagation(); setMenuOpen(!menuOpen) }}
-          className="w-7 h-7 flex items-center justify-center rounded bg-neutral-900 text-neutral-500 hover:text-neutral-300 hover:bg-neutral-700 transition-colors"
+          className="p-1 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
           title="Actions"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-            <circle cx="8" cy="3" r="1.5" />
-            <circle cx="8" cy="8" r="1.5" />
-            <circle cx="8" cy="13" r="1.5" />
+            <circle cx="3" cy="8" r="1.4" />
+            <circle cx="8" cy="8" r="1.4" />
+            <circle cx="13" cy="8" r="1.4" />
           </svg>
         </button>
         <ArticleActionsMenu
@@ -138,6 +140,7 @@ export default function ArticleFeedItem({
           authorName={authorName}
           authorPic={authorPic}
           onLoadInEditor={onLoadInEditor}
+          triggerRef={menuTriggerRef}
         />
       </div>
     </div>

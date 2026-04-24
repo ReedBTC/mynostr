@@ -8,6 +8,7 @@ import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { fetchAuthorLongformFeed } from '../../../../lib/primal.js'
 import { isSafeUrl, getPublishedAt, withTimeout } from '../../../../lib/utils.js'
 import { useReadingLists } from '../../../../lib/useReadingLists.js'
+import { useArticleBookmarksContext } from '../../articleBookmarksContext.jsx'
 import ArticleFeed from './ArticleFeed.jsx'
 import ArticleReadPanel from './ArticleReadPanel.jsx'
 import AuthorSearch from './AuthorSearch.jsx'
@@ -104,7 +105,25 @@ function dedupeReplaceable(events) {
   return Array.from(best.values())
 }
 
-export default function DiscoverView({ user, lists, addArticle, addArticlesBulk, createList, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+export default function DiscoverView({ user, lists, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+  // Session-scoped bookmark writers live in ArticleBookmarksContext so any
+  // descendant (the three-dot menu on an author's bookmarked item, the
+  // reader-pane bookmark button, the bulk-action bar on a search feed)
+  // pulls the same live set of lists + mutators without prop drilling.
+  // Matches NotesModule's pattern.
+  //
+  // `sessionRemoveArticle` is renamed to distinguish it from the
+  // display-hook `removeArticle` prop. The display-hook version operates
+  // on whatever hook is currently the display source (sessionHook on own
+  // page, viewedHook on visits) — used by owner-only "Remove" affordances
+  // on the owner's own collection three-dot menu. The session version
+  // always targets MY lists, which is what the reader-pane bookmark
+  // button needs when the article came from search rather than from my
+  // own collection.
+  const {
+    myLists, addArticle, addArticlesBulk, createList, canBookmark,
+    removeArticle: sessionRemoveArticle,
+  } = useArticleBookmarksContext()
 
   // Below md:, the two-pane layout collapses to one-pane-at-a-time: the feed
   // until an article is picked, then the reader (with a back arrow) until
@@ -258,10 +277,10 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
     ;(async () => {
       try {
         const ndk = getNDK()
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [0], authors: [selected.pubkey] }),
-          new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-        ])
+          5000,
+        )
         if (cancelled) return
         for (const ev of Array.from(events)) {
           try {
@@ -717,10 +736,10 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                   <BulkActionBar
                     articles={displayArticles.filter(a => searchCheckedIds.has(a.id))}
                     profiles={displayProfiles}
-                    lists={readOnly ? [] : lists}
-                    onAddToList={readOnly ? null : addArticle}
-                    onAddManyToList={readOnly ? null : addArticlesBulk}
-                    onCreateList={readOnly ? null : createList}
+                    lists={canBookmark ? myLists : []}
+                    onAddToList={canBookmark ? addArticle : null}
+                    onAddManyToList={canBookmark ? addArticlesBulk : null}
+                    onCreateList={canBookmark ? createList : null}
                     onClearSelection={() => setSearchCheckedIds(new Set())}
                   />
                 )}
@@ -752,7 +771,14 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                   ) : (
                     <BookmarksPanel
                       manageMode={false}
+                      // `lists` = the searched author's lists (for display
+                      // in the left panel). `myLists` + `canBookmark` are
+                      // threaded so each item's three-dot can offer
+                      // "Add to bookmarks" targeting OUR own lists —
+                      // readOnly stays true so owner-only edit affordances
+                      // (move/remove/flip) stay hidden.
                       lists={authorCollection.lists}
+                      myLists={myLists}
                       titleQuery=""
                       collapsed={authorCollapsed}
                       setCollapsed={setAuthorCollapsed}
@@ -770,8 +796,8 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                           return next
                         })
                       }}
-                      addArticle={undefined}
-                      createList={undefined}
+                      addArticle={canBookmark ? addArticle : undefined}
+                      createList={canBookmark ? createList : undefined}
                       deleteList={undefined}
                       renameList={undefined}
                       reorderLists={undefined}
@@ -779,6 +805,7 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                       hideList={undefined}
                       unhideList={undefined}
                       readOnly={true}
+                      canBookmark={canBookmark}
                       onOpenHelp={() => setHelpOpen(true)}
                     />
                   )
@@ -800,9 +827,9 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                       })
                     }}
                     onLoadMore={() => {}}
-                    lists={readOnly ? null : lists}
-                    onAddToList={readOnly ? null : addArticle}
-                    onCreateList={readOnly ? null : createList}
+                    lists={canBookmark ? myLists : null}
+                    onAddToList={canBookmark ? addArticle : null}
+                    onCreateList={canBookmark ? createList : null}
                     onLoadInEditor={onLoadInEditor}
                   />
                 )}
@@ -816,10 +843,10 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
               <BulkActionBar
                 articles={displayArticles.filter(a => checkedIds.has(a.id))}
                 profiles={new Map()}
-                lists={readOnly ? [] : lists}
-                onAddToList={readOnly ? null : addArticle}
-                onAddManyToList={readOnly ? null : addArticlesBulk}
-                onCreateList={readOnly ? null : createList}
+                lists={canBookmark ? myLists : []}
+                onAddToList={canBookmark ? addArticle : null}
+                onAddManyToList={canBookmark ? addArticlesBulk : null}
+                onCreateList={canBookmark ? createList : null}
                 onMoveArticle={readOnly ? null : moveArticle}
                 onMoveArticlesBulk={readOnly ? null : moveArticlesBulk}
                 onBulkMovePrivacy={readOnly ? null : bulkMovePrivacy}
@@ -866,6 +893,7 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
             <BookmarksPanel
               manageMode={manageMode}
               lists={lists}
+              myLists={myLists}
               titleQuery={titleQuery}
               collapsed={collapsed}
               setCollapsed={setCollapsed}
@@ -892,6 +920,7 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
               hideList={(id) => hideList(id, privacyView)}
               unhideList={(id) => unhideList(id, privacyView)}
               readOnly={readOnly}
+              canBookmark={canBookmark}
               privacyView={privacyView}
               onOpenHelp={() => setHelpOpen(true)}
             />
@@ -918,8 +947,17 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
             // at *their* list — the viewer doesn't own it, so Move/Remove would
             // fail against the publish path. Strip the foreign-list markers so
             // the panel renders as a non-bookmarked item (Copy/Add To only).
-            const isOwnBookmark = !!selected?._listId && lists?.some(l => l.id === selected._listId)
-            const panelArticle = !readOnly && selected?._listId && !isOwnBookmark
+            //
+            // Distinguish by *view*, not by id match — id collisions on the
+            // NIP-51 primary list (`_bookmarks`, shared by every user) and on
+            // common slugs ("favorites" etc) would make a pure id.some() check
+            // think Alice's bookmark is Reed's and route clicks into
+            // moveArticle against Reed's hook → fails silently because Reed's
+            // list doesn't contain that aTag.
+            const isOwnBookmark = !inAuthorCollectionView
+              && !!selected?._listId
+              && lists?.some(l => l.id === selected._listId)
+            const panelArticle = inAuthorCollectionView && selected?._listId
               ? { ...selected, _listId: undefined, _listTitle: undefined, _privacy: undefined }
               : selected
             return (
@@ -927,12 +965,17 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
               key={selected.id}
               article={panelArticle}
               profile={displayProfiles.get(selected.pubkey)}
-              lists={readOnly ? null : lists}
-              onAddToList={readOnly ? null : addArticle}
-              onCreateList={readOnly ? null : createList}
+              lists={canBookmark ? myLists : null}
+              onAddToList={canBookmark ? addArticle : null}
+              onCreateList={canBookmark ? createList : null}
               onMoveArticle={readOnly || !isOwnBookmark ? null : moveArticle}
               onMovePrivacy={readOnly || !isOwnBookmark ? null : movePrivacy}
-              onRemoveFromList={!readOnly && isOwnBookmark ? removeArticle : undefined}
+              // Remove targets MY lists, not the display hook's — so it
+              // works when the article was opened from search-author
+              // results and happens to already be in one of my lists.
+              // sessionRemoveArticle comes from the context above, which
+              // always points at the session hook.
+              onRemoveFromList={canBookmark ? sessionRemoveArticle : undefined}
               defaultPrivacy={privacyView}
               onLoadInEditor={onLoadInEditor}
               onClose={() => setSelected(null)}
@@ -942,6 +985,7 @@ export default function DiscoverView({ user, lists, addArticle, addArticlesBulk,
                 setSelected(null)
               }}
               readOnly={readOnly}
+              canBookmark={canBookmark}
               user={user}
               isMobile={isMobile}
             />
@@ -1022,7 +1066,7 @@ function HelpOverlay({ onClose }) {
 
 // ── Bookmarks panel ─────────────────────────────────────────────────────────────
 
-function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, moveArticle, removeArticle, createList, deleteList, renameList, reorderLists, movePrivacy, hiddenIds, hideList, unhideList, readOnly, privacyView = 'public', onOpenHelp, manageMode }) {
+function BookmarksPanel({ lists, myLists, titleQuery, collapsed, setCollapsed, selected, onSelect, displayArticles, checkedIds, onToggleCheck, addArticle, moveArticle, removeArticle, createList, deleteList, renameList, reorderLists, movePrivacy, hiddenIds, hideList, unhideList, readOnly, canBookmark, privacyView = 'public', onOpenHelp, manageMode }) {
   const [editingId,     setEditingId]     = useState(null)
   const [editTitle,     setEditTitle]     = useState('')
   const [confirmDel,    setConfirmDel]    = useState(null)
@@ -1306,6 +1350,18 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
             {!isCollapsed && items.map(item => {
               const fakeArticle = displayArticles.find(a => a.id === item.aTag)
               if (!fakeArticle) return null
+              // When we're in a non-owner context (readOnly panel = viewing
+              // someone else's collection), `fakeArticle._listId` points at
+              // THEIR list, not ours. The action menu's "isAlreadyBookmarked"
+              // detection uses `_listId` to decide move-vs-add and to offer
+              // move/remove affordances — if we leave the foreign id in,
+              // those handlers try to operate on a list the viewer doesn't
+              // own and silently bail (or publish against a list id that
+              // doesn't exist in their own pubkey's namespace). Strip the
+              // foreign markers so the menu treats this as a fresh add.
+              const menuArticle = readOnly
+                ? { ...fakeArticle, _listId: undefined, _listTitle: undefined, _privacy: undefined }
+                : fakeArticle
               const isSelected = selected?.id === fakeArticle.id
               const displayTitle = item.title || item.aTag?.split(':')[2] || 'Untitled'
               const isHex = (s) => s && (/^[a-f0-9]{6,}$/i.test(s) || s.startsWith('npub'))
@@ -1318,7 +1374,14 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                 ? new Date(dateMs).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
                 : ''
               const menuOpen = itemMenuId === item.aTag
-              const otherLists = lists.filter(l => l.id !== list.id)
+              // Owner on their own collection: "Move to…" shows OTHER of
+              // their lists. Non-owner (logged-in visitor): the Add-to
+              // picker must target MY lists, not theirs — adding to
+              // Alice's list ID with my signing key would just create a
+              // stray entry in my namespace.
+              const pickerLists = !readOnly
+                ? lists.filter(l => l.id !== list.id)
+                : (myLists || [])
 
               return (
                 <div key={item.aTag}
@@ -1366,37 +1429,32 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
                     </div>
                   </button>
 
-                  {/* Three-dots menu */}
-                  {!readOnly && (
-                  <div className="flex-shrink-0 pr-2 relative" onMouseDown={e => e.stopPropagation()}>
-                    <button
-                      onClick={e => { e.stopPropagation(); setItemMenuId(menuOpen ? null : item.aTag) }}
-                      className="w-7 h-7 flex items-center justify-center rounded text-neutral-600 hover:text-neutral-300 hover:bg-neutral-800 transition-colors"
-                      title="Actions">
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <circle cx="8" cy="3" r="1.5" />
-                        <circle cx="8" cy="8" r="1.5" />
-                        <circle cx="8" cy="13" r="1.5" />
-                      </svg>
-                    </button>
-                    <ArticleActionsMenu
-                      open={menuOpen}
-                      onClose={() => setItemMenuId(null)}
-                      article={fakeArticle}
-                      title={item.title || ''}
-                      image={item.image || ''}
-                      tTags={item.tTags || []}
-                      lists={otherLists}
-                      onAddToList={addArticle}
-                      onMoveArticle={moveArticle}
-                      onRemoveFromList={removeArticle}
-                      onCreateList={createList}
-                      onMovePrivacy={movePrivacy}
-                      defaultPrivacy={privacyView}
-                      authorName={item.author || ''}
-                      authorPic={item.authorPic || ''}
-                    />
-                  </div>
+                  {/* Three-dots menu. Shown when the viewer can DO
+                      anything with this item — either they own the list
+                      (full edit suite) or they're a logged-in visitor
+                      who can at least bookmark it to their own list. */}
+                  {(!readOnly || canBookmark) && (
+                  <ItemMenuTrigger
+                    open={menuOpen}
+                    onToggle={() => setItemMenuId(menuOpen ? null : item.aTag)}
+                    onClose={() => setItemMenuId(null)}
+                    article={menuArticle}
+                    title={item.title || ''}
+                    image={item.image || ''}
+                    tTags={item.tTags || []}
+                    lists={pickerLists}
+                    onAddToList={canBookmark ? addArticle : null}
+                    onCreateList={canBookmark ? createList : null}
+                    /* Owner-only ops: move/remove/flip target the
+                       VIEWED user's list state — only exposed when the
+                       viewer is the owner of that list. */
+                    onMoveArticle={!readOnly ? moveArticle : undefined}
+                    onRemoveFromList={!readOnly ? removeArticle : undefined}
+                    onMovePrivacy={!readOnly ? movePrivacy : undefined}
+                    defaultPrivacy={privacyView}
+                    authorName={item.author || ''}
+                    authorPic={item.authorPic || ''}
+                  />
                   )}
                 </div>
               )
@@ -1404,6 +1462,37 @@ function BookmarksPanel({ lists, titleQuery, collapsed, setCollapsed, selected, 
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * ItemMenuTrigger — small wrapper that owns its own triggerRef so the
+ * portaled ArticleActionsMenu can anchor to the exact three-dot button
+ * that opened it. Without this, mapping over items would share a single
+ * ref across all triggers and the menu would attach to the wrong one.
+ */
+function ItemMenuTrigger({ open, onToggle, onClose, ...menuProps }) {
+  const triggerRef = useRef(null)
+  return (
+    <div className="flex-shrink-0 pr-2 relative" ref={triggerRef} onMouseDown={e => e.stopPropagation()}>
+      <button
+        onClick={e => { e.stopPropagation(); onToggle() }}
+        className="p-1 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
+        title="Actions"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+          <circle cx="3" cy="8" r="1.4" />
+          <circle cx="8" cy="8" r="1.4" />
+          <circle cx="13" cy="8" r="1.4" />
+        </svg>
+      </button>
+      <ArticleActionsMenu
+        open={open}
+        onClose={onClose}
+        triggerRef={triggerRef}
+        {...menuProps}
+      />
     </div>
   )
 }

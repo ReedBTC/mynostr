@@ -18,6 +18,7 @@ import { nip19 } from 'nostr-tools'
 import UserSearch from './UserSearch.jsx'
 import { fetchProfiles } from '../lib/primal.js'
 import { isSafeUrl } from '../lib/utils.js'
+import { useLoginModal } from './LoginModalContext.jsx'
 
 const REED_NPUB = 'npub1xgyjasdztryl9sg6nfdm2wcj0j3qjs03sq7a0an32pg0lr5l6yaqxhgu7s'
 // Safe-decode at module load — if the npub is ever mistyped, the homepage
@@ -39,8 +40,9 @@ const FEATURED = [
   // { blurb: "Derek's relay list",                   href: '/npub1.../profile/relays' },
 ]
 
-export default function HomeScreen({ searchInputRef }) {
+export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
   const navigate = useNavigate()
+  const { openLogin } = useLoginModal()
 
   // Reed's pfp for the footer byline. Fetched from Primal on mount so it
   // tracks any profile update without needing a redeploy. Shows nothing
@@ -67,11 +69,11 @@ export default function HomeScreen({ searchInputRef }) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-2xl mx-auto px-4 py-8 sm:py-12 space-y-10">
+      <div className="max-w-xl mx-auto px-4 py-8 sm:py-12 space-y-10">
 
         {/* ── Pitch ────────────────────────────────────────────────── */}
         <div className="flex flex-col items-center text-center">
-          <img src="/mynostr.png" alt="MyNostr" className="w-40 sm:w-48 mb-4" />
+          <img src="/mynostr.png" alt="MyNostr" className="w-full mb-4" />
           <h1 className="text-base sm:text-lg text-neutral-200 font-medium max-w-md">
             Built for creators and curators
           </h1>
@@ -119,18 +121,31 @@ export default function HomeScreen({ searchInputRef }) {
           </div>
         )}
 
-        {/* ── Login CTAs ───────────────────────────────────────────── */}
+        {/* ── Session CTA ──────────────────────────────────────────── */}
         <div className="border-t border-neutral-800 pt-6">
           <div className="flex flex-wrap items-center gap-2">
-            <Link
-              to="/login"
-              className="text-xs text-purple-300 hover:text-purple-100 border border-purple-800 hover:border-purple-600 rounded px-3 py-1.5 transition-colors"
-            >
-              Log in
-            </Link>
-            <span className="text-[11px] text-neutral-600">
-              Extension, nsec, bunker, or generate a new key.
-            </span>
+            {sessionUser ? (
+              <button
+                type="button"
+                onClick={onLogout}
+                className="text-xs text-neutral-400 hover:text-neutral-200 border border-neutral-800 hover:border-neutral-600 rounded px-3 py-1.5 transition-colors"
+              >
+                Log out
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={openLogin}
+                  className="text-xs text-purple-300 hover:text-purple-100 border border-purple-800 hover:border-purple-600 rounded px-3 py-1.5 transition-colors"
+                >
+                  Log in
+                </button>
+                <span className="text-[11px] text-neutral-600">
+                  Extension, nsec, bunker, or generate a new key.
+                </span>
+              </>
+            )}
           </div>
         </div>
 

@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
 import { isSafeUrl } from '../lib/utils.js'
-import { resetNDK, getLastOutboxWarning, clearLastOutboxWarning, OUTBOX_WARNING_EVENT } from '../lib/ndk.js'
+import { getLastOutboxWarning, clearLastOutboxWarning, OUTBOX_WARNING_EVENT } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import { useOwnerContext } from '../lib/ownerContext.jsx'
+import { useLoginModal } from './LoginModalContext.jsx'
 import BoostModal from './BoostModal.jsx'
 import HelpModal from '../modules/articles/components/HelpModal.jsx'
 import MobileNavDrawer from './MobileNavDrawer.jsx'
@@ -26,6 +27,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
   const navigate = useNavigate()
   const { subtab } = useParams()
   const { isOwner, isReadOnly } = useOwnerContext()
+  const { openLogin } = useLoginModal()
   const [boostOpen, setBoostOpen]   = useState(false)
   const [helpOpen,  setHelpOpen]    = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -35,16 +37,14 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
   // worth sharing; Search is owner-only and redirects visitors out.
   const shareable = subtab !== 'write' && subtab !== 'search'
 
-  function handleLogout() {
-    resetNDK()
-    onLogout()
-  }
+  // onLogout is now centralized at the App level — it tears down NDK and
+  // clears session state itself. No local wrapping needed; buttons below
+  // call it directly.
 
   function handleLoginClick() {
-    // Pass the current page as "from" so LoginRoute can bring an owner
-    // straight back to it instead of bouncing to the default module.
-    const from = user?.npub ? `/${user.npub}/${activeModule}` : null
-    navigate('/login', from ? { state: { from } } : undefined)
+    // Login is a modal now — opens over the current page so browsing
+    // state (scroll, feed, filters) survives. No navigation.
+    openLogin()
   }
 
   // Visitor badge — shown whenever the user isn't editing their own page.
@@ -101,12 +101,62 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             ))}
           </nav>
 
-          {/* Bottom: user identity + session actions. Share lives on each
-              module's own header now — not globally on the shell. Order is
-              viewer-badge → session action (Login/Logout) → profile identity
-              so the account-level controls cluster above the pfp row. When
-              logged out the Login button sits next to the "Viewing" badge. */}
-          <div className="shrink-0 border-t border-neutral-800 px-3 py-3 flex flex-col gap-2">
+          {/* Profile identity — sits above the divider, grouped with the
+              module nav since it IS a module (the viewed user's profile).
+              Three layouts based on session/viewing state:
+                - Logged in AND viewing someone else → dual pfps: session
+                  pfp on top (click → /yourNpub/profile), viewed pfp
+                  below with × (click × or pfp → /yourNpub/profile or
+                  /viewedNpub/profile respectively).
+                - Otherwise (logged out OR viewing self) → single pfp
+                  showing whichever identity is available.
+              All clicks go to /npub/profile — "go home" means the
+              profile landing, not whatever module you were on. */}
+          {(() => {
+            const viewingOther =
+              sessionUser?.pubkey && user?.pubkey && sessionUser.pubkey !== user.pubkey
+            if (viewingOther) {
+              // Viewed user goes on top (with × to dismiss), session on
+              // the bottom — same slot the session pfp occupies in the
+              // normal single-pfp case, so the "your identity" anchor
+              // stays put no matter whose page you're browsing.
+              return (
+                <div className="shrink-0 px-3 pb-2 space-y-1">
+                  <ProfileIdentityTab
+                    profile={user.profile}
+                    active={activeModule === 'profile'}
+                    onClick={() => navigate(`/${user.npub}/profile`)}
+                    onClose={() => navigate(`/${sessionUser.npub}/profile`)}
+                    closeTitle="Close and return to your profile"
+                  />
+                  <ProfileIdentityTab
+                    profile={sessionUser.profile}
+                    active={false}
+                    onClick={() => navigate(`/${sessionUser.npub}/profile`)}
+                  />
+                </div>
+              )
+            }
+            const singleProfile = user?.profile || sessionUser?.profile
+            const singleNpub = user?.npub || sessionUser?.npub
+            if (!singleProfile && !singleNpub) return null
+            return (
+              <div className="shrink-0 px-3 pb-2">
+                <ProfileIdentityTab
+                  profile={singleProfile}
+                  active={activeModule === 'profile'}
+                  onClick={() => {
+                    if (singleNpub) navigate(`/${singleNpub}/profile`)
+                  }}
+                />
+              </div>
+            )
+          })()}
+
+          {/* Session controls — below the divider, cleanly separated from
+              navigation. Viewer badge + Login/Logout only; the profile
+              identity row moved above the line for better grouping. */}
+          <div className="shrink-0 border-t border-neutral-800 px-3 py-3">
             <div className="flex items-center gap-2 flex-wrap">
               {viewerBadgeText && (
                 <span className="text-[11px] text-amber-500 border border-amber-900 rounded px-2 py-0.5">
@@ -115,7 +165,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               )}
               {sessionUser ? (
                 <button
-                  onClick={handleLogout}
+                  onClick={onLogout}
                   className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
                   aria-label="Logout"
                 >
@@ -131,23 +181,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 </button>
               )}
             </div>
-            {/* The pfp tab shows the VIEWED user's profile on module pages.
-                On the homepage there's no viewed user — fall back to the
-                session user's profile (if logged in) so they have a
-                one-click path back to their own page. The click handler
-                navigates directly rather than going through
-                onModuleChange, so this works even on the homepage where
-                that handler focuses the search input. */}
-            {(user || sessionUser) && (
-              <ProfileIdentityTab
-                profile={(user || sessionUser)?.profile}
-                active={activeModule === 'profile'}
-                onClick={() => {
-                  const target = user?.npub || sessionUser?.npub
-                  if (target) navigate(`/${target}/profile`)
-                }}
-              />
-            )}
           </div>
         </aside>
       )}
@@ -184,7 +217,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               {sessionUser && <SessionAvatar sessionUser={sessionUser} />}
               {sessionUser ? (
                 <button
-                  onClick={handleLogout}
+                  onClick={onLogout}
                   aria-label="Logout"
                   className="text-[10px] text-neutral-400 hover:text-neutral-100 border border-neutral-700 hover:border-neutral-500 rounded px-1.5 py-0.5 transition-colors"
                 >
@@ -220,7 +253,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           onModuleChange={onModuleChange}
           onBoost={() => setBoostOpen(true)}
           onHelp={() => setHelpOpen(true)}
-          onLogout={handleLogout}
+          onLogout={onLogout}
           onLogin={handleLoginClick}
           showHelp={activeModule === 'articles'}
         />
@@ -355,40 +388,65 @@ function SideTab({ mod, active, onClick }) {
   )
 }
 
-/** Profile identity button — lives at the bottom of the rail instead of
- *  inline with the module tabs. Shows the viewed user's pfp + displayName so
- *  it reads as "this is whose page you're on." Clicking it navigates to the
- *  profile module (same as the old Profile tab did). */
-function ProfileIdentityTab({ profile, active, onClick }) {
+/** Profile identity tab — pfp + displayName row that sits above the
+ *  divider, grouped with the module nav.
+ *
+ *  When sessionUser !== viewedUser, AppShell renders TWO of these:
+ *    - Session pfp (you) on top — click to go to /yourNpub/profile
+ *    - Viewed pfp (them) below with a ×  — click pfp to go to their
+ *      profile, click × to "close" and return to your profile
+ *
+ *  The × is an optional inline button; pass onClose to show it. We use
+ *  a div (not button) as the outer element so the × can be a nested
+ *  real button — nesting <button> inside <button> is invalid HTML. */
+function ProfileIdentityTab({ profile, active, onClick, onClose, closeTitle }) {
   const displayName = profile?.displayName || profile?.name || 'Profile'
+  const baseClass = `relative flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors text-left w-full ${
+    active
+      ? 'bg-purple-950/40 text-purple-300'
+      : 'text-neutral-300 hover:text-neutral-100 hover:bg-neutral-900'
+  }`
   return (
-    <button
-      onClick={onClick}
-      title={displayName}
-      aria-current={active ? 'page' : undefined}
-      className={`relative flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors text-left ${
-        active
-          ? 'bg-purple-950/40 text-purple-300'
-          : 'text-neutral-300 hover:text-neutral-100 hover:bg-neutral-900'
-      }`}
-    >
+    <div className={baseClass} role="group">
       {active && (
         <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-purple-400" aria-hidden="true" />
       )}
-      {profile?.image && isSafeUrl(profile.image) ? (
-        <img
-          src={profile.image}
-          alt=""
-          className="w-7 h-7 rounded-full object-cover bg-neutral-800 shrink-0"
-          onError={e => { e.target.style.display = 'none' }}
-        />
-      ) : (
-        <span className="w-7 h-7 rounded-full bg-neutral-800 flex items-center justify-center text-[11px] text-neutral-500 shrink-0">
-          ?
-        </span>
+      <button
+        type="button"
+        onClick={onClick}
+        title={displayName}
+        aria-current={active ? 'page' : undefined}
+        className="flex items-center gap-2 min-w-0 flex-1 text-left bg-transparent"
+      >
+        {profile?.image && isSafeUrl(profile.image) ? (
+          <img
+            src={profile.image}
+            alt=""
+            className="w-7 h-7 rounded-full object-cover bg-neutral-800 shrink-0"
+            onError={e => { e.target.style.display = 'none' }}
+          />
+        ) : (
+          <span className="w-7 h-7 rounded-full bg-neutral-800 flex items-center justify-center text-[11px] text-neutral-500 shrink-0">
+            ?
+          </span>
+        )}
+        <span className="text-sm truncate min-w-0">{displayName}</span>
+      </button>
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          title={closeTitle || 'Close'}
+          aria-label={closeTitle || 'Close'}
+          className="shrink-0 text-neutral-500 hover:text-neutral-200 p-0.5 rounded transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="6" y1="6" x2="18" y2="18" />
+            <line x1="18" y1="6" x2="6" y2="18" />
+          </svg>
+        </button>
       )}
-      <span className="text-sm truncate flex-1 min-w-0">{displayName}</span>
-    </button>
+    </div>
   )
 }
 

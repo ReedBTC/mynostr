@@ -20,6 +20,7 @@ import { nip19 } from 'nostr-tools'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import ShareButton from '../../components/ShareButton.jsx'
+import RelayDiscoveryModal from './RelayDiscoveryModal.jsx'
 import {
   fetchNip11,
   fetchUserRelayList,
@@ -121,8 +122,14 @@ function validateRelayInput(raw) {
 
 export default function RelayCard({ pubkey }) {
   const isMobile = useIsMobile()
-  const { isOwner } = useOwnerContext()
+  const { isOwner, sessionUser } = useOwnerContext()
   const copier = useRelayCopier({ kind: 'main' })
+
+  // Relay-discovery modal — "Search" button in the header (owner only)
+  // pops this over the page so the user can inspect someone else's
+  // relay + DM relay lists and cherry-pick add-ons without leaving
+  // their own profile.
+  const [searchOpen, setSearchOpen] = useState(false)
 
   // Share URL always points at the /profile/relays anchor — so clicking the
   // card's share button from anywhere on the profile page sends recipients
@@ -273,6 +280,16 @@ export default function RelayCard({ pubkey }) {
             )}
           </span>
           {shareUrl && <ShareButton variant="button" url={shareUrl} />}
+          {isOwner && !loading && !inEdit && (
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              title="Search another user's relays"
+              className="text-[11px] px-2 py-1 rounded border border-neutral-700 text-neutral-300 hover:bg-neutral-900 hover:border-purple-700/60 hover:text-purple-200 transition-colors focus:outline-none focus:ring-1 focus:ring-purple-600"
+            >
+              Search
+            </button>
+          )}
           {isOwner && !loading && !inEdit && relays.length > 0 && (
             <button
               type="button"
@@ -333,6 +350,11 @@ export default function RelayCard({ pubkey }) {
 
       <RelayFAQ />
       {copier.modalElement}
+      <RelayDiscoveryModal
+        open={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        sessionUser={sessionUser}
+      />
     </div>
   )
 }
@@ -465,6 +487,7 @@ function DesktopTable({ relays, infoByUrl, copier }) {
         <col />
         {FEATURES.map(f => <col key={f.key} style={{ width: '46px' }} />)}
         <col style={{ width: '76px' }} />
+        {copier.canCopy && <col style={{ width: '32px' }} />}
       </colgroup>
       <thead className="text-[10px] uppercase tracking-wider text-neutral-500">
         <tr className="border-b border-neutral-800">
@@ -485,6 +508,12 @@ function DesktopTable({ relays, infoByUrl, copier }) {
               <span className="cursor-help underline decoration-dotted decoration-neutral-600 underline-offset-2">Software</span>
             </HoverTip>
           </th>
+          {/* Copy-to-my-list column — labeled "Add" so it reads as an
+              action column, visually separated from the relay-data
+              columns to its left. */}
+          {copier.canCopy && (
+            <th className="px-1 py-1.5 font-medium border-l border-neutral-900 text-center">Add</th>
+          )}
         </tr>
       </thead>
       <tbody>
@@ -505,7 +534,6 @@ function DesktopTable({ relays, infoByUrl, copier }) {
                   <StatusDot info={info} />
                   <RWBadge read={r.read} write={r.write} />
                   <PaidBadge info={info} />
-                  <CopyButton url={r.url} read={r.read} write={r.write} {...copier} />
                 </span>
               </td>
               {FEATURES.map(f => (
@@ -516,6 +544,11 @@ function DesktopTable({ relays, infoByUrl, copier }) {
               <td className="px-1.5 py-1.5 border-l border-neutral-900">
                 <SoftwareCell info={info} />
               </td>
+              {copier.canCopy && (
+                <td className="px-1 py-1.5 border-l border-neutral-900 text-center">
+                  <CopyButton url={r.url} read={r.read} write={r.write} {...copier} />
+                </td>
+              )}
             </tr>
           )
         })}
@@ -545,8 +578,15 @@ function MobileList({ relays, infoByUrl, copier }) {
                 <PaidBadge info={info} />
                 <StatusDot info={info} />
                 <RWBadge read={r.read} write={r.write} />
-                <CopyButton url={r.url} read={r.read} write={r.write} {...copier} />
               </div>
+              {/* Copy action, pulled out of the badge cluster with extra
+                  spacing so it reads as an action, not another piece of
+                  relay metadata. */}
+              {copier.canCopy && (
+                <div className="shrink-0 ml-1">
+                  <CopyButton url={r.url} read={r.read} write={r.write} {...copier} />
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-1 overflow-x-auto -mx-1 px-1">
               {FEATURES.map(f => (

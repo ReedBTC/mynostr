@@ -1,4 +1,5 @@
 import { getNDK, connectAndWait } from './ndk.js'
+import { withTimeout } from './utils.js'
 
 /**
  * Count how many items of each target kind a user has bookmarked across
@@ -29,10 +30,10 @@ export async function fetchUserBookmarkCounts(pubkey) {
   const ndk = getNDK()
   try {
     await connectAndWait(ndk, 3000)
-    const events = await Promise.race([
+    const events = await withTimeout(
       ndk.fetchEvents({ kinds: [10003, 30001, 30003], authors: [pubkey], limit: FETCH_LIMIT }),
-      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-    ])
+      6000,
+    )
 
     // Dedupe replaceable lists to the newest (kind, d-tag) per pair. 10003
     // is user-unique so its d-tag slot is empty-string. Without this, relays

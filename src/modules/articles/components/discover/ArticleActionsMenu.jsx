@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { nip19 } from 'nostr-tools'
 import { exportEpub } from '../../../../lib/epub.js'
 import { titleToSlug, buildFrontmatter, copyToClipboard, getPublishedAt, getPublishedAtDate, withTimeout } from '../../../../lib/utils.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
+import { Z } from '../../../../lib/zIndex.js'
 
 /**
  * Shared three-dots action menu used by:
@@ -35,6 +37,7 @@ export default function ArticleActionsMenu({
   authorName,           // used as bookmark metadata + epub author
   authorPic,
   onLoadInEditor,       // optional — enables "Load in editor"
+  triggerRef,           // optional — anchor for portaled fixed positioning
 }) {
   const [listSubmenu, setListSubmenu] = useState(false)
   const [newListName, setNewListName] = useState('')
@@ -44,15 +47,61 @@ export default function ArticleActionsMenu({
   // Bookmark write state. While `pendingAction` is set we show a spinner and
   // lock the menu so the user can't race a second sign/publish on top of
   // the first. On failure we park `actionError` so the user sees that the
-  // change didn't land — no more silently pretending it worked.
+  // change didn't land — no more silently pretending it worked. On success
+  // we flash `actionSuccess` (the verb just applied) for a beat before
+  // closing so the user has visible confirmation — without it, a successful
+  // add looks identical to a no-op (menu closes, nothing visible changes),
+  // and the user can't tell if anything happened.
   const [pendingAction, setPendingAction] = useState(null) // 'add' | 'move' | 'create' | 'flip' | 'remove' | null
   const [actionError,   setActionError]   = useState('')
+  const [actionSuccess, setActionSuccess] = useState(null) // 'add' | 'move' | 'flip' | 'remove' | null
   // Guards against setState after unmount — user may close the menu (and thus
   // unmount this component) while an export fetch is still in flight.
-  const mountedRef = useRef(true)
-  useEffect(() => () => { mountedRef.current = false }, [])
+  //
+  // Setup MUST reset to true. In React 18 StrictMode the effect runs
+  // setup → cleanup → setup again on mount; with no setup body, the
+  // cleanup permanently sets current to false and no publish callback
+  // ever completes (finishAction early-returns, spinner persists). This
+  // cost us a lot of debugging — don't drop the explicit reset.
+  const mountedRef      = useRef(true)
+  // Active timers for the two transient flashes below. Cleared on
+  // unmount so a closed menu's pending callback doesn't keep a timer
+  // armed (minor waste), AND cleared before scheduling a new one so
+  // rapid repeat actions can't stack flashes into each other.
+  const copyTimerRef    = useRef(null)
+  const successTimerRef = useRef(null)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (copyTimerRef.current)    { clearTimeout(copyTimerRef.current);    copyTimerRef.current = null }
+      if (successTimerRef.current) { clearTimeout(successTimerRef.current); successTimerRef.current = null }
+    }
+  }, [])
+
+  // Portal position computed from the trigger's bounding rect (falls back
+  // to null when no triggerRef is wired, in which case the menu is
+  // rendered inline — backward-compatible with any legacy callsite).
+  // Closes on scroll/resize rather than trying to reposition, matching
+  // NoteActionsMenu's pattern.
+  const [menuPos, setMenuPos] = useState(null)
+  useEffect(() => {
+    if (!open || !triggerRef?.current) { setMenuPos(null); return }
+    const rect = triggerRef.current.getBoundingClientRect()
+    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    function dismiss() { onClose?.() }
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [open, triggerRef, onClose])
 
   if (!open) return null
+  // Wait for the position calc to land (when portaled) before rendering —
+  // avoids a top-left flash on first open.
+  if (triggerRef && !menuPos) return null
 
   const dTag     = article.tags?.find(t => t[0] === 'd')?.[1] || ''
   const aTag     = article._aTag || (article.pubkey && dTag ? `30023:${article.pubkey}:${dTag}` : '')
@@ -71,22 +120,36 @@ export default function ArticleActionsMenu({
     if (!ok) return
     setCopied(kind)
     // Keep menu open briefly so the user sees the confirmation.
-    setTimeout(() => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => {
+      copyTimerRef.current = null
+      if (!mountedRef.current) return
       setCopied(null)
       onClose?.()
     }, 1200)
   }
 
-  // Close the menu on a successful publish; otherwise keep it open and park
-  // the error so the user can retry. Every bookmark handler funnels through
-  // here so the close/error semantics stay consistent.
-  function finishAction(ok, errorMessage = 'Save failed — tap to retry') {
+  // Flash the just-applied verb briefly before closing so the user has
+  // visible confirmation that the write landed; otherwise keep the menu
+  // open and park the error so the user can retry. Every bookmark handler
+  // funnels through here so the close/error semantics stay consistent.
+  function finishAction(ok, errorMessage = 'Save failed — tap to retry', successVerb = 'add') {
     if (!mountedRef.current) return
     if (ok) {
       setPendingAction(null)
       setActionError('')
-      setListSubmenu(false)
-      onClose?.()
+      setActionSuccess(successVerb)
+      // Leave the submenu visible during the flash — its header changes to
+      // the ✓ label — then close. Clear any previous success timer first
+      // so a rapid repeat can't stack two closers on top of each other.
+      if (successTimerRef.current) clearTimeout(successTimerRef.current)
+      successTimerRef.current = setTimeout(() => {
+        successTimerRef.current = null
+        if (!mountedRef.current) return
+        setActionSuccess(null)
+        setListSubmenu(false)
+        onClose?.()
+      }, 1100)
     } else {
       setPendingAction(null)
       setActionError(errorMessage)
@@ -117,7 +180,7 @@ export default function ArticleActionsMenu({
           tTags: safeTags,
         }, { privacy: addPrivacy })
       }
-      finishAction(ok !== false)
+      finishAction(ok !== false, 'Save failed — tap to retry', isAlreadyBookmarked && onMoveArticle ? 'move' : 'add')
     } catch {
       finishAction(false)
     }
@@ -147,7 +210,7 @@ export default function ArticleActionsMenu({
     try {
       const newPrivacy = article._privacy === 'private' ? 'public' : 'private'
       const ok = await onMovePrivacy(article._listId, aTag, newPrivacy)
-      finishAction(ok !== false)
+      finishAction(ok !== false, 'Save failed — tap to retry', 'flip')
     } catch {
       finishAction(false)
     }
@@ -161,7 +224,7 @@ export default function ArticleActionsMenu({
       const ok = await onRemoveFromList(article._listId, aTag, {
         privacy: article._privacy || 'public',
       })
-      finishAction(ok !== false, 'Remove failed — tap to retry')
+      finishAction(ok !== false, 'Remove failed — tap to retry', 'remove')
     } catch {
       finishAction(false, 'Remove failed — tap to retry')
     }
@@ -264,22 +327,30 @@ export default function ArticleActionsMenu({
   const canRemove      = !!onRemoveFromList && !!article?._listId && !!aTag
   const isBookmarked   = !!article?._listId
 
-  return (
+  const menuContent = (
     <div
-      className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 min-w-[200px] max-h-[70vh] overflow-y-auto"
+      data-article-actions-menu="true"
+      className={
+        triggerRef
+          ? `fixed bg-neutral-800 border border-neutral-700 rounded shadow-xl ${Z.portaledMenu} w-[240px] max-h-[70vh] overflow-y-auto`
+          : 'absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 w-[240px] max-h-[70vh] overflow-y-auto'
+      }
+      style={triggerRef ? { top: menuPos.top, right: menuPos.right } : undefined}
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
     >
       {canBookmark && (
         <>
           <button
-            onClick={() => { if (!pendingAction) setListSubmenu(o => !o) }}
-            disabled={!!pendingAction}
+            onClick={() => { if (!pendingAction && !actionSuccess) setListSubmenu(o => !o) }}
+            disabled={!!pendingAction || !!actionSuccess}
             className={`w-full text-left px-3 py-2 text-xs transition-colors flex items-center justify-between ${
-              actionError && (pendingAction === null)
-                ? 'text-red-400 hover:bg-red-950/40'
-                : 'text-neutral-300 hover:bg-neutral-700'
-            } disabled:opacity-60`}
+              actionSuccess
+                ? 'text-blue-400'
+                : actionError && (pendingAction === null)
+                  ? 'text-red-400 hover:bg-red-950/40'
+                  : 'text-neutral-300 hover:bg-neutral-700'
+            } disabled:opacity-100`}
           >
             <span className="inline-flex items-center gap-1.5">
               {pendingAction === 'add' || pendingAction === 'move' || pendingAction === 'create' ? (
@@ -287,39 +358,55 @@ export default function ArticleActionsMenu({
                   <span className="w-3 h-3 border border-current border-t-transparent rounded-full animate-spin inline-block" />
                   <span>Saving…</span>
                 </>
+              ) : actionSuccess === 'add' ? (
+                <span>✓ Bookmarked</span>
+              ) : actionSuccess === 'move' ? (
+                <span>✓ Moved</span>
+              ) : actionSuccess === 'flip' ? (
+                <span>✓ Saved</span>
+              ) : actionSuccess === 'remove' ? (
+                <span>✓ Removed</span>
               ) : actionError && !pendingAction ? (
                 <span>⚠️ {actionError}</span>
               ) : (
                 <span>{isBookmarked && onMoveArticle ? 'Move to…' : 'Add to bookmarks'}</span>
               )}
             </span>
-            <span className="text-neutral-600 text-[10px]">{listSubmenu ? '▲' : '▼'}</span>
+            {!actionSuccess && (
+              <span className="text-neutral-600 text-[10px]">{listSubmenu ? '▲' : '▼'}</span>
+            )}
           </button>
           {listSubmenu && (
             <div className="border-t border-neutral-700">
-              <div className="px-3 py-1.5 flex items-center justify-center">
-                <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900 p-0.5">
-                  {[
-                    { key: 'public',  label: 'Public'  },
-                    { key: 'private', label: 'Private' },
-                  ].map(opt => {
-                    const active = addPrivacy === opt.key
-                    return (
-                      <button
-                        key={opt.key}
-                        type="button"
-                        onClick={() => setAddPrivacy(opt.key)}
-                        disabled={!!pendingAction}
-                        className={`text-[10px] px-2 py-0.5 rounded-full transition-colors disabled:opacity-40 ${
-                          active
-                            ? (opt.key === 'private' ? 'bg-neutral-700 text-neutral-100' : 'bg-purple-700 text-white')
-                            : 'text-neutral-500 hover:text-neutral-300'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    )
-                  })}
+              {/* Save as: public/private pill — matches NoteActionsMenu. */}
+              <div className="px-3 pt-2 pb-1.5 flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-wide text-neutral-500">Save as</span>
+                <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setAddPrivacy('public')}
+                    disabled={!!pendingAction}
+                    className={`text-[10px] px-2 py-0.5 rounded-full transition-colors disabled:opacity-40 ${
+                      addPrivacy === 'public' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    Public
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddPrivacy('private')}
+                    title="NIP-51 encrypted — visible only to you"
+                    disabled={!!pendingAction}
+                    className={`text-[10px] px-2 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 disabled:opacity-40 ${
+                      addPrivacy === 'private' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                    }`}
+                  >
+                    <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                      <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                      <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                    </svg>
+                    Private
+                  </button>
                 </div>
               </div>
               {lists.map(list => (
@@ -341,7 +428,7 @@ export default function ArticleActionsMenu({
                     if (e.key === 'Enter') createAndAdd()
                     if (e.key === 'Escape') setListSubmenu(false)
                   }}
-                  placeholder="New group…"
+                  placeholder="New collection…"
                   maxLength={60}
                   disabled={!!pendingAction}
                   className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none disabled:opacity-60"
@@ -433,4 +520,9 @@ export default function ArticleActionsMenu({
       )}
     </div>
   )
+
+  // When a triggerRef is wired, render through a portal so the menu
+  // escapes any `overflow: hidden` ancestor (same pattern NoteActionsMenu
+  // uses). Legacy callsites without a triggerRef render inline.
+  return triggerRef ? createPortal(menuContent, document.body) : menuContent
 }

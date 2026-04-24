@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
 import { truncateNpub, isSafeUrl } from '../lib/utils.js'
 
@@ -20,9 +21,27 @@ export default function MobileNavDrawer({
   showHelp,
 }) {
   const profile = user?.profile
+  const navigate = useNavigate()
+  const viewingOther =
+    sessionUser?.pubkey && user?.pubkey && sessionUser.pubkey !== user.pubkey
 
   function selectModule(id) {
     onModuleChange(id)
+    onClose()
+  }
+
+  // Switch from the viewed user back to the session user's profile.
+  // Drawer closes so the page change is visible immediately.
+  function switchToSelf() {
+    if (!sessionUser?.npub) return
+    navigate(`/${sessionUser.npub}/profile`)
+    onClose()
+  }
+
+  // Dismiss the drawer and navigate — used by the session-pfp row.
+  function goToSessionProfile() {
+    if (!sessionUser?.npub) return
+    navigate(`/${sessionUser.npub}/profile`)
     onClose()
   }
 
@@ -43,43 +62,42 @@ export default function MobileNavDrawer({
         role="dialog"
         aria-label="Navigation menu"
       >
-        {/* Header. On the public homepage (no viewed user) we show the
-            MyNostr wordmark instead of a person, so the drawer doesn't
-            confuse visitors with an "Anonymous" row. */}
+        {/* Header. Three layouts mirror the desktop rail:
+              - Logged in AND viewing someone else: two rows — session
+                ("You") on top, viewed ("Viewing") below with an X that
+                swaps back to the session user's profile.
+              - Otherwise (logged out OR viewing self): single user row.
+              - Public homepage (no user at all): MyNostr wordmark.
+            The drawer-level close button (top-right) is separate from
+            the per-row X, so the two buttons don't collide visually. */}
         <div className="flex items-start justify-between gap-2 p-4 border-b border-neutral-800">
-          {user ? (
-            <div className="flex items-center gap-3 min-w-0">
-              {profile?.image && isSafeUrl(profile.image) ? (
-                <img
-                  src={profile.image}
-                  alt=""
-                  className="w-10 h-10 rounded-full object-cover bg-neutral-800 shrink-0"
-                  onError={e => { e.target.style.display = 'none' }}
-                />
-              ) : (
-                <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 text-xs shrink-0">
-                  ?
-                </div>
-              )}
-              <div className="leading-tight min-w-0">
-                <p className="text-sm text-neutral-200 truncate">
-                  {profile?.displayName || profile?.name || 'Anonymous'}
-                </p>
-                <p className="text-xs text-neutral-600 font-mono truncate">
-                  {truncateNpub(user?.npub || '')}
-                </p>
-                {sessionUser && sessionUser.pubkey !== user?.pubkey && (
-                  <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
-                    Viewing
-                  </span>
-                )}
-                {sessionUser && sessionUser.pubkey === user?.pubkey && sessionUser.readOnly && (
-                  <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
-                    Read-only
-                  </span>
-                )}
-              </div>
+          {viewingOther ? (
+            <div className="flex flex-col gap-2 min-w-0 flex-1">
+              {/* Viewed user on top (with × to dismiss), session on the
+                  bottom — matches the desktop rail, and keeps the "your
+                  identity" anchor in the same slot it occupies when
+                  viewing your own page. */}
+              <UserRow
+                profile={profile}
+                npub={user?.npub}
+                badge="Viewing"
+                onClick={() => { selectModule('profile') }}
+                onClose={switchToSelf}
+                closeTitle="Close and return to your profile"
+              />
+              <UserRow
+                profile={sessionUser.profile}
+                npub={sessionUser.npub}
+                badge={sessionUser.readOnly ? 'Read-only' : 'You'}
+                onClick={goToSessionProfile}
+              />
             </div>
+          ) : user ? (
+            <UserRow
+              profile={profile}
+              npub={user?.npub}
+              badge={sessionUser?.readOnly && sessionUser.pubkey === user.pubkey ? 'Read-only' : null}
+            />
           ) : (
             <div className="flex items-center gap-3 min-w-0">
               <p className="text-sm text-neutral-200 truncate font-semibold">MyNostr</p>
@@ -180,6 +198,72 @@ export default function MobileNavDrawer({
           )}
         </div>
       </aside>
+    </div>
+  )
+}
+
+/**
+ * UserRow — pfp + name + npub (+ optional badge + optional ×) row for the
+ * drawer header. Used alone for the single-user case and stacked twice
+ * for the session ≠ viewed case. Main area is a real button when onClick
+ * is provided so tapping the row acts as "open this profile."
+ */
+function UserRow({ profile, npub, badge, onClick, onClose, closeTitle }) {
+  const displayName = profile?.displayName || profile?.name || 'Anonymous'
+  const Content = (
+    <>
+      {profile?.image && isSafeUrl(profile.image) ? (
+        <img
+          src={profile.image}
+          alt=""
+          className="w-10 h-10 rounded-full object-cover bg-neutral-800 shrink-0"
+          onError={e => { e.target.style.display = 'none' }}
+        />
+      ) : (
+        <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 text-xs shrink-0">
+          ?
+        </div>
+      )}
+      <div className="leading-tight min-w-0 text-left">
+        <p className="text-sm text-neutral-200 truncate">{displayName}</p>
+        <p className="text-xs text-neutral-600 font-mono truncate">
+          {truncateNpub(npub || '')}
+        </p>
+        {badge && (
+          <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
+            {badge}
+          </span>
+        )}
+      </div>
+    </>
+  )
+  return (
+    <div className="flex items-center gap-3 min-w-0">
+      {onClick ? (
+        <button
+          type="button"
+          onClick={onClick}
+          className="flex items-center gap-3 min-w-0 flex-1 text-left bg-transparent hover:bg-neutral-900/50 rounded -m-1 p-1 transition-colors"
+        >
+          {Content}
+        </button>
+      ) : (
+        <div className="flex items-center gap-3 min-w-0 flex-1">{Content}</div>
+      )}
+      {onClose && (
+        <button
+          type="button"
+          onClick={onClose}
+          title={closeTitle || 'Close'}
+          aria-label={closeTitle || 'Close'}
+          className="shrink-0 text-neutral-500 hover:text-neutral-200 p-1 rounded transition-colors"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="6" y1="6" x2="18" y2="18" />
+            <line x1="18" y1="6" x2="6" y2="18" />
+          </svg>
+        </button>
+      )}
     </div>
   )
 }

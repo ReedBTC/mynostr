@@ -29,6 +29,7 @@
 import { useEffect, useState } from 'react'
 import { fetchThread, fetchNotesByIds, fetchProfiles } from './primal.js'
 import { getNDK, connectAndWait } from './ndk.js'
+import { withTimeout } from './utils.js'
 import { parseReplyRefs } from './nip10.js'
 
 // Session-scoped cache. Keyed by rootId so every note in the same thread
@@ -113,14 +114,8 @@ export function useNoteThread(focus) {
             await connectAndWait(ndk, 3000).catch(() => {})
             // Root + any descendants indexed via #e.
             const [rootSet, descSet] = await Promise.all([
-              Promise.race([
-                ndk.fetchEvents({ ids: [rootId] }),
-                new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 4000)),
-              ]).catch(() => new Set()),
-              Promise.race([
-                ndk.fetchEvents({ kinds: [1], '#e': [rootId] }),
-                new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 4000)),
-              ]).catch(() => new Set()),
+              withTimeout(ndk.fetchEvents({ ids: [rootId] }),                    4000).catch(() => new Set()),
+              withTimeout(ndk.fetchEvents({ kinds: [1], '#e': [rootId] }),      4000).catch(() => new Set()),
             ])
             const byId = new Map(notes.map(n => [n.id, n]))
             for (const ev of rootSet) if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev)

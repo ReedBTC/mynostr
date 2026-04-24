@@ -116,7 +116,7 @@ export default function BookmarkPickerSheet({
         <div className="flex-1 overflow-y-auto">
           {ordered.length === 0 && (
             <p className="px-4 py-6 text-xs text-neutral-500 text-center italic">
-              No categories yet. Create one below.
+              No collections yet. Create one below.
             </p>
           )}
           {ordered.map(cat => {
@@ -145,7 +145,7 @@ export default function BookmarkPickerSheet({
             value={newName}
             onChange={e => setNewName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleCreate() }}
-            placeholder="New category name…"
+            placeholder="New collection name…"
             maxLength={60}
             disabled={!!pending}
             className="flex-1 bg-neutral-800 border border-neutral-700 rounded px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:border-purple-500 disabled:opacity-50"
@@ -154,8 +154,9 @@ export default function BookmarkPickerSheet({
             onClick={handleCreate}
             disabled={!newName.trim() || !!pending}
             className="text-sm px-4 py-2 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors whitespace-nowrap"
+            aria-label="Add new collection"
           >
-            Add
+            ✓
           </button>
         </div>
       </div>

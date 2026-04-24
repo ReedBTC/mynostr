@@ -4,6 +4,7 @@ import { nip19 } from 'nostr-tools'
 import { createNostrConnectURI } from 'nostr-tools/nip46'
 import { QRCodeSVG } from 'qrcode.react'
 import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from '../lib/ndk.js'
+import { withTimeout } from '../lib/utils.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import {
   connectViaBunkerUrl,
@@ -71,7 +72,7 @@ function clearPendingNip46() {
   try { sessionStorage.removeItem(PENDING_NIP46_KEY) } catch {}
 }
 
-export default function LoginScreen({ onLogin }) {
+export default function LoginScreen({ onLogin, embedded = false }) {
   const isMobile = useIsMobile()
   const [nsecValue, setNsecValue] = useState('')
   const [bunkerValue, setBunkerValue] = useState('')
@@ -109,22 +110,25 @@ export default function LoginScreen({ onLogin }) {
     setNcTab(isMobile ? 'paste' : 'qr')
   }, [isMobile])
 
-  // Start QR flow when QR tab is active (desktop) or always on mobile —
-  // pre-generating the nostrconnect:// URI so the first tap of "Open in
-  // Signer App" navigates immediately instead of just generating the link.
+  // Auto-start the QR flow ONLY on mobile — pre-generating the
+  // nostrconnect:// URI so the first tap of "Open in Signer App"
+  // navigates immediately instead of stalling on link generation.
   //
-  // Collapse the trigger to a single stable value so mobile doesn't re-run
-  // when ncTab transitions null→'paste' on mount (both map to 'mobile').
-  const qrTrigger = isMobile ? 'mobile' : ncTab
+  // On desktop we defer it: opening NC-relay websockets on mount (three
+  // of them, doubled under StrictMode) races with extension login's
+  // `window.nostr.getPublicKey()` and occasionally times out the first
+  // attempt. Desktop users get an explicit "Generate QR code" button
+  // in the QR tab — one extra click before a QR appears, but the
+  // extension path stays uncontended for the common case.
   useEffect(() => {
-    if (qrTrigger === 'mobile' || qrTrigger === 'qr') startQrFlow()
+    if (isMobile) startQrFlow()
     return () => {
       if (qrSignerRef.current) {
         try { qrSignerRef.current.abort?.() } catch {}
         qrSignerRef.current = null
       }
     }
-  }, [qrTrigger]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function cancelActiveQrFlow() {
     if (qrSignerRef.current) {
@@ -138,7 +142,12 @@ export default function LoginScreen({ onLogin }) {
 
   async function loginWithExtension() {
     setError('')
-    cancelActiveQrFlow()
+    // Intentionally DON'T cancel the QR flow here — the two auth paths
+    // are independent, and leaving the QR running means (a) the UI
+    // doesn't flash a misleading "Generating QR…" spinner while the
+    // extension is being polled, and (b) if the extension times out or
+    // fails, the QR is still ready for the user to scan without
+    // refreshing the page.
     setLoading(true)
     // Some extensions inject window.nostr asynchronously — poll briefly, but
     // allow a competing login flow to abort via extPollTokenRef.
@@ -170,10 +179,7 @@ export default function LoginScreen({ onLogin }) {
       const signer = new NDKNip07Signer()
       const ndk = getNDK()
       ndk.signer = signer
-      await Promise.race([
-        signer.blockUntilReady(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('__timeout__')), 15000)),
-      ])
+      await withTimeout(signer.blockUntilReady(), 15000, '__timeout__')
       await connectAndWait(ndk)
       const pubkey = await signer.user()
       await ensureUserWriteRelays(ndk, pubkey.pubkey)
@@ -642,10 +648,23 @@ export default function LoginScreen({ onLogin }) {
                 </div>
               </div>
             </>
-          ) : (
+          ) : qrWaiting ? (
             <div className="flex flex-col items-center py-4">
               <div className="w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full animate-spin" />
               <p className="text-xs text-neutral-500 mt-2">Generating QR...</p>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center py-4 gap-2">
+              <button
+                type="button"
+                onClick={startQrFlow}
+                className="py-2 px-4 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-100 text-sm border border-neutral-700 transition-colors"
+              >
+                Generate QR code
+              </button>
+              <p className="text-[11px] text-neutral-600 text-center max-w-[260px]">
+                Click to open a one-time NIP-46 signer invite.
+              </p>
             </div>
           )}
         </div>
@@ -687,8 +706,15 @@ export default function LoginScreen({ onLogin }) {
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
+  // In a modal frame, the parent controls size/positioning — no need for
+  // full-viewport vertical centering, which fights bottom sheets on mobile
+  // and shifts the dialog when content grows (e.g. bunker multi-step flow).
+  const outerClass = embedded
+    ? 'flex flex-col items-center px-4'
+    : 'flex flex-col items-center justify-center min-h-screen px-4'
+
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen px-4">
+    <div className={outerClass}>
       <div className="w-full max-w-md space-y-6">
 
         {/* Logo */}

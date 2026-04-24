@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from '../../../lib/ndk.js'
-import { isSafeUrl } from '../../../lib/utils.js'
+import { isSafeUrl, withTimeout } from '../../../lib/utils.js'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -28,10 +28,10 @@ export default function DraftDrawer({ user, onLoad, onClose }) {
         const ndk = getNDK()
         // Try to add user's write relays for better coverage
         try {
-          const relayListEvent = await Promise.race([
+          const relayListEvent = await withTimeout(
             ndk.fetchEvent({ kinds: [10002], authors: [user.pubkey] }),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 4000)),
-          ])
+            4000,
+          )
           if (relayListEvent) {
             const writeRelays = relayListEvent.tags
               .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
@@ -43,10 +43,10 @@ export default function DraftDrawer({ user, onLoad, onClose }) {
           }
         } catch {}
 
-        const events = await Promise.race([
+        const events = await withTimeout(
           ndk.fetchEvents({ kinds: [31023], authors: [user.pubkey] }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 10000)),
-        ])
+          10000,
+        )
         const sorted = Array.from(events).sort((a, b) => b.created_at - a.created_at)
         setDrafts(sorted)
       } catch (err) {

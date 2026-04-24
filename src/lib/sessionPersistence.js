@@ -2,6 +2,7 @@ import { NDKNip07Signer } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from './ndk.js'
 import { fetchProfiles } from './primal.js'
+import { withTimeout } from './utils.js'
 import { sanitizeRelayUrls } from './publishNote.js'
 import { restoreFromSession } from './nip46Signer.js'
 
@@ -59,10 +60,7 @@ export function clearSession() {
 export async function fetchUserProfile(ndk, pubkey) {
   const user = ndk.getUser({ pubkey })
   try {
-    const map = await Promise.race([
-      fetchProfiles([pubkey]),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
-    ])
+    const map = await withTimeout(fetchProfiles([pubkey]), 2500)
     const raw = map?.get?.(pubkey)
     if (raw) {
       const picture = raw.picture || raw.image
@@ -82,10 +80,7 @@ export async function fetchUserProfile(ndk, pubkey) {
   } catch {}
   if (!user.profile) {
     try {
-      await Promise.race([
-        user.fetchProfile(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-      ])
+      await withTimeout(user.fetchProfile(), 5000)
     } catch {}
   }
   return user
@@ -121,10 +116,7 @@ export async function restoreSession(record) {
     try {
       const signer = new NDKNip07Signer()
       ndk.signer = signer
-      await Promise.race([
-        signer.blockUntilReady(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('__timeout__')), 10000)),
-      ])
+      await withTimeout(signer.blockUntilReady(), 10000, '__timeout__')
       const ndkUser = await signer.user()
       // Extension account may have changed since we saved — bail so the
       // login screen can re-auth as whoever the extension is currently set to.

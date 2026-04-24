@@ -77,9 +77,14 @@ export default function NoteCard({
     if (!menuOpen) return
     // Capture phase + pointerdown so the close fires before any inner
     // stopPropagation, and covers mouse/touch/pen uniformly.
+    //
+    // The menu itself is portaled to document.body so `menuRef.contains`
+    // can't see clicks inside it — check for the data attribute too.
     function onDown(e) {
       if (!menuRef.current) return
-      if (!menuRef.current.contains(e.target)) setMenuOpen(false)
+      if (menuRef.current.contains(e.target)) return
+      if (e.target.closest?.('[data-note-actions-menu="true"]')) return
+      setMenuOpen(false)
     }
     document.addEventListener('pointerdown', onDown, true)
     return () => document.removeEventListener('pointerdown', onDown, true)
@@ -214,7 +219,7 @@ export default function NoteCard({
               <circle cx="13" cy="8" r="1.4" />
             </svg>
           </button>
-          <NoteActionsMenu open={menuOpen} onClose={() => setMenuOpen(false)} note={note} inBookmarksFeed={inBookmarksFeed} />
+          <NoteActionsMenu open={menuOpen} onClose={() => setMenuOpen(false)} note={note} triggerRef={menuRef} />
         </div>
       </header>
 

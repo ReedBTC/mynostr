@@ -15,15 +15,19 @@
  * writable category.
  */
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
+import { withTimeout } from '../../../../lib/utils.js'
+import { Z } from '../../../../lib/zIndex.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import { useUserReactionsContext } from '../../userReactionsContext.jsx'
 import ZapModal from '../../../../components/ZapModal.jsx'
+import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
 
 export default function NoteActionBar({ note, profile }) {
@@ -83,24 +87,74 @@ export default function NoteActionBar({ note, profile }) {
   const [mobileSheet, setMobileSheet] = useState(false)
   const [newName, setNewName] = useState('')
   const [pending, setPending] = useState(null) // 'add' | 'remove' | null
+  // Privacy target for the Add section. Resets to 'public' on each open.
+  // Mirrors NoteActionsMenu's pill so the inline dropdown can save to the
+  // encrypted (NIP-51 privateItems) bucket — previously the inline
+  // dropdown always saved public regardless of which bucket the user
+  // intended (and silently dropped the privacy arg from BookmarkPickerSheet
+  // on mobile).
+  const [addPrivacy, setAddPrivacy] = useState('public')
+  useEffect(() => { if (!bookmarkOpen) setAddPrivacy('public') }, [bookmarkOpen])
   const bookmarkRef = useRef(null)
+  // Setup must reset to true — React 18 StrictMode runs setup → cleanup
+  // → setup again on mount, so a no-body setup would leave `current`
+  // permanently false and gate every async callback into a silent
+  // early-return.
   const mountedRef = useRef(true)
-  useEffect(() => () => { mountedRef.current = false }, [])
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  // Portal position — same pattern as NoteActionsMenu. Computed from
+  // the trigger's rect once the dropdown opens; closes on scroll/resize.
+  // Fixed positioning + body portal escape the NoteCard's overflow:hidden
+  // so the dropdown can drop past the card/feed edges.
+  const [bookmarkPos, setBookmarkPos] = useState(null)
+  useEffect(() => {
+    if (!bookmarkOpen || !bookmarkRef.current) { setBookmarkPos(null); return }
+    const rect = bookmarkRef.current.getBoundingClientRect()
+    setBookmarkPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    function dismiss() { setBookmarkOpen(false) }
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [bookmarkOpen])
 
   useEffect(() => {
     if (!bookmarkOpen) return
+    // Dropdown is portaled to document.body so `contains` misses it —
+    // also check the data-attribute so clicks inside the portaled
+    // dropdown don't close it.
     function onDown(e) {
-      if (bookmarkRef.current && !bookmarkRef.current.contains(e.target)) setBookmarkOpen(false)
+      if (bookmarkRef.current?.contains(e.target)) return
+      if (e.target.closest?.('[data-note-bookmark-menu="true"]')) return
+      setBookmarkOpen(false)
     }
     document.addEventListener('pointerdown', onDown, true)
     return () => document.removeEventListener('pointerdown', onDown, true)
   }, [bookmarkOpen])
 
   const writableCategories = categories.filter(c => !c.readOnly)
-  const containingCategories = writableCategories.filter(c =>
-    c.items?.some(it => it.id === note.id?.toLowerCase())
-  )
-  const isBookmarked = containingCategories.length > 0
+  // All (category, privacy) pairs that currently hold the note — used for
+  // the "In" section so the user can see and remove from each bucket.
+  const containingRows = []
+  for (const c of writableCategories) {
+    if (c.items?.some(it => it.id === noteIdLower)) containingRows.push({ cat: c, privacy: 'public' })
+    if (c.privateItems?.some(it => it.id === noteIdLower)) containingRows.push({ cat: c, privacy: 'private' })
+  }
+  const isBookmarked = containingRows.length > 0
+  // Categories not yet holding the note in the *target* privacy bucket.
+  // Changing the pill between Public ↔ Private re-filters this list.
+  const addableCategories = writableCategories.filter(c => {
+    const held = addPrivacy === 'private'
+      ? c.privateItems?.some(it => it.id === noteIdLower)
+      : c.items?.some(it => it.id === noteIdLower)
+    return !held
+  })
 
   async function handleLike() {
     if (!canPublish || liking || liked) return
@@ -176,10 +230,10 @@ export default function NoteActionBar({ note, profile }) {
     setZapFetching(true)
     try {
       const ndk = getNDK()
-      const events = await Promise.race([
+      const events = await withTimeout(
         ndk.fetchEvents({ kinds: [0], authors: [note.pubkey] }),
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
-      ])
+        5000,
+      )
       const event = Array.from(events)[0]
       if (event) {
         try {
@@ -196,29 +250,29 @@ export default function NoteActionBar({ note, profile }) {
     }
   }
 
-  async function handleAddToCategory(categoryId) {
+  async function handleAddToCategory(categoryId, privacyOverride) {
     setPending('add')
-    try { await addNote(categoryId, note.id) }
+    try { await addNote(categoryId, note.id, { privacy: privacyOverride || addPrivacy }) }
     finally {
       if (!mountedRef.current) return
       setPending(null); setBookmarkOpen(false); setMobileSheet(false)
     }
   }
-  async function handleRemoveFromCategory(categoryId) {
+  async function handleRemoveFromCategory(categoryId, privacyOverride) {
     setPending('remove')
-    try { await removeNote(categoryId, note.id) }
+    try { await removeNote(categoryId, note.id, { privacy: privacyOverride || 'public' }) }
     finally {
       if (!mountedRef.current) return
       setPending(null); setBookmarkOpen(false)
     }
   }
-  async function handleCreateAndAdd(name) {
+  async function handleCreateAndAdd(name, privacyOverride) {
     const trimmed = name.trim()
     if (!trimmed) return
     setPending('add')
     try {
       const cat = await createCategory(trimmed)
-      if (cat) await addNote(cat.id, note.id)
+      if (cat) await addNote(cat.id, note.id, { privacy: privacyOverride || addPrivacy })
       if (mountedRef.current) setNewName('')
     } finally {
       if (!mountedRef.current) return
@@ -322,29 +376,76 @@ export default function NoteActionBar({ note, profile }) {
                 if (isMobile) setMobileSheet(true)
                 else setBookmarkOpen(o => !o)
               }}
-              className={`text-xs px-2 py-1 rounded border transition-colors ${
+              className={`text-xs px-2 py-1 rounded border transition-colors inline-flex items-center gap-1 ${
                 isBookmarked
-                  ? 'border-amber-800 text-amber-400'
+                  ? 'border-blue-800 text-blue-400'
                   : 'border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300'
               }`}
             >
-              🔖 {isBookmarked ? 'Saved' : 'Bookmark'}
+              <BookmarkIcon filled className="text-blue-400" />
+              <span>{isBookmarked ? 'Saved' : 'Bookmark'}</span>
             </button>
 
-            {!isMobile && bookmarkOpen && (
-              <div className="absolute right-0 bottom-full mb-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 min-w-[200px] max-h-[70vh] overflow-y-auto">
+            {!isMobile && bookmarkOpen && bookmarkPos && createPortal(
+              <div
+                data-note-bookmark-menu="true"
+                className={`fixed bg-neutral-800 border border-neutral-700 rounded shadow-xl ${Z.portaledMenu} w-[240px] max-h-[70vh] overflow-y-auto`}
+                style={{ top: bookmarkPos.top, right: bookmarkPos.right }}
+                onMouseDown={e => e.stopPropagation()}
+                onClick={e => e.stopPropagation()}
+              >
+                {/* Save as: public/private pill — matches NoteActionsMenu. */}
+                <div className="px-3 pt-2 pb-1.5 flex items-center justify-between gap-2 border-b border-neutral-700">
+                  <span className="text-[10px] uppercase tracking-wide text-neutral-500">Save as</span>
+                  <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-950 p-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setAddPrivacy('public')}
+                      disabled={!!pending}
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-colors disabled:opacity-40 ${
+                        addPrivacy === 'public' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      Public
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAddPrivacy('private')}
+                      title="NIP-51 encrypted — visible only to you"
+                      disabled={!!pending}
+                      className={`text-[10px] px-2 py-0.5 rounded-full transition-colors inline-flex items-center gap-1 disabled:opacity-40 ${
+                        addPrivacy === 'private' ? 'bg-purple-700 text-white' : 'text-neutral-400 hover:text-neutral-200'
+                      }`}
+                    >
+                      <svg width="8" height="8" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                        <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                        <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                      </svg>
+                      Private
+                    </button>
+                  </div>
+                </div>
+
                 {isBookmarked && (
                   <>
                     <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">In</p>
-                    {containingCategories.map(cat => (
+                    {containingRows.map(({ cat, privacy }) => (
                       <button
-                        key={`in-${cat.id}`}
-                        onClick={() => handleRemoveFromCategory(cat.id)}
+                        key={`in-${cat.id}-${privacy}`}
+                        onClick={() => handleRemoveFromCategory(cat.id, privacy)}
                         disabled={!!pending}
                         className="w-full text-left px-3 py-1.5 text-xs text-amber-400 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50 flex items-center justify-between gap-2"
-                        title={`Remove from ${cat.title}`}
+                        title={`Remove from ${cat.title}${privacy === 'private' ? ' (private)' : ''}`}
                       >
-                        <span className="truncate">{cat.title}</span>
+                        <span className="truncate inline-flex items-center gap-1.5">
+                          {privacy === 'private' && (
+                            <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+                              <rect x="3.5" y="7" width="9" height="6.5" rx="1.2" />
+                              <path d="M5.5 7V5a2.5 2.5 0 015 0v2" strokeLinecap="round" />
+                            </svg>
+                          )}
+                          <span className="truncate">{cat.title}</span>
+                        </span>
                         <span className="text-[10px] text-neutral-500 shrink-0">remove</span>
                       </button>
                     ))}
@@ -352,23 +453,21 @@ export default function NoteActionBar({ note, profile }) {
                   </>
                 )}
 
-                {writableCategories.filter(c => !containingCategories.some(cc => cc.id === c.id)).length > 0 && (
+                {addableCategories.length > 0 && (
                   <>
                     <p className="px-3 py-1.5 text-[10px] text-neutral-600 uppercase tracking-wider">
                       {isBookmarked ? 'Move to' : 'Add to'}
                     </p>
-                    {writableCategories
-                      .filter(c => !containingCategories.some(cc => cc.id === c.id))
-                      .map(cat => (
-                        <button
-                          key={`add-${cat.id}`}
-                          onClick={() => handleAddToCategory(cat.id)}
-                          disabled={!!pending}
-                          className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
-                        >
-                          {cat.title}
-                        </button>
-                      ))}
+                    {addableCategories.map(cat => (
+                      <button
+                        key={`add-${cat.id}`}
+                        onClick={() => handleAddToCategory(cat.id)}
+                        disabled={!!pending}
+                        className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors truncate disabled:opacity-50"
+                      >
+                        {cat.title}
+                      </button>
+                    ))}
                   </>
                 )}
 
@@ -381,7 +480,7 @@ export default function NoteActionBar({ note, profile }) {
                       if (e.key === 'Enter') handleCreateAndAdd(newName)
                       if (e.key === 'Escape') setBookmarkOpen(false)
                     }}
-                    placeholder="New category…"
+                    placeholder="New collection…"
                     maxLength={60}
                     className="flex-1 bg-neutral-700 border border-neutral-600 rounded px-2 py-1 text-xs text-neutral-100 focus:outline-none"
                   />
@@ -393,7 +492,8 @@ export default function NoteActionBar({ note, profile }) {
                     ✓
                   </button>
                 </div>
-              </div>
+              </div>,
+              document.body,
             )}
 
             {isMobile && (

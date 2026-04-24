@@ -1,4 +1,5 @@
 import { getNDK, connectAndWait } from './ndk.js'
+import { withTimeout } from './utils.js'
 
 /**
  * Count a user's authored content across the parameterized-replaceable
@@ -23,14 +24,14 @@ export async function fetchUserContentCounts(pubkey) {
   const ndk = getNDK()
   try {
     await connectAndWait(ndk, 3000)
-    const events = await Promise.race([
+    const events = await withTimeout(
       ndk.fetchEvents({
         kinds: [30023, 31923, 30402],
         authors: [pubkey],
         limit: FETCH_LIMIT,
       }),
-      new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-    ])
+      6000,
+    )
     const dTagsByKind = {
       30023: new Set(),  // long-form articles
       31923: new Set(),  // calendar events

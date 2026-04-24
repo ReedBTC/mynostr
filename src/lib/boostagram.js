@@ -26,6 +26,7 @@
 import { generateSecretKey, getPublicKey, finalizeEvent, SimplePool } from 'nostr-tools'
 import { nip19 } from 'nostr-tools'
 import { FALLBACK_RELAYS } from './ndk.js'
+import { withTimeout } from './utils.js'
 
 // ─── Project owner constants ────────────────────────────────────────────────
 // TODO: replace with your actual npub (find it in your Nostr client or at njump.me).
@@ -107,10 +108,10 @@ export function generateBurnerKeypair() {
 export async function fetchKind0(pubkeyHex) {
   const pool = new SimplePool()
   try {
-    const event = await Promise.race([
+    const event = await withTimeout(
       pool.get(BOOSTAGRAM_RELAYS, { kinds: [0], authors: [pubkeyHex] }),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-    ])
+      5000,
+    )
     if (!event) return null
     return JSON.parse(event.content)
   } finally {
@@ -200,9 +201,7 @@ export async function publishDonationBoostagram({
   let published = false
   try {
     const results = await Promise.allSettled(
-      pool.publish(BOOSTAGRAM_RELAYS, signedEvent).map(p =>
-        Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 6000))])
-      )
+      pool.publish(BOOSTAGRAM_RELAYS, signedEvent).map(p => withTimeout(p, 6000))
     )
     published = results.some(r => r.status === 'fulfilled')
   } finally {

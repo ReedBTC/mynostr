@@ -22,6 +22,7 @@ import {
   suggestDmRelays,
 } from '../../lib/relayInfo.js'
 import DmRelayFAQ from './DmRelayFAQ.jsx'
+import InfoDot from './InfoDot.jsx'
 import { useRelayCopier, CopyButton } from './useRelayCopier.jsx'
 
 function displayName(url, info) {
@@ -32,27 +33,50 @@ function displayName(url, info) {
 // Heuristic DM-relay quality assessment, built from NIP-11 declarations only.
 // Relays that don't declare the problematic flags can still have problems in
 // practice — this is a floor ("these relays definitely won't accept DMs"),
-// not a ceiling. Returns one of:
+// not a ceiling. Returns { status, reason?, info? } where:
 //   loading     — NIP-11 in flight, UI should show a muted pill
 //   unreachable — NIP-11 fetch failed (doesn't necessarily mean the relay is
 //                 dead for Nostr traffic, just that we can't assess it)
-//   bad         — hard-blocked: auth required or writes restricted
-//   warn        — soft issue: small size cap or short retention
+//   bad         — writes are restricted by policy (allowlist, payment on
+//                 events, PoW). NIP-42 auth ALONE does NOT qualify — that's
+//                 informational, since NIP-17 explicitly recommends
+//                 auth-required DM relays for read-side metadata privacy
+//                 (`kind:1059` served only to p-tagged users via NIP-42),
+//                 and any key-holder can complete an AUTH challenge. This
+//                 cost us hours of research to unwind — don't re-lump these.
+//   warn        — soft issue with the DM path itself: small size cap or
+//                 short retention. These are real "may lose DMs" signals.
 //   ok          — no declared issues; may still fail in practice
+//
+// `info` is an orthogonal informational note surfaced as an (i) pill
+// next to the verdict. Currently used to flag NIP-42 auth so the user
+// sees the mechanism without the verdict dropping from OK to warn.
 const MIN_DM_BYTES = 16 * 1024      // below this we can't trust gift-wraps to land
 const MIN_RETENTION_SEC = 7 * 86400 // shorter and offline users miss DMs
+
+const AUTH_INFO_NOTE = 'Requires NIP-42 auth on connect — standard for DM inbox relays; hides gift-wrap metadata from scrapers. Every modern DM client (Amethyst, 0xchat, Damus, Primal) handles this automatically. Only a minimal client without NIP-42 support would fail to send DMs here.'
 
 function assessDmRelay(info) {
   if (!info) return { status: 'loading' }
   if (info._error) return { status: 'unreachable', reason: `Could not reach relay (${info._error}).` }
 
   const lim = info.limitation || {}
-  if (lim.auth_required) {
-    return { status: 'bad', reason: 'Requires NIP-42 auth — strangers cannot send you DMs here.' }
-  }
+  // `restricted_writes` is the real "strangers can't write here" signal —
+  // per NIP-11, it means writes have policy conditions like a pubkey
+  // allowlist, payment, or PoW. `auth_required` is orthogonal (it just
+  // gates the connection behind a signed challenge that any key-holder
+  // can satisfy) and is surfaced as an informational note below, not a
+  // verdict downgrade.
   if (lim.restricted_writes) {
-    return { status: 'bad', reason: 'Restricts writes — strangers cannot send you DMs here.' }
+    return { status: 'bad', reason: 'Restricts writes — strangers may not be able to send you DMs here.' }
   }
+
+  // NIP-42 auth alone is the NIP-17-recommended DM inbox pattern. It does
+  // not downgrade the verdict — the relay is still good for DMs, the user
+  // just benefits from knowing why a relay like auth.nostr1.com asks to
+  // authenticate. Attached to ok/warn alike; if size/retention warnings
+  // also fire, the verdict drops to warn and the auth note sits alongside.
+  const infoNote = lim.auth_required ? AUTH_INFO_NOTE : null
 
   const warnings = []
   const maxLen = Number(lim.max_message_length) || 0
@@ -80,8 +104,8 @@ function assessDmRelay(info) {
       }
     }
   }
-  if (warnings.length) return { status: 'warn', reason: warnings.join(' ') }
-  return { status: 'ok' }
+  if (warnings.length) return { status: 'warn', reason: warnings.join(' '), info: infoNote }
+  return { status: 'ok', info: infoNote }
 }
 
 function summarizeAssessments(relays, infoByUrl) {
@@ -404,29 +428,58 @@ function PaidBadge({ info }) {
 function RelayList({ relays, infoByUrl, copier }) {
   return (
     <div className="divide-y divide-neutral-900">
+      {/* Column header + vertical dividers that match RelayCard's
+          DesktopTable look. Columns:
+            • Relay (status dot + name + URL)
+            • DMs — composite readiness: doesn't gate writes to an
+              allowlist, reasonable size + retention for gift-wraps
+            • Add — per-row copy button (only when canCopy)
+          Columns are explicit widths so each row's cells line up under
+          the header labels. Borders live on the DMs and Add columns
+          (left edge) to read as dividers between sections. */}
+      {relays.length > 0 && (
+        <div className="flex items-stretch py-1 border-b border-neutral-800/60 text-[10px] uppercase tracking-wider text-neutral-500">
+          <span className="flex-1 pl-4 pr-2 flex items-center">Relay</span>
+          <span className="shrink-0 w-[72px] px-2 border-l border-neutral-900 flex items-center justify-end">DMs</span>
+          {copier.canCopy && (
+            <span className="shrink-0 w-12 px-2 border-l border-neutral-900 flex items-center justify-center">Add</span>
+          )}
+        </div>
+      )}
       {relays.map(url => {
         const info = infoByUrl[url]
         const assessment = assessDmRelay(info)
         const isBad = assessment.status === 'bad'
         return (
-          <div key={url} className="px-4 py-2 flex items-center gap-2 hover:bg-neutral-900/40">
-            <StatusDot info={info} />
-            <div className="min-w-0 flex-1">
-              <div className="text-[12px] text-neutral-100 truncate leading-tight" title={displayName(url, info)}>
-                {displayName(url, info)}
-              </div>
-              <div className="text-[10px] text-neutral-500 truncate leading-tight font-mono" title={url}>
-                {url}
-              </div>
-              {isBad && (
-                <div className="text-[10px] text-rose-400 leading-tight mt-0.5" title={assessment.reason}>
-                  ⚠ {assessment.reason}
+          <div key={url} className="flex items-stretch py-2 hover:bg-neutral-900/40">
+            <div className="flex items-center gap-2 flex-1 min-w-0 pl-4 pr-2">
+              <StatusDot info={info} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[12px] text-neutral-100 truncate leading-tight" title={displayName(url, info)}>
+                  {displayName(url, info)}
                 </div>
-              )}
+                <div className="text-[10px] text-neutral-500 truncate leading-tight font-mono" title={url}>
+                  {url}
+                </div>
+                {isBad && (
+                  <div className="text-[10px] text-rose-400 leading-tight mt-0.5" title={assessment.reason}>
+                    ⚠ {assessment.reason}
+                  </div>
+                )}
+              </div>
             </div>
-            <PaidBadge info={info} />
-            <VerdictBadge assessment={assessment} />
-            <CopyButton url={url} {...copier} />
+            <div className="shrink-0 w-[72px] px-2 border-l border-neutral-900 flex items-center justify-end gap-1.5">
+              <PaidBadge info={info} />
+              {assessment.info && (
+                <InfoDot align="right">{assessment.info}</InfoDot>
+              )}
+              <VerdictBadge assessment={assessment} />
+            </div>
+            {copier.canCopy && (
+              <div className="shrink-0 w-12 px-2 border-l border-neutral-900 flex items-center justify-center">
+                <CopyButton url={url} {...copier} />
+              </div>
+            )}
           </div>
         )
       })}
@@ -441,7 +494,7 @@ function VerdictBadge({ assessment }) {
     loading:     { label: '…',     cls: 'bg-neutral-900/50 text-neutral-500 border-neutral-800',         title: 'Checking relay…' },
     ok:          { label: 'OK',    cls: 'bg-green-950/40 text-green-300 border-green-900/60',           title: 'No declared issues. DMs should work — but relays don\'t advertise NIP-17 support, so this is based on what the relay does declare.' },
     warn:        { label: 'Check', cls: 'bg-amber-950/50 text-amber-300 border-amber-900/70',           title: reason || 'Soft warning — DMs may work but there are declared limits to watch.' },
-    bad:         { label: 'Blocks',cls: 'bg-rose-950/50 text-rose-300 border-rose-900/70',              title: reason || 'Blocks DMs — strangers cannot send you messages here.' },
+    bad:         { label: 'Blocks',cls: 'bg-rose-950/50 text-rose-300 border-rose-900/70',              title: reason || 'Restricts writes — strangers may not be able to send you DMs here.' },
     unreachable: { label: '?',     cls: 'bg-neutral-900/60 text-neutral-400 border-neutral-800',        title: reason || 'Could not reach the relay to assess it.' },
   }
   const entry = map[status] || map.unreachable
