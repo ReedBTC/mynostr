@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
+import ShareButton from '../../components/ShareButton.jsx'
 import Editor from './components/Editor.jsx'
 import MetadataDrawer from './components/MetadataDrawer.jsx'
 import DraftDrawer from './components/DraftDrawer.jsx'
@@ -9,10 +10,13 @@ import { useReadingLists } from '../../lib/useReadingLists.js'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 
 /**
- * LongformModule — Module 0.
+ * ArticlesModule — Module 0.
  * Three modes: Write · My Collection · Authors
  * Write tab is always mounted (hidden via CSS) so draft auto-save is preserved.
  * Drafts are auto-restored silently — no banner, just a small discard chip.
+ * Routes kind 30023 "longform" content per NIP-23 — the URL/label is
+ * "articles" because that's what users think of them as; internal variable
+ * names still use "longform" where they describe the Nostr kind itself.
  */
 
 function defaultMetadata() {
@@ -22,24 +26,32 @@ function defaultSource() {
   return { name: '', url: '' }
 }
 
-export default function LongformModule({ user, sessionUser }) {
+export default function ArticlesModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
-  const location = useLocation()
   const navigate = useNavigate()
+  const npub = user?.npub
 
-  // ── Module tab: 'write' | 'collection' | 'search' ─────────────────────────
-  // Visitors land on "My Collection" (the viewed user's bookmarks) since
-  // Write isn't available to them.
-  const [moduleTab, setModuleTab] = useState(isOwner ? 'write' : 'mine')
+  // ── Module tab derived from URL subtab ──────────────────────────────────
+  // Unknown / owner-only subtabs visited by a non-owner fall through to the
+  // default (see the bounce effect below). Bare `/articles` always means
+  // the My Articles feed — Write has its own URL so the tab button and
+  // shareable links both land consistently on the feed view.
+  const moduleTab = (() => {
+    if (subtab === 'mine') return 'mine'
+    if (subtab === 'collection') return 'collection'
+    if (subtab === 'search' && isOwner) return 'search'
+    if (subtab === 'write' && isOwner) return 'write'
+    return 'mine'
+  })()
 
-  // Deep-link hint (e.g. Profile stats cell → "mine" tab). Consumed once
-  // and cleared so back/forward can't replay it.
-  useEffect(() => {
-    const target = location.state?.initialTab
-    if (!target) return
-    setModuleTab(target)
-    navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, navigate])
+  // `mine` is the default view — map it to the bare /articles URL for
+  // consistency with NotesModule's `notes` case, so the tab-button and
+  // shareable-link shapes match across modules.
+  const setModuleTab = useCallback((id) => {
+    if (!npub) return
+    const path = id === 'mine' ? `/${npub}/articles` : `/${npub}/articles/${id}`
+    navigate(path)
+  }, [npub, navigate])
 
   // ── Write-tab state ───────────────────────────────────────────────────────────
   const [content,    setContent]    = useState('')
@@ -72,11 +84,13 @@ export default function LongformModule({ user, sessionUser }) {
     hiddenIdsByView, hideList, unhideList,
   } = useReadingLists(user)
 
-  // If a logged-out visitor somehow lands on the Write tab (e.g. via back
-  // button), bounce them to Collection so they don't see a disabled editor.
+  // If a visitor lands on an owner-only URL (e.g. /articles/write via stale
+  // share or browser back after logout), redirect to the default view.
   useEffect(() => {
-    if (!isOwner && (moduleTab === 'write' || moduleTab === 'search')) setModuleTab('mine')
-  }, [isOwner, moduleTab])
+    if (!isOwner && (subtab === 'write' || subtab === 'search') && npub) {
+      navigate(`/${npub}/articles`, { replace: true })
+    }
+  }, [isOwner, subtab, npub, navigate])
 
   // ── Auto-restore draft silently on mount ──────────────────────────────────────
   useEffect(() => {
@@ -163,7 +177,7 @@ export default function LongformModule({ user, sessionUser }) {
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar — always visible ── */}
-      <div className="flex items-center gap-0 px-4 py-2.5 border-b border-neutral-800 flex-shrink-0">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-neutral-800 flex-shrink-0">
         <div className="flex items-center gap-0 flex-shrink-0">
           {visibleTabs.map(({ id, label }, i, arr) => {
             const isActive = moduleTab === id
@@ -181,6 +195,13 @@ export default function LongformModule({ user, sessionUser }) {
             )
           })}
         </div>
+        {/* Share is hidden on Write/Search — Write isn't a shareable
+            surface, and Search is owner-only (visitors get redirected). */}
+        {moduleTab !== 'write' && moduleTab !== 'search' && (
+          <div className="shrink-0">
+            <ShareButton variant="button" />
+          </div>
+        )}
       </div>
 
       {/* ── Modals ── */}

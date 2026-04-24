@@ -16,7 +16,7 @@ import InfoDot from './InfoDot.jsx'
  * sections are distinguishable at a glance.
  *
  * Notes/Comments/Articles cells deep-link into NotesModule and
- * LongformModule; Events + Market are display-only until those modules ship.
+ * ArticlesModule; Events + Market are display-only until those modules ship.
  * Followers/Following live on the profile card above this one.
  */
 export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkCounts, loading }) {
@@ -29,21 +29,21 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       label: 'Notes',
       value: stats?.note_count,
       icon: <NoteIcon />,
-      onClick: npub ? () => navigate(`/${npub}/notes`, { state: { initialTab: 'notes', initialMode: 'notes' } }) : null,
+      onClick: npub ? () => navigate(`/${npub}/notes`) : null,
     },
     {
       key: 'comments',
       label: 'Comments',
       value: stats?.reply_count,
       icon: <CommentIcon />,
-      onClick: npub ? () => navigate(`/${npub}/notes`, { state: { initialTab: 'notes', initialMode: 'comments' } }) : null,
+      onClick: npub ? () => navigate(`/${npub}/notes/comments`) : null,
     },
     {
       key: 'articles',
       label: 'Articles',
       value: contentCounts?.articles,
       icon: <ArticleIcon />,
-      onClick: npub ? () => navigate(`/${npub}/longform`, { state: { initialTab: 'mine' } }) : null,
+      onClick: npub ? () => navigate(`/${npub}/articles/mine`) : null,
     },
     {
       key: 'events',
@@ -68,7 +68,7 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       value: bookmarkCounts?.notes,
       categories: bookmarkCounts?.noteCategories,
       icon: <NoteIcon />,
-      onClick: npub ? () => navigate(`/${npub}/notes`, { state: { initialTab: 'bookmarks' } }) : null,
+      onClick: npub ? () => navigate(`/${npub}/notes/bookmarks`) : null,
     },
     {
       key: 'bm-articles',
@@ -76,7 +76,7 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       value: bookmarkCounts?.articles,
       categories: bookmarkCounts?.articleCategories,
       icon: <ArticleIcon />,
-      onClick: npub ? () => navigate(`/${npub}/longform`, { state: { initialTab: 'collection' } }) : null,
+      onClick: npub ? () => navigate(`/${npub}/articles/collection`) : null,
     },
     {
       key: 'bm-events',

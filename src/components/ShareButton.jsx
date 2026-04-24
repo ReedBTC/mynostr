@@ -1,18 +1,26 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 
 /**
- * ShareButton — copies the current page URL to the clipboard.
- * The whole point of "MyNostr is your web page" is that every tab has a
- * shareable URL. This button lets you grab it from anywhere in the shell.
+ * ShareButton — copies a page URL to the clipboard.
+ * Default: the current page URL (the whole "MyNostr is your web page" idea).
+ * Pass `url` to override — used e.g. by RelayCard to always share the
+ * /profile/relays anchor even when the user is viewing /profile.
  *
- * variant="button" — full pill with label (desktop top bar)
+ * variant="button" — full pill with label (desktop top bar / card headers)
  * variant="icon"   — square icon only (mobile top bar)
  */
-export default function ShareButton({ variant = 'button' }) {
+export default function ShareButton({ variant = 'button', url: urlOverride }) {
   const [copied, setCopied] = useState(false)
+  // Track the "copied" reset timer so we can cancel it on unmount —
+  // otherwise the setState fires after unmount and React warns in the
+  // console. Also lets repeated clicks restart the window cleanly.
+  const resetTimerRef = useRef(null)
+  useEffect(() => () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
+  }, [])
 
   const handleCopy = useCallback(async () => {
-    const url = typeof window !== 'undefined' ? window.location.href : ''
+    const url = urlOverride || (typeof window !== 'undefined' ? window.location.href : '')
     if (!url) return
     try {
       await navigator.clipboard.writeText(url)
@@ -32,8 +40,12 @@ export default function ShareButton({ variant = 'button' }) {
       }
     }
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }, [])
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = setTimeout(() => {
+      resetTimerRef.current = null
+      setCopied(false)
+    }, 2000)
+  }, [urlOverride])
 
   if (variant === 'icon') {
     return (

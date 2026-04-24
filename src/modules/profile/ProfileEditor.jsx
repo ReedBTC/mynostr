@@ -313,7 +313,7 @@ export default function ProfileEditor({ user, onCancel, onSaved }) {
 }
 
 const inputCls =
-  'w-full bg-neutral-900 border border-neutral-700 focus:border-purple-600 rounded px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none'
+  'w-full font-mono bg-neutral-900 border border-neutral-700 focus:border-purple-600 rounded px-3 py-2 text-sm text-neutral-100 placeholder-neutral-600 outline-none'
 
 function Field({ label, hint, children }) {
   return (

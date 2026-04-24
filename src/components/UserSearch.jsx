@@ -58,9 +58,10 @@ function classifyInput(raw) {
 export default function UserSearch({
   onPickAuthor,
   placeholder = 'Search users, npub, or nprofile…',
-  inputClassName = 'w-full bg-neutral-800 border border-neutral-700 rounded px-3 py-1.5 text-sm text-neutral-100 focus:outline-none focus:border-neutral-500 placeholder-neutral-600',
+  inputClassName = 'w-full font-mono bg-neutral-800 border border-neutral-700 rounded px-3 py-1.5 text-sm text-neutral-100 focus:outline-none focus:border-neutral-500 placeholder-neutral-600',
   dropdownClassName = 'absolute left-0 top-full mt-1 w-full bg-neutral-800 border border-neutral-700 rounded shadow-xl z-20 overflow-hidden',
   autoFocus = false,
+  inputRef,
 }) {
   const [query,     setQuery]     = useState('')
   const [items,     setItems]     = useState([])
@@ -146,6 +147,7 @@ export default function UserSearch({
     <div ref={containerRef} className="relative">
       <div className="relative">
         <input
+          ref={inputRef}
           type="text"
           value={query}
           onChange={handleInput}

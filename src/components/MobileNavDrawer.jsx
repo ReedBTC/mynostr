@@ -43,40 +43,48 @@ export default function MobileNavDrawer({
         role="dialog"
         aria-label="Navigation menu"
       >
-        {/* User header */}
+        {/* Header. On the public homepage (no viewed user) we show the
+            MyNostr wordmark instead of a person, so the drawer doesn't
+            confuse visitors with an "Anonymous" row. */}
         <div className="flex items-start justify-between gap-2 p-4 border-b border-neutral-800">
-          <div className="flex items-center gap-3 min-w-0">
-            {profile?.image && isSafeUrl(profile.image) ? (
-              <img
-                src={profile.image}
-                alt=""
-                className="w-10 h-10 rounded-full object-cover bg-neutral-800 shrink-0"
-                onError={e => { e.target.style.display = 'none' }}
-              />
-            ) : (
-              <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 text-xs shrink-0">
-                ?
+          {user ? (
+            <div className="flex items-center gap-3 min-w-0">
+              {profile?.image && isSafeUrl(profile.image) ? (
+                <img
+                  src={profile.image}
+                  alt=""
+                  className="w-10 h-10 rounded-full object-cover bg-neutral-800 shrink-0"
+                  onError={e => { e.target.style.display = 'none' }}
+                />
+              ) : (
+                <div className="w-10 h-10 rounded-full bg-neutral-800 flex items-center justify-center text-neutral-500 text-xs shrink-0">
+                  ?
+                </div>
+              )}
+              <div className="leading-tight min-w-0">
+                <p className="text-sm text-neutral-200 truncate">
+                  {profile?.displayName || profile?.name || 'Anonymous'}
+                </p>
+                <p className="text-xs text-neutral-600 font-mono truncate">
+                  {truncateNpub(user?.npub || '')}
+                </p>
+                {sessionUser && sessionUser.pubkey !== user?.pubkey && (
+                  <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
+                    Viewing
+                  </span>
+                )}
+                {sessionUser && sessionUser.pubkey === user?.pubkey && sessionUser.readOnly && (
+                  <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
+                    Read-only
+                  </span>
+                )}
               </div>
-            )}
-            <div className="leading-tight min-w-0">
-              <p className="text-sm text-neutral-200 truncate">
-                {profile?.displayName || profile?.name || 'Anonymous'}
-              </p>
-              <p className="text-xs text-neutral-600 font-mono truncate">
-                {truncateNpub(user?.npub || '')}
-              </p>
-              {sessionUser && sessionUser.pubkey !== user?.pubkey && (
-                <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
-                  Viewing
-                </span>
-              )}
-              {sessionUser && sessionUser.pubkey === user?.pubkey && sessionUser.readOnly && (
-                <span className="inline-block mt-1 text-xs text-amber-500 border border-amber-900 rounded px-1.5 py-0.5">
-                  Read-only
-                </span>
-              )}
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center gap-3 min-w-0">
+              <p className="text-sm text-neutral-200 truncate font-semibold">MyNostr</p>
+            </div>
+          )}
           <button
             onClick={onClose}
             className="text-neutral-500 hover:text-neutral-200 text-2xl leading-none px-2 shrink-0"

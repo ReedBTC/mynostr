@@ -1,4 +1,4 @@
-import { useState, lazy, Suspense, useEffect } from 'react'
+import { useState, lazy, Suspense, useEffect, useRef, useCallback } from 'react'
 import {
   BrowserRouter,
   Routes,
@@ -11,6 +11,7 @@ import {
 } from 'react-router-dom'
 import LoginScreen from './components/LoginScreen.jsx'
 import AppShell from './components/AppShell.jsx'
+import HomeScreen from './components/HomeScreen.jsx'
 import {
   OwnerProvider,
   decodeNpubParam,
@@ -22,7 +23,7 @@ import { loadSession, clearSession, restoreSession } from './lib/sessionPersiste
 
 // Lazy-load each module so only the active tab's code is fetched
 const ProfileModule     = lazy(() => import('./modules/profile/ProfileModule.jsx'))
-const LongformModule    = lazy(() => import('./modules/longform/LongformModule.jsx'))
+const ArticlesModule    = lazy(() => import('./modules/articles/ArticlesModule.jsx'))
 const NotesModule       = lazy(() => import('./modules/notes/NotesModule.jsx'))
 const EventsModule      = lazy(() => import('./modules/events/EventsModule.jsx'))
 const MarketplaceModule = lazy(() => import('./modules/marketplace/MarketplaceModule.jsx'))
@@ -34,7 +35,7 @@ const MarketplaceModule = lazy(() => import('./modules/marketplace/MarketplaceMo
 export const MODULES = [
   { id: 'profile',     label: 'Profile',     icon: '👤', status: 'live', description: 'Kind 0 profile' },
   { id: 'notes',       label: 'Notes',       icon: '📝', status: 'live', description: 'Kind 1 short notes' },
-  { id: 'longform',    label: 'Articles',    icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
+  { id: 'articles',    label: 'Articles',    icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
   { id: 'events',      label: 'Events',      icon: '📅', status: 'soon', description: 'Kind 31923 events' },
   { id: 'marketplace', label: 'Marketplace', icon: '🛒', status: 'soon', description: 'Kind 30402 listings' },
 ]
@@ -42,12 +43,18 @@ export const MODULES = [
 const MODULE_COMPONENTS = {
   profile:     ProfileModule,
   notes:       NotesModule,
-  longform:    LongformModule,
+  articles:    ArticlesModule,
   events:      EventsModule,
   marketplace: MarketplaceModule,
 }
 
 const DEFAULT_MODULE = 'notes'
+
+// Modules with a Write surface that owners should land on when they click
+// the sidebar nav — mirrors the old pre-URL-routing default. Visitors
+// (and owners clicking into someone else's page) get the bare feed URL
+// so the deep link is shareable and doesn't flash the composer.
+const MODULES_WITH_WRITE = new Set(['notes', 'articles'])
 
 export default function App() {
   const [sessionUser, setSessionUser] = useState(null)
@@ -124,14 +131,24 @@ export default function App() {
         />
         <Route
           path="/"
-          element={<RootRoute sessionUser={sessionUser} />}
+          element={<RootRoute sessionUser={sessionUser} onLogout={handleLogout} />}
         />
         <Route
           path="/:npub"
           element={<NpubRootRoute />}
         />
+        {/* Legacy /longform → /articles. Covers both /:npub/longform and
+            /:npub/longform/<subtab> so old bookmarked URLs keep working. */}
+        <Route path="/:npub/longform" element={<LongformLegacyRedirect />} />
+        <Route path="/:npub/longform/:subtab" element={<LongformLegacyRedirect />} />
         <Route
           path="/:npub/:module"
+          element={
+            <ModuleRoute sessionUser={sessionUser} onLogout={handleLogout} />
+          }
+        />
+        <Route
+          path="/:npub/:module/:subtab"
           element={
             <ModuleRoute sessionUser={sessionUser} onLogout={handleLogout} />
           }
@@ -142,13 +159,58 @@ export default function App() {
   )
 }
 
+function LongformLegacyRedirect() {
+  const { npub, subtab } = useParams()
+  const dest = subtab ? `/${npub}/articles/${subtab}` : `/${npub}/articles`
+  return <Navigate to={dest} replace />
+}
+
 // ── Route components ─────────────────────────────────────────────────────────
 
-function RootRoute({ sessionUser }) {
-  if (sessionUser?.npub) {
-    return <Navigate to={`/${sessionUser.npub}`} replace />
-  }
-  return <Navigate to="/login" replace />
+function RootRoute({ sessionUser, onLogout }) {
+  // `/` always renders the homepage — logged-in users should be able to
+  // view it too (e.g. clicking the logo to return here). The pfp tab in
+  // the sidebar gives them a one-click path back to their own page.
+  return <HomeRoute sessionUser={sessionUser} onLogout={onLogout} />
+}
+
+function HomeRoute({ sessionUser, onLogout }) {
+  const searchInputRef = useRef(null)
+  const navigate = useNavigate()
+
+  // Sidebar module click handler. Two behaviors based on login state:
+  //   - Logged out: focus the search input. There's no npub to navigate
+  //     under, so visitors have to pick a user first.
+  //   - Logged in: navigate into the corresponding module on the session
+  //     user's own page. Mirrors the handleModuleChange logic in
+  //     ModuleRoute so notes/articles land on the Write surface (the
+  //     owner's default for those modules).
+  // The pfp tab (ProfileIdentityTab) skips this handler entirely and
+  // navigates straight to /:npub/profile — see AppShell.
+  const handleModuleClick = useCallback((id) => {
+    if (!sessionUser?.npub) {
+      searchInputRef.current?.focus()
+      return
+    }
+    const npub = sessionUser.npub
+    if (MODULES_WITH_WRITE.has(id)) {
+      navigate(`/${npub}/${id}/write`)
+      return
+    }
+    navigate(`/${npub}/${id}`)
+  }, [sessionUser?.npub, navigate])
+
+  return (
+    <AppShell
+      user={null}
+      sessionUser={sessionUser}
+      activeModule={null}
+      onModuleChange={handleModuleClick}
+      onLogout={onLogout}
+    >
+      <HomeScreen searchInputRef={searchInputRef} />
+    </AppShell>
+  )
 }
 
 function LoginRoute({ sessionUser, onLogin }) {
@@ -184,7 +246,7 @@ function NpubRootRoute() {
 }
 
 function ModuleRoute({ sessionUser, onLogout }) {
-  const { npub, module: moduleId } = useParams()
+  const { npub, module: moduleId, subtab } = useParams()
   const navigate = useNavigate()
   const { viewedUser, loading } = useViewedUser(npub, sessionUser)
 
@@ -207,14 +269,20 @@ function ModuleRoute({ sessionUser, onLogout }) {
   if (loading && !viewedUser) return <FullscreenSpinner />
   if (!viewedUser) return <FullscreenSpinner />
 
-  function handleModuleChange(id) {
-    navigate(`/${npub}/${id}`)
-  }
+  const viewingOwnPage = sessionUser?.npub && sessionUser.npub === npub
 
-  function handleLogoutAndLeave() {
+  const handleModuleChange = useCallback((id) => {
+    if (viewingOwnPage && MODULES_WITH_WRITE.has(id)) {
+      navigate(`/${npub}/${id}/write`)
+      return
+    }
+    navigate(`/${npub}/${id}`)
+  }, [viewingOwnPage, npub, navigate])
+
+  const handleLogoutAndLeave = useCallback(() => {
     onLogout()
     navigate('/login', { replace: true })
-  }
+  }, [onLogout, navigate])
 
   const ActiveComponent = MODULE_COMPONENTS[moduleId]
 
@@ -228,7 +296,7 @@ function ModuleRoute({ sessionUser, onLogout }) {
         onLogout={handleLogoutAndLeave}
       >
         <Suspense fallback={<ModuleLoader />}>
-          <ActiveComponent user={viewedUser} sessionUser={sessionUser} />
+          <ActiveComponent user={viewedUser} sessionUser={sessionUser} subtab={subtab} />
         </Suspense>
       </AppShell>
     </OwnerProvider>

@@ -16,8 +16,14 @@ import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
 const MIN_FEED_W = 220
 const MIN_READER_W = 320
+const DEFAULT_FEED_W = 780
 function defaultFeedWidth() {
-  return Math.max(MIN_FEED_W, Math.floor(window.innerWidth / 2))
+  // 780 px is the target for every Discover view (My Articles, My Collection,
+  // Search > Author, Search > Collection). Clamp against the available width
+  // so narrow viewports (laptop + 240 px sidebar) don't starve the reader
+  // pane below its minimum.
+  const available = window.innerWidth - MIN_READER_W
+  return Math.max(MIN_FEED_W, Math.min(DEFAULT_FEED_W, available))
 }
 
 function authorKey(pubkey) { return `mynostr_last_author_${pubkey}` }

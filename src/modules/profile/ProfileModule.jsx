@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { nip19 } from 'nostr-tools'
 import { copyToClipboard, isSafeUrl, truncateNpub, formatCount, createLRU } from '../../lib/utils.js'
 import { useOwnerContext, OwnerProvider } from '../../lib/ownerContext.jsx'
@@ -7,6 +7,7 @@ import { fetchUserContentCounts } from '../../lib/userContentCounts.js'
 import { fetchUserBookmarkCounts } from '../../lib/userBookmarkCounts.js'
 import { fetchProfiles, fetchUserZapAggregates, fetchAuthorPostingCadence } from '../../lib/primal.js'
 import UserSearch from '../../components/UserSearch.jsx'
+import ShareButton from '../../components/ShareButton.jsx'
 import ProfileEditor from './ProfileEditor.jsx'
 import ProfileStatsCard from './ProfileStatsCard.jsx'
 import ProfileActivityCard from './ProfileActivityCard.jsx'
@@ -42,9 +43,13 @@ const BOOKMARK_COUNTS_CACHE = createLRU(50)
 const ZAP_AGGREGATES_CACHE  = createLRU(50)
 const CADENCE_CACHE         = createLRU(50)
 
-export default function ProfileModule({ user }) {
+export default function ProfileModule({ user, subtab }) {
   const { isOwner: ownerOfUrl, sessionUser } = useOwnerContext()
   const [mode, setMode] = useState('view')   // 'view' | 'edit'
+  // When the URL is /:npub/profile/relays, scroll the relay section into
+  // view once it's rendered. This is a shareable "check out my relays"
+  // anchor — the rest of the profile stays visible above it.
+  const relaysRef = useRef(null)
   const [, forceRender] = useState(0)
   // Transient banner shown on the view after a save that only landed on
   // fallback relays. Cleared on edit-entry or manual dismiss.
@@ -72,6 +77,27 @@ export default function ProfileModule({ user }) {
   const [loading, setLoading] = useState(!stats || !contentCounts || !bookmarkCounts)
   const [zapLoading, setZapLoading] = useState(!zapAggregates)
   const [cadenceLoading, setCadenceLoading] = useState(!cadence)
+
+  // Scroll to relays section when URL is /:npub/profile/relays. Waits for
+  // initial stats to finish so the cards above have settled heights before
+  // scrolling — otherwise the target ends up above the viewport as later
+  // cards lay out. A ref prevents re-firing if the user scrolls away after.
+  const scrolledForSubtabRef = useRef(null)
+  useEffect(() => {
+    if (subtab !== 'relays') { scrolledForSubtabRef.current = null; return }
+    if (loading) return
+    if (scrolledForSubtabRef.current === subtab) return
+    const el = relaysRef.current
+    if (!el) return
+    scrolledForSubtabRef.current = subtab
+    // One rAF for layout, a second for paint — gives the cards above a
+    // chance to finalize their height.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      })
+    })
+  }, [subtab, loading])
   // Bumped by PostingCadenceCard's refresh button. Forces the cadence fetch
   // effect to re-run without also re-running the stats/zaps fetches above,
   // which are on a separate useEffect. Primal's paginated kind-1 fetch
@@ -312,6 +338,7 @@ export default function ProfileModule({ user }) {
       cadenceLoading={cadenceLoading}
       onRefreshCadence={refreshCadence}
       loading={loading}
+      relaysRef={relaysRef}
     />
   )
 
@@ -329,7 +356,7 @@ export default function ProfileModule({ user }) {
   return view
 }
 
-function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading }) {
+function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading, relaysRef }) {
   const profile = user?.profile || {}
   const displayName = profile.displayName || profile.name || 'Anonymous'
   const handle = profile.nip05 || (profile.name ? `@${profile.name}` : null)
@@ -425,14 +452,17 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
             beneath it on the same edge so they share the cluster. */}
         <div className="relative pt-14 px-4 pb-6">
           <div className="absolute top-3 right-4 flex flex-col items-end gap-2">
-            {isOwner && (
-              <button
-                onClick={onEdit}
-                className="text-xs text-neutral-200 border border-neutral-700 hover:border-neutral-500 hover:text-neutral-100 rounded px-3 py-1.5 transition-colors"
-              >
-                Edit
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              <ShareButton variant="button" />
+              {isOwner && (
+                <button
+                  onClick={onEdit}
+                  className="text-xs text-neutral-200 border border-neutral-700 hover:border-neutral-500 hover:text-neutral-100 rounded px-3 py-1.5 transition-colors"
+                >
+                  Edit
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-3 text-xs text-neutral-400 whitespace-nowrap">
               <FollowStat label="Following" value={stats?.follows_count}   loading={loading && stats == null} />
               <FollowStat label="Followers" value={stats?.followers_count} loading={loading && stats == null} />
@@ -520,9 +550,10 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
           onRefresh={onRefreshCadence}
         />
 
-        <RelayCard pubkey={user?.pubkey} />
-
-        <DmRelayCard pubkey={user?.pubkey} />
+        <div ref={relaysRef} className="space-y-4">
+          <RelayCard pubkey={user?.pubkey} />
+          <DmRelayCard pubkey={user?.pubkey} />
+        </div>
       </div>
     </div>
   )

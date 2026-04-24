@@ -15,9 +15,11 @@
  * the upgrade path for users on legacy kind 3 — an amber banner prompts
  * them, and the same Save path replaces their kind 3 with NIP-65.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { nip19 } from 'nostr-tools'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
+import ShareButton from '../../components/ShareButton.jsx'
 import {
   fetchNip11,
   fetchUserRelayList,
@@ -121,6 +123,17 @@ export default function RelayCard({ pubkey }) {
   const isMobile = useIsMobile()
   const { isOwner } = useOwnerContext()
   const copier = useRelayCopier({ kind: 'main' })
+
+  // Share URL always points at the /profile/relays anchor — so clicking the
+  // card's share button from anywhere on the profile page sends recipients
+  // straight to this section rather than the top of the page.
+  const shareUrl = useMemo(() => {
+    if (!pubkey || typeof window === 'undefined') return null
+    try {
+      const npub = nip19.npubEncode(pubkey)
+      return `${window.location.origin}/${npub}/profile/relays`
+    } catch { return null }
+  }, [pubkey])
   const [relays, setRelays] = useState([])
   const [source, setSource] = useState('none')
   const [loading, setLoading] = useState(true)
@@ -259,6 +272,7 @@ export default function RelayCard({ pubkey }) {
               <span className="text-neutral-600">No relay list published</span>
             )}
           </span>
+          {shareUrl && <ShareButton variant="button" url={shareUrl} />}
           {isOwner && !loading && !inEdit && relays.length > 0 && (
             <button
               type="button"

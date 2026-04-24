@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
 import { isSafeUrl } from '../lib/utils.js'
 import { resetNDK, getLastOutboxWarning, clearLastOutboxWarning, OUTBOX_WARNING_EVENT } from '../lib/ndk.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import { useOwnerContext } from '../lib/ownerContext.jsx'
 import BoostModal from './BoostModal.jsx'
-import HelpModal from '../modules/longform/components/HelpModal.jsx'
+import HelpModal from '../modules/articles/components/HelpModal.jsx'
 import MobileNavDrawer from './MobileNavDrawer.jsx'
 import ShareButton from './ShareButton.jsx'
 
 /**
  * AppShell — persistent layout wrapping every module.
- * Desktop: logo · scrollable module tabs · (share) avatar + boost/help/login-or-logout.
- * Mobile: hamburger + active module label + avatar; nav lives in a slide-in drawer.
+ * Desktop: vertical sidebar on the left (logo/boost at top · module tabs in
+ *   the middle · viewer badge + profile + share + login-or-logout at bottom)
+ *   with the module content filling the rest of the viewport.
+ * Mobile: hamburger + active module label + avatar; nav lives in a slide-in
+ *   drawer. Unchanged from before — the vertical rail is desktop-only.
  *
  * `user` here is the *viewed* user (whose page is on screen). Session identity
  * (used for gating editor UI) comes from OwnerContext.
@@ -21,12 +24,16 @@ import ShareButton from './ShareButton.jsx'
 export default function AppShell({ user, sessionUser, activeModule, onModuleChange, onLogout, children }) {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
+  const { subtab } = useParams()
   const { isOwner, isReadOnly } = useOwnerContext()
   const [boostOpen, setBoostOpen]   = useState(false)
   const [helpOpen,  setHelpOpen]    = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const profile = user?.profile
   const activeMod = MODULES.find(m => m.id === activeModule)
+  // Write + Search surfaces aren't publicly shareable — Write has no URL
+  // worth sharing; Search is owner-only and redirects visitors out.
+  const shareable = subtab !== 'write' && subtab !== 'search'
 
   function handleLogout() {
     resetNDK()
@@ -42,134 +49,166 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
 
   // Visitor badge — shown whenever the user isn't editing their own page.
   // Covers logged-out visitors, signed-in users viewing someone else, and
-  // read-only (npub-login) sessions on their own page.
-  const viewerBadgeText = isReadOnly
+  // read-only (npub-login) sessions on their own page. Skipped on the
+  // public homepage (no viewed user → nothing to badge against).
+  const viewerBadgeText = user && isReadOnly
     ? (sessionUser ? (sessionUser.pubkey === user?.pubkey ? 'Read-only' : 'Viewing') : 'Viewing')
     : null
 
   return (
-    <div className="flex flex-col h-screen bg-neutral-950 text-neutral-100 font-mono overflow-hidden">
+    <div className="flex h-screen bg-neutral-950 text-neutral-100 font-mono overflow-hidden">
 
-      {isMobile ? (
-        /* ── Mobile top bar ────────────────────────────────────── */
-        <header className="flex items-center justify-between gap-2 border-b border-neutral-800 bg-neutral-950 shrink-0 px-3 py-2">
-          <div className="flex items-center gap-2 min-w-0 flex-1">
+      {/* ── Desktop sidebar (vertical rail) ─────────────────────────── */}
+      {!isMobile && (
+        <aside className="w-60 shrink-0 flex flex-col border-r border-neutral-800 bg-neutral-950">
+
+          {/* Top: brand + Boost. The logo fills the full rail width and acts
+              as the home link; no separate wordmark. Help for articles is on
+              the module itself, not here. */}
+          <div className="shrink-0 px-3 pt-3 pb-3 flex flex-col gap-2 border-b border-neutral-800">
+            <Link to="/" aria-label="MyNostr home" className="block">
+              <img src="/mynostr.png" alt="MyNostr" className="w-full h-auto" />
+            </Link>
             <button
-              onClick={() => setDrawerOpen(true)}
-              className="text-neutral-300 hover:text-neutral-100 p-1.5 -ml-1 shrink-0"
-              aria-label="Open menu"
+              onClick={() => setBoostOpen(true)}
+              className="text-xs text-amber-500 hover:text-amber-300 transition-colors px-2 py-1.5 rounded border border-amber-900 hover:border-amber-700"
+              aria-label="Boost MyNostr"
             >
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="3" y1="6" x2="21" y2="6" />
-                <line x1="3" y1="12" x2="21" y2="12" />
-                <line x1="3" y1="18" x2="21" y2="18" />
-              </svg>
+              Boost MyNostr
             </button>
-            <span className="text-sm text-neutral-200 truncate flex items-center gap-1.5">
-              <span>{activeMod?.icon}</span>
-              <span>{activeMod?.label}</span>
-            </span>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {sessionUser ? (
-              <button
-                onClick={handleLogout}
-                aria-label="Logout"
-                className="text-[10px] text-neutral-400 hover:text-neutral-100 border border-neutral-700 hover:border-neutral-500 rounded px-1.5 py-0.5 transition-colors"
-              >
-                Logout
-              </button>
-            ) : (
-              <button
-                onClick={handleLoginClick}
-                aria-label="Login"
-                className="text-[10px] text-purple-300 hover:text-purple-100 border border-purple-800 hover:border-purple-600 rounded px-1.5 py-0.5 transition-colors"
-              >
-                Login
-              </button>
-            )}
-            <ShareButton variant="icon" />
-          </div>
-        </header>
-      ) : (
-        /* ── Desktop top bar ───────────────────────────────────── */
-        <header className="flex items-center gap-2 border-b border-neutral-800 bg-neutral-950 shrink-0 px-3">
 
-          {/* Logo — always links home */}
-          <Link to="/" aria-label="MyNostr home" className="shrink-0 mr-1">
-            <img src="/mynostr.png" alt="MyNostr" className="h-7" />
-          </Link>
-
-          {/* Boost MyNostr — anchored next to the logo so it reads as a
-              tip-the-site action rather than tipping the viewed author. */}
-          <button
-            onClick={() => setBoostOpen(true)}
-            className="shrink-0 flex items-center gap-1.5 text-xs text-amber-500 hover:text-amber-300 transition-colors px-2 py-1 rounded border border-amber-900 hover:border-amber-700"
-            aria-label="Boost MyNostr"
-          >
-            <img src="/mynostr.png" alt="" className="h-4 w-4" aria-hidden="true" />
-            <span>Boost MyNostr</span>
-          </button>
-
-          {/* Help — lives on the left next to Boost so it's grouped with the
-              site-level actions, not per-user controls. Only shown for modules
-              that currently have a help modal (longform). */}
-          {activeModule === 'longform' && (
-            <button
-              onClick={() => setHelpOpen(true)}
-              className="shrink-0 text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600 mr-2"
-              aria-label="Help"
-            >
-              ?
-            </button>
-          )}
-
-          {/* Module tabs — horizontally scrollable so nothing wraps or truncates */}
+          {/* Middle: module tabs. "Stats & Relays" is a sidebar alias for the
+              profile module — some users look for relay/stats under a
+              dedicated heading; both this entry and the identity footer
+              route to /profile. */}
           <nav
-            className="flex items-end flex-1 overflow-x-auto gap-0 scrollbar-none min-w-0"
+            className="flex-1 overflow-y-auto py-2 px-2 flex flex-col gap-0.5"
             aria-label="Module navigation"
           >
-            {MODULES.map(mod => (
-              <Tab
+            <SideTab
+              mod={{ id: 'profile', label: 'Stats & Relays', icon: '📊', description: 'Profile stats and relays', status: 'live' }}
+              active={activeModule === 'profile'}
+              onClick={() => onModuleChange('profile')}
+            />
+            {MODULES.filter(m => m.id !== 'profile').map(mod => (
+              <SideTab
                 key={mod.id}
                 mod={mod}
-                profile={profile}
                 active={activeModule === mod.id}
                 onClick={() => onModuleChange(mod.id)}
               />
             ))}
           </nav>
 
-          {/* Right: viewer badge · share · avatar · login/logout */}
-          <div className="flex items-center gap-2 shrink-0 pl-2">
-            {viewerBadgeText && (
-              <span className="text-xs text-amber-500 border border-amber-900 rounded px-2 py-0.5">
-                {viewerBadgeText}
-              </span>
-            )}
-
-            <ShareButton variant="button" />
-
-            {sessionUser ? (
-              <button
-                onClick={handleLogout}
-                className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
-                aria-label="Logout"
-              >
-                Logout
-              </button>
-            ) : (
-              <button
-                onClick={handleLoginClick}
-                className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded border border-purple-900 hover:border-purple-700"
-                aria-label="Login"
-              >
-                Login
-              </button>
+          {/* Bottom: user identity + session actions. Share lives on each
+              module's own header now — not globally on the shell. Order is
+              viewer-badge → session action (Login/Logout) → profile identity
+              so the account-level controls cluster above the pfp row. When
+              logged out the Login button sits next to the "Viewing" badge. */}
+          <div className="shrink-0 border-t border-neutral-800 px-3 py-3 flex flex-col gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              {viewerBadgeText && (
+                <span className="text-[11px] text-amber-500 border border-amber-900 rounded px-2 py-0.5">
+                  {viewerBadgeText}
+                </span>
+              )}
+              {sessionUser ? (
+                <button
+                  onClick={handleLogout}
+                  className="text-xs text-neutral-600 hover:text-neutral-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
+                  aria-label="Logout"
+                >
+                  Logout
+                </button>
+              ) : (
+                <button
+                  onClick={handleLoginClick}
+                  className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded border border-purple-900 hover:border-purple-700"
+                  aria-label="Login"
+                >
+                  Login
+                </button>
+              )}
+            </div>
+            {/* The pfp tab shows the VIEWED user's profile on module pages.
+                On the homepage there's no viewed user — fall back to the
+                session user's profile (if logged in) so they have a
+                one-click path back to their own page. The click handler
+                navigates directly rather than going through
+                onModuleChange, so this works even on the homepage where
+                that handler focuses the search input. */}
+            {(user || sessionUser) && (
+              <ProfileIdentityTab
+                profile={(user || sessionUser)?.profile}
+                active={activeModule === 'profile'}
+                onClick={() => {
+                  const target = user?.npub || sessionUser?.npub
+                  if (target) navigate(`/${target}/profile`)
+                }}
+              />
             )}
           </div>
-        </header>
+        </aside>
       )}
+
+      {/* ── Right column: mobile header (if mobile) + main content ──── */}
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+
+        {isMobile && (
+          <header className="flex items-center justify-between gap-2 border-b border-neutral-800 bg-neutral-950 shrink-0 px-3 py-2">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <button
+                onClick={() => setDrawerOpen(true)}
+                className="text-neutral-300 hover:text-neutral-100 p-1.5 -ml-1 shrink-0"
+                aria-label="Open menu"
+              >
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="3" y1="6" x2="21" y2="6" />
+                  <line x1="3" y1="12" x2="21" y2="12" />
+                  <line x1="3" y1="18" x2="21" y2="18" />
+                </svg>
+              </button>
+              <span className="text-sm text-neutral-200 truncate flex items-center gap-1.5">
+                {activeMod ? (
+                  <>
+                    <span>{activeMod.icon}</span>
+                    <span>{activeMod.label}</span>
+                  </>
+                ) : (
+                  <span>MyNostr</span>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              {sessionUser && <SessionAvatar sessionUser={sessionUser} />}
+              {sessionUser ? (
+                <button
+                  onClick={handleLogout}
+                  aria-label="Logout"
+                  className="text-[10px] text-neutral-400 hover:text-neutral-100 border border-neutral-700 hover:border-neutral-500 rounded px-1.5 py-0.5 transition-colors"
+                >
+                  Logout
+                </button>
+              ) : (
+                <button
+                  onClick={handleLoginClick}
+                  aria-label="Login"
+                  className="text-[10px] text-purple-300 hover:text-purple-100 border border-purple-800 hover:border-purple-600 rounded px-1.5 py-0.5 transition-colors"
+                >
+                  Login
+                </button>
+              )}
+              {shareable && <ShareButton variant="icon" />}
+            </div>
+          </header>
+        )}
+
+        <main className="flex-1 overflow-hidden flex flex-col">
+          {sessionUser && <OutboxWarningBanner sessionPubkey={sessionUser.pubkey} />}
+          {children}
+        </main>
+      </div>
 
       {isMobile && (
         <MobileNavDrawer
@@ -183,7 +222,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           onHelp={() => setHelpOpen(true)}
           onLogout={handleLogout}
           onLogin={handleLoginClick}
-          showHelp={activeModule === 'longform'}
+          showHelp={activeModule === 'articles'}
         />
       )}
 
@@ -191,12 +230,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           user, not whoever's page we're on. */}
       {boostOpen && <BoostModal user={sessionUser} onClose={() => setBoostOpen(false)} readOnly={!isOwner} />}
       {helpOpen  && <HelpModal onClose={() => setHelpOpen(false)} />}
-
-      {/* ── Module content ──────────────────────────────────────── */}
-      <main className="flex-1 overflow-hidden flex flex-col">
-        {sessionUser && <OutboxWarningBanner sessionPubkey={sessionUser.pubkey} />}
-        {children}
-      </main>
     </div>
   )
 }
@@ -271,45 +304,90 @@ function OutboxWarningBanner({ sessionPubkey }) {
   )
 }
 
-/** Single tab button — active tab has a bottom border highlight.
- *  The `profile` tab swaps its icon/label for the viewed user's pfp and
- *  display name so it reads as "this is the person whose page you're on." */
-function Tab({ mod, profile, active, onClick }) {
-  const isProfile = mod.id === 'profile'
+/** Small circular pfp for the mobile top bar — shows who's signed in, to
+ *  the left of the Logout button. Falls back to a "?" glyph when the image
+ *  is missing or doesn't pass the URL safety check. */
+function SessionAvatar({ sessionUser }) {
+  const img = sessionUser?.profile?.image
+  const label = sessionUser?.profile?.displayName || sessionUser?.profile?.name || 'Signed in'
+  if (img && isSafeUrl(img)) {
+    return (
+      <img
+        src={img}
+        alt={label}
+        title={label}
+        className="w-6 h-6 rounded-full object-cover bg-neutral-800 shrink-0"
+        onError={e => { e.target.style.display = 'none' }}
+      />
+    )
+  }
+  return (
+    <span
+      title={label}
+      className="w-6 h-6 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500 shrink-0"
+    >
+      ?
+    </span>
+  )
+}
+
+/** Vertical side-rail tab. Active state is a bg tint + purple accent on the
+ *  left edge — the horizontal `border-b` underline doesn't translate; a left
+ *  bar reads as "you are here" in a column layout. */
+function SideTab({ mod, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      title={mod.description}
+      aria-current={active ? 'page' : undefined}
+      className={`relative flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors text-left ${
+        active
+          ? 'bg-purple-950/40 text-purple-300'
+          : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-900'
+      } ${mod.status === 'soon' ? 'opacity-50' : ''}`}
+    >
+      {active && (
+        <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-purple-400" aria-hidden="true" />
+      )}
+      <span className="w-5 text-center shrink-0">{mod.icon}</span>
+      <span className="truncate">{mod.label}</span>
+    </button>
+  )
+}
+
+/** Profile identity button — lives at the bottom of the rail instead of
+ *  inline with the module tabs. Shows the viewed user's pfp + displayName so
+ *  it reads as "this is whose page you're on." Clicking it navigates to the
+ *  profile module (same as the old Profile tab did). */
+function ProfileIdentityTab({ profile, active, onClick }) {
   const displayName = profile?.displayName || profile?.name || 'Profile'
   return (
     <button
       onClick={onClick}
-      title={isProfile ? displayName : mod.description}
+      title={displayName}
       aria-current={active ? 'page' : undefined}
-      className={`flex items-center gap-1.5 px-3 py-3 text-xs whitespace-nowrap border-b-2 transition-colors ${
+      className={`relative flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors text-left ${
         active
-          ? 'border-purple-500 text-purple-300'
-          : 'border-transparent text-neutral-500 hover:text-neutral-200 hover:border-neutral-600'
-      } ${mod.status === 'soon' ? 'opacity-50' : ''}`}
+          ? 'bg-purple-950/40 text-purple-300'
+          : 'text-neutral-300 hover:text-neutral-100 hover:bg-neutral-900'
+      }`}
     >
-      {isProfile ? (
-        <>
-          {profile?.image && isSafeUrl(profile.image) ? (
-            <img
-              src={profile.image}
-              alt=""
-              className="w-5 h-5 rounded-full object-cover bg-neutral-800"
-              onError={e => { e.target.style.display = 'none' }}
-            />
-          ) : (
-            <span className="w-5 h-5 rounded-full bg-neutral-800 flex items-center justify-center text-[10px] text-neutral-500">
-              ?
-            </span>
-          )}
-          <span className="max-w-[12ch] truncate">{displayName}</span>
-        </>
-      ) : (
-        <>
-          <span>{mod.icon}</span>
-          <span>{mod.label}</span>
-        </>
+      {active && (
+        <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-r bg-purple-400" aria-hidden="true" />
       )}
+      {profile?.image && isSafeUrl(profile.image) ? (
+        <img
+          src={profile.image}
+          alt=""
+          className="w-7 h-7 rounded-full object-cover bg-neutral-800 shrink-0"
+          onError={e => { e.target.style.display = 'none' }}
+        />
+      ) : (
+        <span className="w-7 h-7 rounded-full bg-neutral-800 flex items-center justify-center text-[11px] text-neutral-500 shrink-0">
+          ?
+        </span>
+      )}
+      <span className="text-sm truncate flex-1 min-w-0">{displayName}</span>
     </button>
   )
 }

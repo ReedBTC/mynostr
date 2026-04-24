@@ -84,6 +84,9 @@ export default function NoteComposer({
   const [imageError, setImageError] = useState('')
   const imageInputRef = useRef(null)
   const { requestUpload: requestImageUpload, element: uploadPicker } = useImageUploadFlow()
+  const [videoUploading, setVideoUploading] = useState(false)
+  const [videoError, setVideoError] = useState('')
+  const videoInputRef = useRef(null)
   const [cursorPos, setCursorPos] = useState(0)
   const [mentionActive, setMentionActive] = useState(false)
   const [importLoading, setImportLoading] = useState(false)
@@ -278,6 +281,7 @@ export default function NoteComposer({
 
   // Image upload — insert URL at cursor position
   const handleImageUpload = useCallback(async (file) => {
+    if (readOnly) return
     if (!file || !file.type.startsWith('image/')) return
     if (imageUploading) return
     const ready = await requestImageUpload(file)
@@ -305,7 +309,57 @@ export default function NoteComposer({
     } finally {
       setImageUploading(false)
     }
-  }, [content, imageUploading, requestImageUpload])
+  }, [content, imageUploading, requestImageUpload, readOnly])
+
+  // Video upload — insert URL at cursor position. No compression (long-term
+  // feature). Accept list covers iPhone/Android defaults + X.com's top
+  // formats; any URL rendered inline by NotePreview requires one of these
+  // extensions, so we gate the input to match.
+  //
+  // MIME validation note: file.type is browser-reported (usually derived from
+  // the extension) and can be spoofed by renaming a file. We don't magic-byte
+  // sniff — Primal's Blossom server validates on upload, and even a spoofed
+  // file served back under a video mime won't execute in a <video> tag. Worst
+  // case is a broken embed in the viewer's feed.
+  const handleVideoUpload = useCallback(async (file) => {
+    if (readOnly) return
+    if (!file) return
+    if (videoUploading) return
+    const okTypes = new Set(['video/mp4', 'video/quicktime', 'video/webm', 'video/x-m4v'])
+    if (!okTypes.has(file.type)) {
+      setVideoError('Unsupported video format. Use MP4, MOV, WebM, or M4V.')
+      return
+    }
+    // 50 MB cap — SubtleCrypto's SHA-256 needs the whole buffer in RAM
+    // (no streaming API), and mid-range phones OOM past this point.
+    const MAX_BYTES = 50 * 1024 * 1024
+    if (file.size > MAX_BYTES) {
+      setVideoError('Video too large (max 50 MB)')
+      return
+    }
+    setVideoUploading(true)
+    setVideoError('')
+    try {
+      const url = await uploadToBlossom(file)
+      const ta = textareaRef.current
+      const insertPos = ta?.selectionStart ?? content.length
+      const before = content.slice(0, insertPos)
+      const after = content.slice(insertPos)
+      const needsBefore = before.length > 0 && !before.endsWith('\n') && !before.endsWith(' ')
+      const needsAfter = after.length > 0 && !after.startsWith('\n') && !after.startsWith(' ')
+      const newContent = before + (needsBefore ? '\n' : '') + url + (needsAfter ? '\n' : '') + after
+      setContent(newContent)
+    } catch (err) {
+      setVideoError(err.message || 'Video upload failed')
+      const id = setTimeout(() => {
+        pendingTimersRef.current.delete(id)
+        setVideoError('')
+      }, 5000)
+      pendingTimersRef.current.add(id)
+    } finally {
+      setVideoUploading(false)
+    }
+  }, [content, videoUploading, readOnly])
 
   // Handle @mention selection — insert @DisplayName, track mapping
   const handleMentionSelect = useCallback(({ name, pubkey }, start, end) => {
@@ -1039,6 +1093,44 @@ export default function NoteComposer({
                     )}
                   </button>
 
+                  <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) handleVideoUpload(file)
+                      e.target.value = ''
+                    }}
+                  />
+                  <button
+                    onClick={() => videoInputRef.current?.click()}
+                    disabled={videoUploading || readOnly}
+                    className="flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700 transition-colors disabled:opacity-50"
+                    title="Upload video (MP4, MOV, WebM, M4V — up to 50 MB)"
+                    aria-label="Upload video"
+                  >
+                    {videoUploading ? (
+                      <>
+                        <span className="w-3 h-3 border border-neutral-500 border-t-transparent rounded-full animate-spin inline-block" />
+                        <span>Uploading...</span>
+                      </>
+                    ) : (
+                      <>
+                        {/* Film/video glyph */}
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                          <path fillRule="evenodd" d="M1 5.25A2.25 2.25 0 0 1 3.25 3h13.5A2.25 2.25 0 0 1 19 5.25v9.5A2.25 2.25 0 0 1 16.75 17H3.25A2.25 2.25 0 0 1 1 14.75v-9.5Zm7.25 1.5a.75.75 0 0 0-1.145-.636l-4 2.5a.75.75 0 0 0 0 1.272l4 2.5A.75.75 0 0 0 8.25 11.75v-5Z" clipRule="evenodd" />
+                        </svg>
+                        {/* Upload glyph */}
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                          <path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.636l2.955 3.129a.75.75 0 0 0 1.09-1.03l-4.25-4.5a.75.75 0 0 0-1.09 0l-4.25 4.5a.75.75 0 1 0 1.09 1.03L9.25 4.636v8.614Z" />
+                          <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
+                        </svg>
+                      </>
+                    )}
+                  </button>
+
                   <button
                     onClick={() => setShowAdvanced(v => !v)}
                     className={`flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs transition-colors ${
@@ -1103,6 +1195,9 @@ export default function NoteComposer({
             {/* Image / upload errors — Write mode only */}
             {!previewMode && imageError && (
               <p className="text-red-400 text-xs mt-1">{imageError}</p>
+            )}
+            {!previewMode && videoError && (
+              <p className="text-red-400 text-xs mt-1">{videoError}</p>
             )}
             {!previewMode && uploadError && (
               <div className="mt-2 bg-red-900/30 border border-red-800 rounded p-2 flex items-center justify-between">

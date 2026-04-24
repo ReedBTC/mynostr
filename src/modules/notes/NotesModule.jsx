@@ -16,6 +16,7 @@
  */
 import { useState, useEffect, useCallback } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import ShareButton from '../../components/ShareButton.jsx'
 import NoteComposer from './components/NoteComposer.jsx'
 import DraftsTray from './components/DraftsTray.jsx'
 import MyNotesTab from './components/feed/MyNotesTab.jsx'
@@ -30,20 +31,40 @@ import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { buildDraftSnapshotFromEvent } from '../../lib/draftFromEvent.js'
 import { validateKind1Event } from '../../lib/noteParser.js'
 
-export default function NotesModule({ user, sessionUser }) {
+export default function NotesModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
   const location = useLocation()
   const navigate = useNavigate()
   const isMobile = useIsMobile()
+  const npub = user?.npub
 
-  const [moduleTab, setModuleTab] = useState(isOwner ? 'write' : 'notes')
+  // Derive current tab from URL subtab. The `comments` subtab is special —
+  // it lands on the MyNotes tab with the Comments pill pre-selected rather
+  // than being its own tab. Unknown / owner-only subtabs visited by a
+  // non-owner fall through to the default (see the bounce effect below).
+  // Bare `/notes` always means the My Notes feed — Write has its own URL
+  // so "My Notes" is reachable via the tab button and shareable links.
+  const moduleTab = (() => {
+    if (subtab === 'comments') return 'notes'
+    if (subtab === 'bookmarks') return 'bookmarks'
+    if (subtab === 'search' && isOwner) return 'search'
+    if (subtab === 'write' && isOwner) return 'write'
+    return 'notes'
+  })()
+  const notesMode = subtab === 'comments' ? 'comments' : 'notes'
+
+  // Helper for navigating between tabs. `notes` default view maps to the
+  // bare `/notes` URL; `comments` is a sub-view of it.
+  const setModuleTab = useCallback((id) => {
+    if (!npub) return
+    const path = id === 'notes' ? `/${npub}/notes` : `/${npub}/notes/${id}`
+    navigate(path)
+  }, [npub, navigate])
+
   // Author handoff for "click name/pfp → open in Search." Only populated
   // when the owner triggers it; SearchTab consumes it once on mount and
   // calls back to clear so re-opening the same author still works.
   const [searchInitialAuthor, setSearchInitialAuthor] = useState(null)
-  // One-shot Notes/Comments mode hint for MyNotesTab, seeded by location.state
-  // before the initialTab effect nulls it out.
-  const [notesInitialMode, setNotesInitialMode] = useState(null)
 
   // Multi-draft state — persisted per-pubkey in localStorage by the hook.
   // Only meaningful for the page owner (visitors can't publish).
@@ -81,20 +102,7 @@ export default function NotesModule({ user, sessionUser }) {
     })
     setModuleTab('write')
     navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, isOwner, createDraft, navigate])
-
-  // Cross-module deep-link that requests a specific sub-tab (e.g. Profile's
-  // stats-card cells landing on "notes" instead of the owner's default
-  // "write"). Also forwards an optional `initialMode` to MyNotesTab for
-  // Notes vs Comments landing. Consumed once and cleared so back/forward
-  // can't replay it.
-  useEffect(() => {
-    const target = location.state?.initialTab
-    if (!target) return
-    setModuleTab(target)
-    if (location.state?.initialMode) setNotesInitialMode(location.state.initialMode)
-    navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, navigate])
+  }, [location.state, location.pathname, isOwner, createDraft, navigate, setModuleTab])
 
   // Multi-JSON import — each file becomes a new draft. Size-capped per file
   // to match the single-file import path. Returns a summary so the tray can
@@ -168,15 +176,21 @@ export default function NotesModule({ user, sessionUser }) {
     if (!isOwner || !author?.pubkey) return
     setSearchInitialAuthor(author)
     setModuleTab('search')
-  }, [isOwner])
+  }, [isOwner, setModuleTab])
 
-  // If a visitor somehow lands on an owner-only tab (e.g. a stale URL or
-  // coming back after logout), bounce to the default visitor tab.
+  // If a visitor lands on an owner-only URL (e.g. /notes/write via a stale
+  // share or browser back after logout), redirect to the default view.
   useEffect(() => {
-    if (!isOwner && (moduleTab === 'write' || moduleTab === 'search')) {
-      setModuleTab('notes')
+    if (!isOwner && (subtab === 'write' || subtab === 'search') && npub) {
+      navigate(`/${npub}/notes`, { replace: true })
     }
-  }, [isOwner, moduleTab])
+  }, [isOwner, subtab, npub, navigate])
+
+  // Pill handler for MyNotesTab — flip Notes↔Comments by navigating.
+  const handleNotesModeChange = useCallback((mode) => {
+    if (!npub) return
+    navigate(mode === 'comments' ? `/${npub}/notes/comments` : `/${npub}/notes`)
+  }, [npub, navigate])
 
   const isWriteActive = moduleTab === 'write' && isOwner
 
@@ -222,7 +236,7 @@ export default function NotesModule({ user, sessionUser }) {
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar ── */}
-      <div className="flex items-center gap-0 px-4 py-2.5 border-b border-neutral-800 flex-shrink-0">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-neutral-800 flex-shrink-0">
         <div className="flex items-center gap-0 flex-shrink-0">
           {visibleTabs.map(({ id, label }, i, arr) => {
             const isActive = moduleTab === id
@@ -242,6 +256,13 @@ export default function NotesModule({ user, sessionUser }) {
             )
           })}
         </div>
+        {/* Share is hidden on Write/Search — Write isn't a shareable
+            surface, and Search is owner-only (visitors get redirected). */}
+        {moduleTab !== 'write' && moduleTab !== 'search' && (
+          <div className="shrink-0">
+            <ShareButton variant="button" />
+          </div>
+        )}
       </div>
 
       {/* ── Write — always mounted for the page owner so draft state survives ── */}
@@ -302,8 +323,8 @@ export default function NotesModule({ user, sessionUser }) {
         <MyNotesTab
           user={user}
           isOwner={isOwner}
-          initialMode={notesInitialMode}
-          onInitialModeConsumed={() => setNotesInitialMode(null)}
+          mode={notesMode}
+          onModeChange={handleNotesModeChange}
         />
       )}
       {!isWriteActive && moduleTab === 'bookmarks' && (
