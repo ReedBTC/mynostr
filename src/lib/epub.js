@@ -119,7 +119,8 @@ function countLines(ctx, text, maxWidth) {
 
 // Generate a cover image (800×1200) as a JPEG Blob.
 // Uses the supplied cover as background if available, then overlays
-// title + byline text. Falls back to gradient when no cover supplied.
+// title + subtitle + author text. Falls back to gradient when no
+// cover supplied.
 //
 // `options.requireImage` controls failure handling for the URL path:
 //   • false (default) — used by single-article exports where the
@@ -131,7 +132,7 @@ function countLines(ctx, text, maxWidth) {
 //     gradient — the most common cause is the URL's host blocking
 //     cross-origin reads (CORS), which the user can fix by uploading
 //     the file locally or using a Blossom server that sends ACAO.
-async function generateCoverBlob(title, author, coverUrl, { requireImage = false } = {}) {
+async function generateCoverBlob(title, { subtitle = '', author = '', coverUrl = null, requireImage = false } = {}) {
   const W = 800, H = 1200
   const canvas = document.createElement('canvas')
   canvas.width = W
@@ -238,43 +239,66 @@ async function generateCoverBlob(title, author, coverUrl, { requireImage = false
   ctx.fillStyle = grad2
   ctx.fillRect(0, bandY, W, bandH)
 
-  // Layout: title and byline are pinned to separate vertical anchors
-  // rather than centred together as one block. Title's last line sits
-  // around 80% down; the byline (subtitle / author) is pushed further
-  // down to ~93% so it reads as a footer line at the bottom of the
-  // cover. Previously they were stacked as one centred block which
-  // pinned the subtitle right under the title — too crowded, and made
-  // the cover feel top-heavy.
+  // Layout: title, subtitle, and author are pinned to separate vertical
+  // anchors rather than centred together as one block. Anchors slide
+  // depending on which lines are present so a title-only cover feels
+  // balanced and a title+subtitle+author cover doesn't feel crowded.
+  // Previously they were stacked as one centred block which pinned the
+  // subtitle right under the title — too crowded, and made the cover
+  // feel top-heavy.
   const padding = 56
   const maxTextW = W - padding * 2
   const titleSize = 58
-  const bylineSize = 34
+  const subtitleSize = 32
+  const authorSize = 30
   const titleLineH = titleSize * 1.25
-  const bylineLineH = bylineSize * 1.4
-  const titleBottomY  = H * 0.80
-  const bylineBottomY = H * 0.93
+  const subtitleLineH = subtitleSize * 1.4
+  const authorLineH = authorSize * 1.4
+
+  // Anchors for the bottom of each text block. Adjusted by which
+  // pieces are present to keep the layout breathing.
+  let titleBottomY, subtitleBottomY, authorBottomY
+  if (subtitle && author) {
+    titleBottomY    = H * 0.74
+    subtitleBottomY = H * 0.86
+    authorBottomY   = H * 0.94
+  } else if (subtitle) {
+    titleBottomY    = H * 0.80
+    subtitleBottomY = H * 0.93
+  } else if (author) {
+    titleBottomY    = H * 0.80
+    authorBottomY   = H * 0.93
+  } else {
+    titleBottomY    = H * 0.86
+  }
 
   ctx.font = `bold ${titleSize}px Georgia, serif`
   const titleLines = countLines(ctx, title || 'Untitled', maxTextW)
   const titleStartY = titleBottomY - (titleLines - 1) * titleLineH
 
-  ctx.font = `${bylineSize}px Georgia, serif`
-  const bylineLines = author ? countLines(ctx, author, maxTextW) : 0
-  const bylineStartY = bylineBottomY - (bylineLines - 1) * bylineLineH
-
   // Title
-  ctx.font = `bold ${titleSize}px Georgia, serif`
   ctx.fillStyle = '#ffffff'
   ctx.textAlign = 'center'
   ctx.shadowColor = 'rgba(0,0,0,0.6)'
   ctx.shadowBlur = 8
   canvasWrapText(ctx, title || 'Untitled', W / 2, titleStartY, maxTextW, titleLineH)
 
-  // Byline (subtitle on chapterized exports, author on single-article)
+  // Subtitle
+  if (subtitle) {
+    ctx.font = `italic ${subtitleSize}px Georgia, serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.82)'
+    const subtitleLines = countLines(ctx, subtitle, maxTextW)
+    const subtitleStartY = subtitleBottomY - (subtitleLines - 1) * subtitleLineH
+    canvasWrapText(ctx, subtitle, W / 2, subtitleStartY, maxTextW, subtitleLineH)
+  }
+
+  // Author
   if (author) {
-    ctx.font = `${bylineSize}px Georgia, serif`
-    ctx.fillStyle = 'rgba(255,255,255,0.78)'
-    canvasWrapText(ctx, author, W / 2, bylineStartY, maxTextW, bylineLineH)
+    ctx.font = `${authorSize}px Georgia, serif`
+    ctx.fillStyle = 'rgba(255,255,255,0.88)'
+    const authorLines = countLines(ctx, author, maxTextW)
+    const authorStartY = authorBottomY - (authorLines - 1) * authorLineH
+    canvasWrapText(ctx, author, W / 2, authorStartY, maxTextW, authorLineH)
   }
 
   return new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92))
@@ -289,7 +313,7 @@ function containerXml() {
 </container>`
 }
 
-function contentOpf({ bookId, title, author, description, subjects, lang, date, modified, hasCover, naddr }) {
+function contentOpf({ bookId, title, author, description, subjects, lang, date, modified, hasCover, naddr, inlineManifest = [] }) {
   const creatorTag = author ? `\n    <dc:creator>${esc(author)}</dc:creator>` : ''
   const descTag = description ? `\n    <dc:description>${esc(description)}</dc:description>` : ''
   const subjectTags = subjects.map(s => `\n    <dc:subject>${esc(s)}</dc:subject>`).join('')
@@ -301,6 +325,9 @@ function contentOpf({ bookId, title, author, description, subjects, lang, date, 
     ? '\n    <item id="cover-image" href="cover.jpg" media-type="image/jpeg" properties="cover-image"/>\n    <item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>'
     : ''
   const coverSpine = hasCover ? '\n    <itemref idref="cover-page" linear="no"/>' : ''
+  const inlineMan = inlineManifest.map(item =>
+    `\n    <item id="${item.id}" href="${item.href}" media-type="${item.mime}"/>`
+  ).join('')
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
@@ -315,7 +342,7 @@ function contentOpf({ bookId, title, author, description, subjects, lang, date, 
     <item id="nav"     href="nav.xhtml"     media-type="application/xhtml+xml" properties="nav"/>
     <item id="ncx"     href="toc.ncx"       media-type="application/x-dtbncx+xml"/>
     <item id="content" href="content.xhtml" media-type="application/xhtml+xml"/>
-    <item id="style"   href="style.css"     media-type="text/css"/>${coverManifest}
+    <item id="style"   href="style.css"     media-type="text/css"/>${coverManifest}${inlineMan}
   </manifest>
   <spine toc="ncx">${coverSpine}
     <itemref idref="content"/>
@@ -434,7 +461,12 @@ hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
   line-height: 1.25;
 }
 .credits-article-title { font-weight: bold; }
-.credits-article-author { color: #555; font-size: 0.95em; }
+/* Author + npub render at the same size as ordinary credits-page body
+   text — Reed wanted the byline to read as plain text rather than the
+   muted secondary look it had before. The npub override below resets
+   the size so monospace digits don't drift smaller. */
+.credits-article-author { font-size: 1em; }
+.credits-article-author .credits-npub { font-size: 1em; }
 .credits-article-naddr {
   font-family: monospace;
   font-size: 0.78em;
@@ -612,6 +644,104 @@ function articleTitlePageXhtml({ title, subtitle, author, dateStr, coverHref, qr
 </html>`
 }
 
+// Decode the handful of HTML entities likely to appear in an HTML
+// attribute value. Marked + DOMPurify entity-encode `&` to `&amp;` in
+// URLs; left undecoded, the literal `&amp;` ends up in the fetch URL
+// and the server returns a 404 for the wrong query string.
+function decodeHtmlEntitiesForUrl(s) {
+  return String(s || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g,  '<')
+    .replace(/&gt;/g,  '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+}
+
+// Embed inline `<img>` images from chapter HTML into the EPUB.
+//
+// Inline images in article markdown produce `<img src="https://...">`
+// tags after `mdToXhtml`. Most EPUB readers won't follow those external
+// URLs (offline reading, sandboxed iframes, CORS), so the user sees
+// broken-image icons. To make the export self-contained we fetch each
+// image, embed it as a manifest item, and rewrite the src to a relative
+// path inside the EPUB.
+//
+// Best-effort: any fetch failure (CORS, 404, timeout) leaves the
+// original src untouched — the worst case is the same broken-image
+// behaviour the export had before, never a blocked export.
+//
+// `chapterIdx` is 1-based; pass 0 for single-article exports (the
+// folder structure stays consistent either way).
+async function embedInlineImages(html, chapterIdx) {
+  const empty = { html, manifestItems: [], files: [] }
+  if (!html || html.indexOf('<img') === -1) return empty
+
+  // Collect every img src that's a usable http(s) URL. Only http(s)
+  // resources are fetched — data: URIs are already inline and don't
+  // benefit from embedding; blob:/file: are local-only and won't
+  // travel in an EPUB anyway.
+  //
+  // The HTML-encoded src (e.g. `&amp;` in query strings) is what
+  // appears in the output, so we keep the encoded form as the urlMap
+  // key for the rewrite. The fetch needs the decoded URL though, or
+  // the request goes to a literal `&amp;` host.
+  const srcs = []
+  const seen = new Set()
+  // Match src attribute regardless of attribute order. The non-greedy
+  // [^>]*? before src handles cases like `<img alt="…" src="…"/>`.
+  const imgRe = /<img\b[^>]*?\bsrc\s*=\s*"([^"]+)"[^>]*\/?>/gi
+  let m
+  while ((m = imgRe.exec(html)) !== null) {
+    const src = m[1]
+    if (seen.has(src)) continue
+    seen.add(src)
+    if (!isSafeUrl(decodeHtmlEntitiesForUrl(src))) continue
+    if (!/^https?:/i.test(src)) continue
+    srcs.push(src)
+  }
+  if (srcs.length === 0) return empty
+
+  // Fetch in parallel; cap concurrency implicitly via the count of
+  // images per chapter (typically a handful). Each fetch is the same
+  // best-effort path used for article covers — Blossom + most public
+  // image hosts work, Primal r2 (no CORS headers) doesn't.
+  const blobs = await Promise.all(srcs.map(src =>
+    fetchArticleCoverBlob(decodeHtmlEntitiesForUrl(src)),
+  ))
+
+  const manifestItems = []
+  const files = []
+  const urlMap = new Map()
+  let idx = 0
+  for (let i = 0; i < srcs.length; i++) {
+    const blob = blobs[i]
+    if (!blob) continue
+    idx++
+    const { ext, mime } = imageBlobInfo(blob)
+    // `inline/` keeps these out of the way of the per-article cover
+    // assets that already live at `img/ch{N}.{ext}`.
+    const href = `img/inline/ch${chapterIdx}-${idx}.${ext}`
+    const id = `ch${chapterIdx}-inline-${idx}`
+    manifestItems.push({ id, href, mime })
+    files.push({ href, blob })
+    urlMap.set(srcs[i], href)
+  }
+  if (urlMap.size === 0) return empty
+
+  // Rewrite src attrs in HTML to relative manifest paths. Untouched
+  // imgs (CORS-blocked, 404, etc.) keep their external URLs so the
+  // article still reads coherently when the reader has internet.
+  const rewritten = html.replace(
+    /(<img\b[^>]*?\bsrc\s*=\s*")([^"]+)("[^>]*\/?>)/gi,
+    (match, before, src, after) => {
+      const newHref = urlMap.get(src)
+      return newHref ? `${before}${newHref}${after}` : match
+    },
+  )
+
+  return { html: rewritten, manifestItems, files }
+}
+
 // Pick a sensible file extension + MIME for a fetched image blob.
 function imageBlobInfo(blob) {
   const t = (blob?.type || '').toLowerCase()
@@ -679,11 +809,12 @@ function uuid4() {
 // ─── Chapterized epub helpers ─────────────────────────────────────────────────
 
 function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified, hasCover, hasCredits, includeToc, chapters, chapterAssets = [] }) {
-  // Each chapter contributes up to four manifest entries:
-  //   • ch{N}-title.xhtml — title page (always)
-  //   • ch{N}.xhtml       — chapter content (always)
-  //   • img/ch{N}.{ext}   — article cover image (optional)
-  //   • qr/ch{N}.png      — author zap QR (optional)
+  // Each chapter contributes up to several manifest entries:
+  //   • ch{N}-title.xhtml          — title page (always)
+  //   • ch{N}.xhtml                — chapter content (always)
+  //   • img/ch{N}.{ext}            — article cover image (optional)
+  //   • qr/ch{N}.png               — author zap QR (optional)
+  //   • img/inline/ch{N}-K.{ext}   — embedded inline content images (0..N)
   // And two spine entries per chapter (title page → content) so
   // every reader paginates the title page distinctly.
   const chapterManifest = chapters.map((_, i) => {
@@ -695,6 +826,11 @@ function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified,
     }
     if (a.qrManifest) {
       entries += `\n    <item id="${a.qrManifest.id}" href="${a.qrManifest.href}" media-type="${a.qrManifest.mime}"/>`
+    }
+    if (Array.isArray(a.inlineManifest)) {
+      for (const item of a.inlineManifest) {
+        entries += `\n    <item id="${item.id}" href="${item.href}" media-type="${item.mime}"/>`
+      }
     }
     return entries
   }).join('')
@@ -951,20 +1087,29 @@ export async function exportChapterizedEpub(articles, options = {}) {
     lud16:    a.lud16 || '',
   }))
 
-  // Per-chapter assets (article cover fetch + QR PNG generation) run
-  // in parallel so a 10-article export doesn't take 10× the worst
-  // single-article cost. Each step is best-effort; failures degrade
-  // to "no cover" / "no QR" on that title page rather than failing
-  // the export. Article cover fetching has the same CORS limitation
-  // as the collection cover — Blossom + most public image hosts work,
-  // Primal r2 doesn't.
+  // Per-chapter assets (article cover fetch + QR PNG generation +
+  // inline image embedding) run in parallel so a 10-article export
+  // doesn't take 10× the worst single-article cost. Each step is
+  // best-effort; failures degrade to "no cover" / "no QR" / "external
+  // img src" rather than failing the export. CORS limits apply
+  // throughout — Blossom + most public hosts work, Primal r2 doesn't.
   const chapterAssets = await Promise.all(chapters.map(async (ch, i) => {
     const idx = i + 1
-    const [articleCoverBlob, qrBlob] = await Promise.all([
+    const rawBodyHtml = mdToXhtml(ch.content)
+    const [articleCoverBlob, qrBlob, inlineResult] = await Promise.all([
       fetchArticleCoverBlob(ch.metadata?.image),
       generateQrPngBlob(lud16ToQrPayload(ch.lud16)),
+      embedInlineImages(rawBodyHtml, idx),
     ])
-    const out = { coverHref: null, qrHref: null, coverManifest: null, qrManifest: null }
+    const out = {
+      coverHref:      null,
+      qrHref:         null,
+      coverManifest:  null,
+      qrManifest:     null,
+      bodyHtml:       inlineResult.html,
+      inlineManifest: inlineResult.manifestItems,
+      inlineFiles:    inlineResult.files,
+    }
     if (articleCoverBlob) {
       const { ext, mime } = imageBlobInfo(articleCoverBlob)
       const href = `img/ch${idx}.${ext}`
@@ -991,18 +1136,23 @@ export async function exportChapterizedEpub(articles, options = {}) {
   } else if (coverSource?.url && isSafeUrl(coverSource.url)) {
     coverImageUrl = coverSource.url
   }
-  const coverByline = subtitle
-    || `${chapters.length} article${chapters.length !== 1 ? 's' : ''}`
+  const coverSubtitle = subtitle || 'Long Form Nostr Notes'
+  // Author shown on cover only when explicitly entered. The "Various"
+  // checkbox on the modal clears author to empty, and an empty/literal
+  // "Various" should not appear on the cover.
+  const coverAuthor = (author && author.trim() && author.trim().toLowerCase() !== 'various')
+    ? author.trim()
+    : ''
   // requireImage=true when user explicitly supplied a cover so a CORS-
   // or network-failure surfaces as an error in the UI rather than a
   // silent gradient substitution. When no cover supplied, we'd want
   // gradient anyway so the falsy coverImageUrl skips both branches.
-  const coverBlob = await generateCoverBlob(
-    title,
-    coverByline,
-    coverImageUrl,
-    { requireImage: !!coverImageUrl },
-  )
+  const coverBlob = await generateCoverBlob(title, {
+    subtitle:     coverSubtitle,
+    author:       coverAuthor,
+    coverUrl:     coverImageUrl,
+    requireImage: !!coverImageUrl,
+  })
   if (blobUrlToRevoke) URL.revokeObjectURL(blobUrlToRevoke)
   const hasCover = !!coverBlob
 
@@ -1046,6 +1196,9 @@ export async function exportChapterizedEpub(articles, options = {}) {
     const a  = chapterAssets[i]
     if (a.coverManifest) zip.file(`OEBPS/${a.coverManifest.href}`, a.coverManifest.blob)
     if (a.qrManifest)    zip.file(`OEBPS/${a.qrManifest.href}`,    a.qrManifest.blob)
+    if (Array.isArray(a.inlineFiles)) {
+      for (const f of a.inlineFiles) zip.file(`OEBPS/${f.href}`, f.blob)
+    }
 
     const dateStr = ch.metadata?.publishedAtDate
       ? parseDateString(ch.metadata.publishedAtDate).toLocaleDateString('en-US', {
@@ -1065,7 +1218,7 @@ export async function exportChapterizedEpub(articles, options = {}) {
       title:    ch.title,
       metadata: ch.metadata,
       source:   null,
-      bodyHtml: mdToXhtml(ch.content),
+      bodyHtml: a.bodyHtml,
     }))
   }
 
@@ -1272,10 +1425,16 @@ export async function buildEpubBlob(content, metadata, source, author = '', nadd
   const date     = metadata.publishedAtDate || new Date().toISOString().split('T')[0]
   const modified = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
 
-  const bodyHtml = mdToXhtml(content)
+  const rawBodyHtml = mdToXhtml(content)
   const coverUrl = metadata.image && isSafeUrl(metadata.image) ? metadata.image : null
-  const coverBlob = await generateCoverBlob(title, author, coverUrl)
+  const coverBlob = await generateCoverBlob(title, { author, coverUrl })
   const hasCover  = !!coverBlob
+
+  // Inline-image embedding for single-article exports. Same best-effort
+  // CORS-permitting fetch as the chapterized path; failures degrade to
+  // the original external URL in the <img src>.
+  const inlineResult = await embedInlineImages(rawBodyHtml, 0)
+  const bodyHtml = inlineResult.html
 
   zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' })
   zip.file('META-INF/container.xml', containerXml())
@@ -1284,6 +1443,7 @@ export async function buildEpubBlob(content, metadata, source, author = '', nadd
     description: metadata.summary || '',
     subjects:    metadata.tags    || [],
     lang, date, modified, hasCover, naddr,
+    inlineManifest: inlineResult.manifestItems,
   }))
   zip.file('OEBPS/toc.ncx',      tocNcx({ bookId, title }))
   zip.file('OEBPS/nav.xhtml',    navXhtml({ title }))
@@ -1293,6 +1453,9 @@ export async function buildEpubBlob(content, metadata, source, author = '', nadd
   if (hasCover) {
     zip.file('OEBPS/cover.jpg',   coverBlob)
     zip.file('OEBPS/cover.xhtml', coverXhtml())
+  }
+  for (const f of inlineResult.files) {
+    zip.file(`OEBPS/${f.href}`, f.blob)
   }
 
   return await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' })
