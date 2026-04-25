@@ -120,20 +120,27 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
     const out = []
     for (const article of articles) {
       const content    = await resolveContent(article)
+      const profile    = profiles.get(article.pubkey)
       const authorName = article._authorName
-        || profiles.get(article.pubkey)?.display_name
-        || profiles.get(article.pubkey)?.name
+        || profile?.display_name
+        || profile?.name
         || ''
       // pubkey + dTag carry into chapterized exports so the credits
       // page can build naddr / Primal / zap.cooking links per article.
       const dTag = getTag(article, 'd')
         || (article._aTag ? article._aTag.split(':').slice(2).join(':') : '')
+      // lud16 (or lud06 LNURL fallback) drives the per-chapter zap-QR
+      // on the title page. Pulled from whatever profile data the
+      // search/feed already loaded — no extra fetch here. Missing →
+      // QR is just skipped for that chapter.
+      const lud16 = profile?.lud16 || profile?.lud06 || ''
       out.push({
         content,
         author: authorName,
         metadata: buildMeta(article),
         pubkey: article.pubkey || '',
         dTag,
+        lud16,
       })
     }
     return out

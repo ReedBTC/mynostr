@@ -2,6 +2,7 @@ import { useState } from 'react'
 import JSZip from 'jszip'
 import { getNDK } from '../../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../../lib/epub.js'
+import { fetchProfiles } from '../../../../lib/primal.js'
 import { titleToSlug } from '../../../../lib/utils.js'
 import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
 import ExportCustomizationModal from './ExportCustomizationModal.jsx'
@@ -53,6 +54,22 @@ async function resolveArticles(selectedArticles, onStatus) {
       pubkey:   event?.pubkey || aTagParts[1] || '',
       dTag:     event?.tags?.find(t => t[0] === 'd')?.[1] || aTagParts.slice(2).join(':') || '',
     })
+  }
+  // Profile enrichment — batch-fetch unique pubkeys to populate lud16
+  // for the per-chapter zap-QR. One Primal user_infos call covers
+  // every author at once. Failures or missing lud16 → that chapter's
+  // QR is just skipped, not a blocker.
+  const uniquePubkeys = [...new Set(out.map(c => c.pubkey).filter(Boolean))]
+  if (uniquePubkeys.length > 0) {
+    try {
+      const profileMap = await fetchProfiles(uniquePubkeys)
+      for (const ch of out) {
+        const p = profileMap.get(ch.pubkey)
+        ch.lud16 = p?.lud16 || p?.lud06 || ''
+      }
+    } catch {
+      // Non-fatal — proceed without QRs.
+    }
   }
   return out
 }

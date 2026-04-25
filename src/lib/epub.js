@@ -2,6 +2,7 @@ import JSZip from 'jszip'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { nip19 } from 'nostr-tools'
+import QRCode from 'qrcode'
 import { titleToSlug, isSafeUrl, parseDateString } from './utils.js'
 
 // ─── Source-link / recipe helpers ───────────────────────────────────────────
@@ -409,30 +410,217 @@ hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
 .meta      { font-size: 0.85em; color: #777; margin: 0.5em 0 1.5em; }
 .source    { font-size: 0.9em; color: #555; font-style: italic; margin-bottom: 1.5em; }
 
-/* Credits page — front matter between cover and TOC */
-.credits-page .credits-title { margin-bottom: 0.4em; }
-.credits-page .credits-curator { font-size: 1.05em; margin: 0.3em 0; }
-.credits-page .credits-date { color: #666; margin: 0.2em 0 1.2em; }
-.credits-page .credits-subtitle { color: #555; margin-bottom: 1.5em; }
+/* Credits page — front matter between cover and TOC. Dense by design;
+   target is ~10+ articles per page, with the publisher / Nostr blurb
+   reading as a tiny copyright-page footer at the bottom. */
+.credits-page { font-size: 0.78em; line-height: 1.35; }
+.credits-page .credits-title { font-size: 1.6em; margin: 0 0 0.25em; line-height: 1.15; }
+.credits-page .credits-curator { font-size: 0.92em; margin: 0.15em 0; line-height: 1.3; }
+.credits-page .credits-date { color: #666; margin: 0.1em 0 0.7em; font-size: 0.85em; }
+.credits-page .credits-subtitle { color: #555; margin: 0.1em 0 0.9em; font-size: 0.95em; }
+.credits-page .credits-section { font-size: 1.05em; margin: 1em 0 0.4em; }
 .credits-page .credits-npub {
   font-family: monospace;
-  font-size: 0.78em;
+  font-size: 0.85em;
   color: #777;
   word-break: break-all;
 }
-.credits-articles { padding-left: 1.5em; }
-.credits-article { margin-bottom: 1.4em; padding-bottom: 0.6em; border-bottom: 1px solid #eee; }
-.credits-article-title { font-weight: bold; margin-bottom: 0.2em; }
-.credits-article-author { font-size: 0.92em; color: #555; margin: 0.1em 0; }
-.credits-article-link { font-size: 0.9em; margin: 0.3em 0 0.1em; }
+.credits-articles { padding-left: 1.4em; margin: 0.3em 0 0.6em; }
+.credits-article {
+  /* No bottom rule — the line spacing alone separates entries.
+     Borders pushed every row a few px taller and crowded out the
+     ~10-per-page target. */
+  margin: 0 0 0.45em;
+  line-height: 1.25;
+}
+.credits-article-title { font-weight: bold; }
+.credits-article-author { color: #555; font-size: 0.95em; }
 .credits-article-naddr {
   font-family: monospace;
-  font-size: 0.7em;
+  font-size: 0.78em;
   color: #888;
   word-break: break-all;
-  margin-top: 0.1em;
 }
-.credits-identifiers { font-size: 0.92em; color: #555; }`
+.credits-article-naddr a { color: #888; text-decoration: none; }
+.credits-article-naddr a:hover { color: #555; }
+
+/* Publisher / Nostr-explainer block — tiny, footer-style. Looks like
+   the copyright/publication page of a physical book. */
+.credits-footer {
+  margin-top: 1.5em;
+  padding-top: 0.7em;
+  border-top: 1px solid #ddd;
+  font-size: 0.78em;
+  line-height: 1.35;
+  color: #666;
+}
+.credits-footer p { margin: 0.4em 0; }
+
+/* Article title page — appears before each chapter's content. Centred,
+   page-break after, with the QR + lightning address tucked in the
+   bottom-right. Most modern EPUB readers honour page-break-after; the
+   ones that don't will just show the title page atop the content. */
+.article-title-page {
+  page-break-after: always;
+  text-align: center;
+  padding: 2em 0;
+}
+.article-title-page .article-cover {
+  display: block;
+  max-width: 70%;
+  max-height: 50vh;
+  margin: 0 auto 1em;
+}
+.article-title-page .article-title {
+  font-size: 1.7em;
+  font-weight: bold;
+  line-height: 1.2;
+  margin: 0.3em 1em;
+}
+.article-title-page .article-subtitle {
+  font-style: italic;
+  color: #555;
+  margin: 0.4em 1em 1em;
+}
+.article-title-page .article-meta {
+  color: #666;
+  font-size: 0.95em;
+  margin: 0.5em 0;
+  line-height: 1.4;
+}
+.article-title-page .article-qr {
+  margin-top: 2.5em;
+  text-align: center;
+}
+.article-title-page .article-qr img {
+  width: 140px;
+  height: 140px;
+  display: block;
+  margin: 0 auto;
+}
+.article-title-page .article-qr .qr-caption {
+  font-size: 0.85em;
+  margin: 0.3em 0 0.1em;
+  color: #444;
+}
+.article-title-page .article-qr .qr-lud16 {
+  font-family: monospace;
+  font-size: 0.75em;
+  color: #666;
+  word-break: break-all;
+}`
+}
+
+// ─── Per-chapter title page + QR helpers ───────────────────────────────────
+
+// Convert a Nostr lud16 (e.g. "name@domain.tld") or lud06 (LNURL bech32)
+// into the bech32-friendly QR payload most wallets accept. lud16 →
+// "lightning:user@domain"; lud06 → already a bech32, keep as-is.
+function lud16ToQrPayload(lud16) {
+  if (!lud16) return ''
+  const trimmed = String(lud16).trim()
+  if (!trimmed) return ''
+  // LNURL strings start with "lnurl1" — already bech32-encoded, wallets
+  // recognise them directly.
+  if (/^lnurl1/i.test(trimmed)) return trimmed
+  // "user@domain" form — most wallets treat this as a Lightning Address.
+  // Prefix with "lightning:" to make the QR scan into a deep link in
+  // wallet apps that hook the URI scheme.
+  if (/.+@.+\..+/.test(trimmed)) return `lightning:${trimmed}`
+  return trimmed
+}
+
+// Render a QR for the given payload as a PNG Blob suitable for
+// embedding in the EPUB's OEBPS/qr/ folder. Uses the `qrcode` package's
+// canvas API and converts to PNG via canvas.toBlob. Resolves null on
+// any failure (no payload, render error) so the caller can simply
+// omit the QR for that chapter.
+async function generateQrPngBlob(payload, size = 280) {
+  if (!payload) return null
+  try {
+    const canvas = document.createElement('canvas')
+    await QRCode.toCanvas(canvas, payload, {
+      errorCorrectionLevel: 'M',
+      width: size,
+      margin: 1,
+      color: { dark: '#000000', light: '#ffffff' },
+    })
+    return await new Promise(res => canvas.toBlob(res, 'image/png'))
+  } catch {
+    return null
+  }
+}
+
+// Best-effort article cover fetch. Same CORS gotcha as the collection
+// cover — non-CORS hosts (e.g., Primal's r2 bucket) will fail. We skip
+// the cover for that chapter rather than blocking the whole export,
+// since a missing per-article cover is a small cosmetic loss.
+async function fetchArticleCoverBlob(imageUrl) {
+  if (!imageUrl || !isSafeUrl(imageUrl)) return null
+  try {
+    const res = await Promise.race([
+      fetch(imageUrl),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000)),
+    ])
+    if (!res.ok) return null
+    const blob = await res.blob()
+    // Sanity guard — anything not an image MIME we don't trust to
+    // embed (could be HTML error page, etc).
+    if (blob.type && !blob.type.startsWith('image/')) return null
+    return blob
+  } catch {
+    return null
+  }
+}
+
+// Build a chapter's title page XHTML. Embedded image / QR refs are
+// relative paths the OPF declares as manifest items.
+function articleTitlePageXhtml({ title, subtitle, author, dateStr, coverHref, qrHref, lud16 }) {
+  const coverImg = coverHref
+    ? `<img class="article-cover" src="${esc(coverHref)}" alt=""/>`
+    : ''
+  const subtitleP = subtitle
+    ? `<p class="article-subtitle">${esc(subtitle)}</p>`
+    : ''
+  const metaParts = []
+  if (author)  metaParts.push(`by ${esc(author)}`)
+  if (dateStr) metaParts.push(esc(dateStr))
+  const metaP = metaParts.length
+    ? `<p class="article-meta">${metaParts.join('<br/>')}</p>`
+    : ''
+  const qrBlock = qrHref
+    ? `<div class="article-qr">
+      <img src="${esc(qrHref)}" alt="Zap QR code"/>
+      <p class="qr-caption">Zap this author</p>
+      ${lud16 ? `<p class="qr-lud16">${esc(lud16)}</p>` : ''}
+    </div>`
+    : ''
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <title>${esc(title)}</title>
+  <link rel="stylesheet" type="text/css" href="style.css"/>
+</head>
+<body class="article-title-page">
+  ${coverImg}
+  <h1 class="article-title">${esc(title)}</h1>
+  ${subtitleP}
+  ${metaP}
+  ${qrBlock}
+</body>
+</html>`
+}
+
+// Pick a sensible file extension + MIME for a fetched image blob.
+function imageBlobInfo(blob) {
+  const t = (blob?.type || '').toLowerCase()
+  if (t.includes('png'))  return { ext: 'png',  mime: 'image/png' }
+  if (t.includes('webp')) return { ext: 'webp', mime: 'image/webp' }
+  if (t.includes('gif'))  return { ext: 'gif',  mime: 'image/gif' }
+  // Default to JPEG — covers most article hero images and any unknown
+  // image MIME types. Most readers cope with mismatched ext/MIME.
+  return { ext: 'jpg', mime: 'image/jpeg' }
 }
 
 function contentXhtml({ title, metadata, source, bodyHtml }) {
@@ -490,11 +678,28 @@ function uuid4() {
 
 // ─── Chapterized epub helpers ─────────────────────────────────────────────────
 
-function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified, hasCover, hasCredits, includeToc, chapters }) {
-  const chapterManifest = chapters.map((_, i) =>
-    `\n    <item id="ch${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
-  ).join('')
+function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified, hasCover, hasCredits, includeToc, chapters, chapterAssets = [] }) {
+  // Each chapter contributes up to four manifest entries:
+  //   • ch{N}-title.xhtml — title page (always)
+  //   • ch{N}.xhtml       — chapter content (always)
+  //   • img/ch{N}.{ext}   — article cover image (optional)
+  //   • qr/ch{N}.png      — author zap QR (optional)
+  // And two spine entries per chapter (title page → content) so
+  // every reader paginates the title page distinctly.
+  const chapterManifest = chapters.map((_, i) => {
+    const a = chapterAssets[i] || {}
+    let entries = `\n    <item id="ch${i + 1}-title" href="ch${i + 1}-title.xhtml" media-type="application/xhtml+xml"/>`
+    entries += `\n    <item id="ch${i + 1}" href="ch${i + 1}.xhtml" media-type="application/xhtml+xml"/>`
+    if (a.coverManifest) {
+      entries += `\n    <item id="${a.coverManifest.id}" href="${a.coverManifest.href}" media-type="${a.coverManifest.mime}"/>`
+    }
+    if (a.qrManifest) {
+      entries += `\n    <item id="${a.qrManifest.id}" href="${a.qrManifest.href}" media-type="${a.qrManifest.mime}"/>`
+    }
+    return entries
+  }).join('')
   const chapterSpine = chapters.map((_, i) =>
+    `\n    <itemref idref="ch${i + 1}-title"/>` +
     `\n    <itemref idref="ch${i + 1}"/>`
   ).join('')
   const coverMeta      = hasCover ? '\n    <meta name="cover" content="cover-image"/>' : ''
@@ -565,22 +770,30 @@ function chapterizedNcx({ bookId, title, chapters }) {
 }
 
 // Credits / front-matter page for chapterized exports. Sits between the
-// cover and the TOC in the spine. Carries:
-//   • Curator attribution (name + npub link to mynostr profile + date)
-//   • Per-article entries: title, author npub link, naddr, view link
-//     (Primal for longform / zap.cooking for recipes — link policy
-//     centralized in buildChapterSourceLinks)
-//   • Boilerplate "About" block — one paragraph nostr explainer + a
-//     soft pitch for mynostr.app. Same copy on every export.
+// cover and the TOC in the spine. Designed to be dense — goal is ~10+
+// titles per page in typical readers — and to leave the trailing
+// publisher / Nostr-explainer block looking like the copyright +
+// publication page of a real book (small print, footer-like).
+//
+// Per-article row layout:
+//   1. Title bold
+//   2. by AuthorName · {npub-link}
+//   3. {naddr-link} (the naddr text IS the link to Primal/zap.cooking)
+//
+// Removed in this revision: the standalone "View on Primal" link
+// (the naddr is now the link itself), and the "Open any of them in
+// a Nostr client like Primal..." line (redundant with the publisher
+// block).
 function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, chapters }) {
   const headerLines = []
   if (curatedBy?.name) {
     const nameSafe = esc(curatedBy.name)
     if (curatedBy.npub) {
       const npubLink = `https://mynostr.app/${encodeURIComponent(curatedBy.npub)}/profile`
+      // Curator name + npub on one line, both linked.
       headerLines.push(
-        `<p class="credits-curator">Curated by <a href="${esc(npubLink)}">${nameSafe}</a><br/>` +
-        `<span class="credits-npub">${esc(curatedBy.npub)}</span></p>`
+        `<p class="credits-curator">Curated by <a href="${esc(npubLink)}">${nameSafe}</a> · ` +
+        `<a href="${esc(npubLink)}" class="credits-npub">${esc(curatedBy.npub)}</a></p>`
       )
     } else {
       headerLines.push(`<p class="credits-curator">Curated by ${nameSafe}</p>`)
@@ -595,61 +808,49 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
     headerLines.push(`<p class="credits-subtitle"><em>${esc(subtitle)}</em></p>`)
   }
 
-  // Per-chapter rows. Each row includes original author npub link, the
-  // full naddr (printed verbatim so a reader can paste it anywhere),
-  // and a one-click view link via Primal/zap.cooking. If we can't build
-  // a naddr (missing pubkey/dTag), the row gracefully degrades to just
-  // the title — no broken-looking placeholder URLs.
   const articleRows = chapters.map((ch, i) => {
     const sources = buildChapterSourceLinks(ch)
     const titleEsc = esc(ch.title || `Chapter ${i + 1}`)
-    let authorBlock = ''
+
+    // Author + npub on the same line, npub hyperlinked.
+    let authorLine = ''
     if (ch.pubkey) {
       const npub = safeAuthorNpub(ch.pubkey)
       if (npub) {
         const profileUrl = `https://mynostr.app/${encodeURIComponent(npub)}/profile`
-        const nameLine = ch.author
-          ? `<a href="${esc(profileUrl)}">${esc(ch.author)}</a>`
-          : `<a href="${esc(profileUrl)}">${esc(npub)}</a>`
-        authorBlock = `<div class="credits-article-author">by ${nameLine}` +
-          (ch.author ? `<br/><span class="credits-npub">${esc(npub)}</span>` : '') +
-          `</div>`
+        const namePart = ch.author ? `${esc(ch.author)} · ` : ''
+        authorLine = `<div class="credits-article-author">by ${namePart}` +
+          `<a href="${esc(profileUrl)}" class="credits-npub">${esc(npub)}</a></div>`
       } else if (ch.author) {
-        authorBlock = `<div class="credits-article-author">by ${esc(ch.author)}</div>`
+        authorLine = `<div class="credits-article-author">by ${esc(ch.author)}</div>`
       }
     } else if (ch.author) {
-      authorBlock = `<div class="credits-article-author">by ${esc(ch.author)}</div>`
+      authorLine = `<div class="credits-article-author">by ${esc(ch.author)}</div>`
     }
 
-    let linkBlock = ''
+    // naddr is now the only link in the row, pointing at the Primal/
+    // zap.cooking reader. Skipped entirely if we can't encode (no
+    // broken placeholders).
+    let naddrLink = ''
     if (sources) {
-      const viewLabel = sources.isRecipe ? 'View on zap.cooking' : 'View on Primal'
-      linkBlock = `
-      <div class="credits-article-link">
-        <a href="${esc(sources.viewUrl)}">${viewLabel}</a>
-      </div>
-      <div class="credits-article-naddr">${esc(sources.naddr)}</div>`
+      naddrLink = `<div class="credits-article-naddr"><a href="${esc(sources.viewUrl)}">${esc(sources.naddr)}</a></div>`
     }
 
     return `
     <li class="credits-article">
       <div class="credits-article-title">${titleEsc}</div>
-      ${authorBlock}${linkBlock}
+      ${authorLine}${naddrLink}
     </li>`
   }).join('')
 
-  // Boilerplate. Same copy every export — easy to iterate later if
-  // wording needs tightening.
-  const boilerplate = `
-    <h2>About this collection</h2>
-    <p>This collection was published by <a href="https://mynostr.app">mynostr.app</a> for free. Consider publishing your own articles or curations on mynostr.app; donate or zap bitcoin to your favorite authors on any nostr app.</p>
-    <p>Nostr (notes and other stuff transmitted by relays) is a decentralized free and open protocol to host and discover information like notes, articles, recipes, events or marketplace items over the internet — publish your own work on any nostr app for free with no ads, no email, no ID, no paywalls.</p>
-    <p class="credits-identifiers">
-      <strong>About the identifiers above:</strong><br/>
-      <code>npub</code> — public identifier for a Nostr user.<br/>
-      <code>naddr</code> — permanent address for a piece of long-form content.<br/>
-      Open any of them in a Nostr client like <a href="https://primal.net">Primal</a>, or paste them into <a href="https://njump.me">njump.me</a> for a universal viewer.
-    </p>`
+  // Footer block — formatted like the copyright/publication page of a
+  // physical book. Tiny type, tight leading, sits at the bottom as an
+  // attribution rather than a feature.
+  const footer = `
+    <div class="credits-footer">
+      <p>Published by <a href="https://mynostr.app">mynostr.app</a> for free. Consider publishing your own articles or curations on mynostr.app; donate or zap bitcoin to your favorite authors on any Nostr app.</p>
+      <p>Nostr (notes and other stuff transmitted by relays) is a decentralized free and open protocol to host and discover information like notes, articles, recipes, events or marketplace items over the internet — publish your own work on any Nostr app for free with no ads, no email, no ID, no paywalls.</p>
+    </div>`
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -662,11 +863,11 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
   <h1 class="credits-title">${esc(title)}</h1>
   ${headerLines.join('\n  ')}
 
-  <h2>Articles in this collection</h2>
+  <h2 class="credits-section">Articles in this collection</h2>
   <ol class="credits-articles">${articleRows}
   </ol>
 
-  ${boilerplate}
+  ${footer}
 </body>
 </html>`
 }
@@ -744,6 +945,38 @@ export async function exportChapterizedEpub(articles, options = {}) {
     metadata: a.metadata || {},
     pubkey:   a.pubkey || '',
     dTag:     a.dTag || '',
+    // lud16 for the per-chapter zap-QR. Callers should populate from
+    // the article author's kind 0 profile when available; absent
+    // value just means the QR is skipped for that chapter.
+    lud16:    a.lud16 || '',
+  }))
+
+  // Per-chapter assets (article cover fetch + QR PNG generation) run
+  // in parallel so a 10-article export doesn't take 10× the worst
+  // single-article cost. Each step is best-effort; failures degrade
+  // to "no cover" / "no QR" on that title page rather than failing
+  // the export. Article cover fetching has the same CORS limitation
+  // as the collection cover — Blossom + most public image hosts work,
+  // Primal r2 doesn't.
+  const chapterAssets = await Promise.all(chapters.map(async (ch, i) => {
+    const idx = i + 1
+    const [articleCoverBlob, qrBlob] = await Promise.all([
+      fetchArticleCoverBlob(ch.metadata?.image),
+      generateQrPngBlob(lud16ToQrPayload(ch.lud16)),
+    ])
+    const out = { coverHref: null, qrHref: null, coverManifest: null, qrManifest: null }
+    if (articleCoverBlob) {
+      const { ext, mime } = imageBlobInfo(articleCoverBlob)
+      const href = `img/ch${idx}.${ext}`
+      out.coverHref = href
+      out.coverManifest = { id: `ch${idx}-img`, href, mime, blob: articleCoverBlob }
+    }
+    if (qrBlob) {
+      const href = `qr/ch${idx}.png`
+      out.qrHref = href
+      out.qrManifest = { id: `ch${idx}-qr`, href, mime: 'image/png', blob: qrBlob }
+    }
+    return out
   }))
 
   // Cover image — caller may supply a Blob (local upload), a URL
@@ -785,7 +1018,7 @@ export async function exportChapterizedEpub(articles, options = {}) {
   zip.file('META-INF/container.xml', containerXml())
   zip.file('OEBPS/content.opf', chapterizedOpf({
     bookId, title, subtitle, author, lang, date, modified,
-    hasCover, hasCredits, includeToc, chapters,
+    hasCover, hasCredits, includeToc, chapters, chapterAssets,
   }))
   zip.file('OEBPS/toc.ncx',    chapterizedNcx({ bookId, title, chapters }))
   zip.file('OEBPS/style.css',  styleCss())
@@ -802,8 +1035,32 @@ export async function exportChapterizedEpub(articles, options = {}) {
     zip.file('OEBPS/credits.xhtml', creditsHtml)
   }
 
+  // Per-chapter: write title-page asset files (cover img, QR PNG),
+  // then a separate ch{N}-title.xhtml for the title page, then
+  // ch{N}.xhtml for the content. Two XHTML files per chapter is
+  // intentional — gives every reader an unambiguous page break
+  // between title and content even where CSS page-break-after is
+  // unsupported.
   for (let i = 0; i < chapters.length; i++) {
     const ch = chapters[i]
+    const a  = chapterAssets[i]
+    if (a.coverManifest) zip.file(`OEBPS/${a.coverManifest.href}`, a.coverManifest.blob)
+    if (a.qrManifest)    zip.file(`OEBPS/${a.qrManifest.href}`,    a.qrManifest.blob)
+
+    const dateStr = ch.metadata?.publishedAtDate
+      ? parseDateString(ch.metadata.publishedAtDate).toLocaleDateString('en-US', {
+          year: 'numeric', month: 'long', day: 'numeric',
+        })
+      : ''
+    zip.file(`OEBPS/ch${i + 1}-title.xhtml`, articleTitlePageXhtml({
+      title:    ch.title,
+      subtitle: ch.metadata?.summary || '',
+      author:   ch.author,
+      dateStr,
+      coverHref: a.coverHref,
+      qrHref:    a.qrHref,
+      lud16:     ch.lud16,
+    }))
     zip.file(`OEBPS/ch${i + 1}.xhtml`, contentXhtml({
       title:    ch.title,
       metadata: ch.metadata,
@@ -928,21 +1185,21 @@ export function exportChapterizedMd(articles, options = {}) {
   }
   sections.push(header)
 
-  // Credits section — articles list with author + naddr + view link,
-  // followed by the standard about-MyNostr boilerplate.
+  // Credits section — compact per-article rows, then a tiny
+  // copyright-page-style publisher footer at the very bottom.
+  // Per-article shape mirrors the EPUB credits page:
+  //   N. **Title**
+  //      by AuthorName · [npub](mynostr profile)
+  //      [naddr](Primal/zap.cooking — naddr text IS the link)
   if (includeCredits) {
     const articleLines = chapters.map((ch, i) => {
-      const titleLine = `${i + 1}. **${ch.title}**`
-      const lines = [titleLine]
+      const lines = [`${i + 1}. **${ch.title}**`]
       if (ch.pubkey) {
         const npub = safeAuthorNpub(ch.pubkey)
         if (npub) {
           const profileUrl = `https://mynostr.app/${encodeURIComponent(npub)}/profile`
-          if (ch.author) {
-            lines.push(`   by [${ch.author}](${profileUrl}) — \`${npub}\``)
-          } else {
-            lines.push(`   by [${npub}](${profileUrl})`)
-          }
+          const namePart = ch.author ? `${ch.author} · ` : ''
+          lines.push(`   by ${namePart}[\`${npub}\`](${profileUrl})`)
         } else if (ch.author) {
           lines.push(`   by ${ch.author}`)
         }
@@ -951,24 +1208,21 @@ export function exportChapterizedMd(articles, options = {}) {
       }
       const sources = buildChapterSourceLinks(ch)
       if (sources) {
-        const viewLabel = sources.isRecipe ? 'View on zap.cooking' : 'View on Primal'
-        lines.push(`   [${viewLabel}](${sources.viewUrl})`)
-        lines.push(`   \`${sources.naddr}\``)
+        // naddr text is the link target — no separate "View on Primal" line.
+        lines.push(`   [\`${sources.naddr}\`](${sources.viewUrl})`)
       }
-      return lines.join('\n')
-    }).join('\n\n')
+      return lines.join('  \n')
+    }).join('\n')
 
     sections.push(`## Articles in this collection\n\n${articleLines}`)
 
+    // Footer block — kept short. <small> renders as smaller text
+    // when the markdown viewer outputs HTML (GitHub, Obsidian, most
+    // others), giving the same copyright-page look as the EPUB.
     sections.push(
-      `## About this collection\n\n` +
-      `This collection was published by [mynostr.app](https://mynostr.app) for free. ` +
-      `Consider publishing your own articles or curations on mynostr.app; donate or zap bitcoin to your favorite authors on any nostr app.\n\n` +
-      `Nostr (notes and other stuff transmitted by relays) is a decentralized free and open protocol to host and discover information like notes, articles, recipes, events or marketplace items over the internet — publish your own work on any nostr app for free with no ads, no email, no ID, no paywalls.\n\n` +
-      `**About the identifiers above:**  \n` +
-      `\`npub\` — public identifier for a Nostr user.  \n` +
-      `\`naddr\` — permanent address for a piece of long-form content.  \n` +
-      `Open any of them in a Nostr client like [Primal](https://primal.net), or paste them into [njump.me](https://njump.me) for a universal viewer.`
+      `<small>Published by [mynostr.app](https://mynostr.app) for free. ` +
+      `Consider publishing your own articles or curations on mynostr.app; donate or zap bitcoin to your favorite authors on any Nostr app.</small>\n\n` +
+      `<small>Nostr (notes and other stuff transmitted by relays) is a decentralized free and open protocol to host and discover information like notes, articles, recipes, events or marketplace items over the internet — publish your own work on any Nostr app for free with no ads, no email, no ID, no paywalls.</small>`
     )
   }
 

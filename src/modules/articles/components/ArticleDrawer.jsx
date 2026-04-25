@@ -117,8 +117,10 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
   }
 
   // Per-chapter input shape for chapterized exports — pubkey + dTag
-  // included so the credits page can build naddr / Primal / zap.cooking
-  // links per article.
+  // for naddr links on the credits page; lud16 for the per-chapter
+  // zap-QR on the title page. All articles in this drawer are by the
+  // same viewed user so a single lud16 lookup suffices.
+  const authorLud16 = user?.profile?.lud16 || user?.profile?.lud06 || ''
   function buildResolved() {
     return articles.map(ev => ({
       content:  ev.content,
@@ -126,6 +128,7 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
       metadata: buildMeta(ev),
       pubkey:   ev.pubkey,
       dTag:     getTag(ev, 'd'),
+      lud16:    authorLud16,
     }))
   }
 
