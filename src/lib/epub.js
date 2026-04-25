@@ -452,41 +452,43 @@ hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
   color: #777;
   word-break: break-all;
 }
-.credits-articles { padding-left: 1.4em; margin: 0.3em 0 0.6em; }
+/* Per-article rows are deliberately minimal: bold linked title + colon
+   + plain-text naddr, all rendered at the same size as the publisher /
+   Nostr-explainer footer below (the smallest text on the page). The
+   page's base font-size is already small, so the 0.78em on top of that
+   matches the footer's compounded sizing. */
+.credits-articles { padding: 0; margin: 0.3em 0 0.6em; list-style: none; }
 .credits-article {
-  /* No bottom rule — the line spacing alone separates entries.
-     Borders pushed every row a few px taller and crowded out the
-     ~10-per-page target. */
-  margin: 0 0 0.45em;
-  line-height: 1.25;
+  font-size: 0.78em;
+  line-height: 1.35;
+  margin: 0.25em 0;
 }
-.credits-article-title { font-weight: bold; }
-/* Author + npub render at the same size as ordinary credits-page body
-   text — Reed wanted the byline to read as plain text rather than the
-   muted secondary look it had before. The npub override below resets
-   the size so monospace digits don't drift smaller. */
-.credits-article-author { font-size: 1em; }
-.credits-article-author .credits-npub { font-size: 1em; }
+.credits-article-link { font-weight: bold; }
 .credits-article-naddr {
   font-family: monospace;
-  font-size: 0.78em;
-  color: #888;
   word-break: break-all;
 }
-.credits-article-naddr a { color: #888; text-decoration: none; }
-.credits-article-naddr a:hover { color: #555; }
 
-/* Publisher / Nostr-explainer block — tiny, footer-style. Looks like
-   the copyright/publication page of a physical book. */
+/* Publisher / Nostr-explainer block — small, footer-style. Color
+   inherits from the body so it reads as normal copy rather than a
+   dim secondary footer. */
 .credits-footer {
   margin-top: 1.5em;
   padding-top: 0.7em;
   border-top: 1px solid #ddd;
   font-size: 0.78em;
   line-height: 1.35;
-  color: #666;
 }
 .credits-footer p { margin: 0.4em 0; }
+
+/* Visible TOC page — appears in the reading-order spine as well as
+   serving as the EPUB 3 nav document. Same single file plays both
+   roles. List markers off; each row is a clickable link. */
+.toc-heading { font-size: 1.4em; margin: 0 0 0.7em; }
+.toc-list { list-style: none; padding: 0; margin: 0; }
+.toc-list li { margin: 0.45em 0; line-height: 1.35; }
+.toc-list a { color: #1a1a1a; text-decoration: none; }
+.toc-list a:hover { text-decoration: underline; }
 
 /* Article title page — appears before each chapter's content. Centred,
    page-break after, with the QR + lightning address tucked in the
@@ -519,6 +521,12 @@ hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
   font-size: 0.95em;
   margin: 0.5em 0;
   line-height: 1.4;
+}
+.article-title-page .article-npub {
+  font-family: monospace;
+  font-size: 0.85em;
+  word-break: break-all;
+  color: inherit;
 }
 .article-title-page .article-qr {
   margin-top: 2.5em;
@@ -607,15 +615,23 @@ async function fetchArticleCoverBlob(imageUrl) {
 
 // Build a chapter's title page XHTML. Embedded image / QR refs are
 // relative paths the OPF declares as manifest items.
-function articleTitlePageXhtml({ title, subtitle, author, dateStr, coverHref, qrHref, lud16 }) {
+function articleTitlePageXhtml({ title, subtitle, author, npub, dateStr, coverHref, qrHref, lud16 }) {
   const coverImg = coverHref
     ? `<img class="article-cover" src="${esc(coverHref)}" alt=""/>`
     : ''
   const subtitleP = subtitle
     ? `<p class="article-subtitle">${esc(subtitle)}</p>`
     : ''
+  // Meta block: author, then npub-as-link, then date — each on its own
+  // line. The npub sits directly under the author byline so readers
+  // can scan name + identity together; the link target is the author's
+  // mynostr.app profile so tapping it opens a familiar profile page.
   const metaParts = []
-  if (author)  metaParts.push(`by ${esc(author)}`)
+  if (author) metaParts.push(`by ${esc(author)}`)
+  if (npub) {
+    const profileUrl = `https://mynostr.app/${encodeURIComponent(npub)}/profile`
+    metaParts.push(`<a class="article-npub" href="${esc(profileUrl)}">${esc(npub)}</a>`)
+  }
   if (dateStr) metaParts.push(esc(dateStr))
   const metaP = metaParts.length
     ? `<p class="article-meta">${metaParts.join('<br/>')}</p>`
@@ -855,6 +871,13 @@ function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified,
   const navManifest = includeToc
     ? '\n    <item id="nav"   href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
     : ''
+  // Putting nav.xhtml in the spine (after credits, before the first
+  // chapter) makes it a visible TOC page the reader pages through —
+  // not just a reader-chrome menu. The same file serves both roles:
+  // the EPUB 3 properties="nav" attribute lets reader chrome use it
+  // as the side-panel TOC, and the spine itemref makes it a visible
+  // page during sequential reading.
+  const navSpine = includeToc ? '\n    <itemref idref="nav"/>' : ''
   // Author metadata only emitted when supplied — a stale empty
   // <dc:creator/> in the OPF makes some readers display "by " with
   // nothing after it.
@@ -879,7 +902,7 @@ function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified,
     <item id="ncx"   href="toc.ncx"   media-type="application/x-dtbncx+xml"/>
     <item id="style" href="style.css"  media-type="text/css"/>${coverManifest}${creditsManifest}${chapterManifest}
   </manifest>
-  <spine toc="ncx">${coverSpine}${creditsSpine}${chapterSpine}
+  <spine toc="ncx">${coverSpine}${creditsSpine}${navSpine}${chapterSpine}
   </spine>
 </package>`
 }
@@ -911,15 +934,12 @@ function chapterizedNcx({ bookId, title, chapters }) {
 // publisher / Nostr-explainer block looking like the copyright +
 // publication page of a real book (small print, footer-like).
 //
-// Per-article row layout:
-//   1. Title bold
-//   2. by AuthorName · {npub-link}
-//   3. {naddr-link} (the naddr text IS the link to Primal/zap.cooking)
+// Per-article row layout (minimal — single line):
+//   {Title-as-link-to-Primal/zap.cooking}: {plain-text naddr}
 //
-// Removed in this revision: the standalone "View on Primal" link
-// (the naddr is now the link itself), and the "Open any of them in
-// a Nostr client like Primal..." line (redundant with the publisher
-// block).
+// Stripped in this revision: per-row author / npub byline (curator
+// attribution at the top covers it), and the redundant naddr-as-its-
+// own-line (now inlined after the title).
 function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, chapters }) {
   const headerLines = []
   if (curatedBy?.name) {
@@ -945,38 +965,18 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
   }
 
   const articleRows = chapters.map((ch, i) => {
-    const sources = buildChapterSourceLinks(ch)
+    const sources  = buildChapterSourceLinks(ch)
     const titleEsc = esc(ch.title || `Chapter ${i + 1}`)
-
-    // Author + npub on the same line, npub hyperlinked.
-    let authorLine = ''
-    if (ch.pubkey) {
-      const npub = safeAuthorNpub(ch.pubkey)
-      if (npub) {
-        const profileUrl = `https://mynostr.app/${encodeURIComponent(npub)}/profile`
-        const namePart = ch.author ? `${esc(ch.author)} · ` : ''
-        authorLine = `<div class="credits-article-author">by ${namePart}` +
-          `<a href="${esc(profileUrl)}" class="credits-npub">${esc(npub)}</a></div>`
-      } else if (ch.author) {
-        authorLine = `<div class="credits-article-author">by ${esc(ch.author)}</div>`
-      }
-    } else if (ch.author) {
-      authorLine = `<div class="credits-article-author">by ${esc(ch.author)}</div>`
-    }
-
-    // naddr is now the only link in the row, pointing at the Primal/
-    // zap.cooking reader. Skipped entirely if we can't encode (no
-    // broken placeholders).
-    let naddrLink = ''
     if (sources) {
-      naddrLink = `<div class="credits-article-naddr"><a href="${esc(sources.viewUrl)}">${esc(sources.naddr)}</a></div>`
+      // Title links to the Primal/zap.cooking reader; naddr is
+      // unhyperlinked plain text after the colon.
+      return `
+    <p class="credits-article"><a class="credits-article-link" href="${esc(sources.viewUrl)}">${titleEsc}</a>: <span class="credits-article-naddr">${esc(sources.naddr)}</span></p>`
     }
-
+    // No naddr available — emit a non-linked title so the row still
+    // accounts for the article without a broken placeholder link.
     return `
-    <li class="credits-article">
-      <div class="credits-article-title">${titleEsc}</div>
-      ${authorLine}${naddrLink}
-    </li>`
+    <p class="credits-article"><span class="credits-article-link">${titleEsc}</span></p>`
   }).join('')
 
   // Footer block — formatted like the copyright/publication page of a
@@ -1000,25 +1000,38 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
   ${headerLines.join('\n  ')}
 
   <h2 class="credits-section">Articles in this collection</h2>
-  <ol class="credits-articles">${articleRows}
-  </ol>
+  ${articleRows}
 
   ${footer}
 </body>
 </html>`
 }
 
+// Visible TOC page — also doubles as the EPUB 3 navigation document
+// (nav.xhtml + properties="nav" in the manifest), so a single file
+// serves both the in-spine reading-order TOC the user clicks through
+// and the reader-chrome TOC menu most readers build automatically.
+//
+// Row format: "[#]: [Article Name] - [Author]" — the entire row is a
+// link to that chapter, so readers don't need to aim at just the
+// title text.
 function chapterizedNav({ title, chapters }) {
-  const items = chapters.map((ch, i) =>
-    `\n      <li><a href="ch${i + 1}.xhtml">${esc(ch.title || `Chapter ${i + 1}`)}</a></li>`
-  ).join('')
+  const items = chapters.map((ch, i) => {
+    const titleEsc  = esc(ch.title || `Chapter ${i + 1}`)
+    const authorPart = ch.author ? ` - ${esc(ch.author)}` : ''
+    return `\n      <li><a href="ch${i + 1}.xhtml">${i + 1}: ${titleEsc}${authorPart}</a></li>`
+  }).join('')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
-<head><title>${esc(title)}</title></head>
+<head>
+  <title>${esc(title)}</title>
+  <link rel="stylesheet" type="text/css" href="style.css"/>
+</head>
 <body>
   <nav epub:type="toc" id="toc">
-    <ol>${items}
+    <h1 class="toc-heading">Contents</h1>
+    <ol class="toc-list">${items}
     </ol>
   </nav>
 </body>
@@ -1136,7 +1149,8 @@ export async function exportChapterizedEpub(articles, options = {}) {
   } else if (coverSource?.url && isSafeUrl(coverSource.url)) {
     coverImageUrl = coverSource.url
   }
-  const coverSubtitle = subtitle || 'Long Form Nostr Notes'
+  const coverSubtitle = subtitle
+    || `Long Form Nostr Notes — ${chapters.length} article${chapters.length !== 1 ? 's' : ''}`
   // Author shown on cover only when explicitly entered. The "Various"
   // checkbox on the modal clears author to empty, and an empty/literal
   // "Various" should not appear on the cover.
@@ -1209,6 +1223,7 @@ export async function exportChapterizedEpub(articles, options = {}) {
       title:    ch.title,
       subtitle: ch.metadata?.summary || '',
       author:   ch.author,
+      npub:     safeAuthorNpub(ch.pubkey),
       dateStr,
       coverHref: a.coverHref,
       qrHref:    a.qrHref,
@@ -1338,33 +1353,16 @@ export function exportChapterizedMd(articles, options = {}) {
   }
   sections.push(header)
 
-  // Credits section — compact per-article rows, then a tiny
-  // copyright-page-style publisher footer at the very bottom.
-  // Per-article shape mirrors the EPUB credits page:
-  //   N. **Title**
-  //      by AuthorName · [npub](mynostr profile)
-  //      [naddr](Primal/zap.cooking — naddr text IS the link)
+  // Credits section — minimal per-article rows (title-as-link to
+  // Primal/zap.cooking, then plain-text naddr after a colon), then a
+  // small copyright-page-style publisher footer at the very bottom.
   if (includeCredits) {
-    const articleLines = chapters.map((ch, i) => {
-      const lines = [`${i + 1}. **${ch.title}**`]
-      if (ch.pubkey) {
-        const npub = safeAuthorNpub(ch.pubkey)
-        if (npub) {
-          const profileUrl = `https://mynostr.app/${encodeURIComponent(npub)}/profile`
-          const namePart = ch.author ? `${ch.author} · ` : ''
-          lines.push(`   by ${namePart}[\`${npub}\`](${profileUrl})`)
-        } else if (ch.author) {
-          lines.push(`   by ${ch.author}`)
-        }
-      } else if (ch.author) {
-        lines.push(`   by ${ch.author}`)
-      }
+    const articleLines = chapters.map(ch => {
       const sources = buildChapterSourceLinks(ch)
       if (sources) {
-        // naddr text is the link target — no separate "View on Primal" line.
-        lines.push(`   [\`${sources.naddr}\`](${sources.viewUrl})`)
+        return `- [**${ch.title}**](${sources.viewUrl}): \`${sources.naddr}\``
       }
-      return lines.join('  \n')
+      return `- **${ch.title}**`
     }).join('\n')
 
     sections.push(`## Articles in this collection\n\n${articleLines}`)
@@ -1379,12 +1377,14 @@ export function exportChapterizedMd(articles, options = {}) {
     )
   }
 
-  // TOC — hyperlinked. Renderers that don't honor the auto-anchor
-  // fall back to the explicit `<a id>` tag we emit above each chapter.
+  // TOC — hyperlinked, "[N]: [Title] - [Author]" format mirroring the
+  // EPUB nav. Renderers that don't honor the auto-anchor fall back to
+  // the explicit `<a id>` tag we emit above each chapter.
   if (includeToc) {
-    const tocLines = chapters.map((ch, i) =>
-      `- [${ch.title}](#${anchors[i]})`
-    ).join('\n')
+    const tocLines = chapters.map((ch, i) => {
+      const authorPart = ch.author ? ` - ${ch.author}` : ''
+      return `- ${i + 1}: [${ch.title}](#${anchors[i]})${authorPart}`
+    }).join('\n')
     sections.push(`## Contents\n\n${tocLines}`)
   }
 
