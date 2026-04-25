@@ -114,8 +114,20 @@ export default function MobileNavDrawer({
 
         {/* Module list — the `profile` row renders the viewed user's pfp +
             display name in place of the generic icon/label so it reads as
-            "open this person's profile." */}
+            "open this person's profile." A "Home" entry sits at the top
+            of the nav as the mobile counterpart to the desktop sidebar's
+            MyNostr-logo home link. */}
         <nav className="flex-1 overflow-y-auto py-2" aria-label="Module navigation">
+          <button
+            onClick={() => { navigate('/'); onClose() }}
+            className="w-full flex items-center gap-3 px-4 py-3 text-left text-sm text-neutral-400 hover:bg-neutral-900 hover:text-neutral-100 transition-colors border-l-2 border-transparent"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 12l9-9 9 9" />
+              <path d="M5 10v10a1 1 0 001 1h4v-6h4v6h4a1 1 0 001-1V10" />
+            </svg>
+            <span>Home</span>
+          </button>
           {MODULES.map(mod => {
             const active = activeModule === mod.id
             const isProfile = mod.id === 'profile'
