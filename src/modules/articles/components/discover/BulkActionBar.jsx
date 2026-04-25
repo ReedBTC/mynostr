@@ -3,7 +3,9 @@ import JSZip from 'jszip'
 import { getNDK } from '../../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../../lib/epub.js'
 import { titleToSlug, withTimeout } from '../../../../lib/utils.js'
+import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
 import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
+import ExportCustomizationModal from '../library/ExportCustomizationModal.jsx'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -55,6 +57,11 @@ function buildMeta(article) {
  */
 export default function BulkActionBar({ articles, profiles, lists, onAddToList, onAddManyToList, onCreateList, onMoveArticle, onMoveArticlesBulk, onBulkMovePrivacy, onRemoveArticle, onRemoveArticlesBulk, onClearSelection, privacyView = 'public' }) {
   const [pendingExport,  setPendingExport]  = useState(null) // null | 'md' | 'epub'
+  // Customization modal state — opens when user picks "Combined" for
+  // either format. Stores the chosen format so the modal pre-selects
+  // the right radio. Null = closed.
+  const [modalFormat, setModalFormat] = useState(null)
+  const { sessionUser } = useOwnerContext()
   const [bookmarkOpen,   setBookmarkOpen]   = useState(false)
   const [moveOpen,       setMoveOpen]       = useState(false)
   const [newListInput,   setNewListInput]   = useState(false)
@@ -117,22 +124,41 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
         || profiles.get(article.pubkey)?.display_name
         || profiles.get(article.pubkey)?.name
         || ''
-      out.push({ content, author: authorName, metadata: buildMeta(article) })
+      // pubkey + dTag carry into chapterized exports so the credits
+      // page can build naddr / Primal / zap.cooking links per article.
+      const dTag = getTag(article, 'd')
+        || (article._aTag ? article._aTag.split(':').slice(2).join(':') : '')
+      out.push({
+        content,
+        author: authorName,
+        metadata: buildMeta(article),
+        pubkey: article.pubkey || '',
+        dTag,
+      })
     }
     return out
   }
 
   // ── Export handlers ─────────────────────────────────────────────────────────
+  // Separate-files exports (zip of per-article epubs/mds) run inline
+  // since there's no collection-level metadata to customize. Combined
+  // exports route through the customization modal — the user gets to
+  // edit title/author/cover/credits and picks final format inside.
 
   async function handleExport(format, combined) {
     setPendingExport(null)
+    if (combined) {
+      // Open the modal — actual export happens in handleModalExport.
+      setExportStatus('')
+      setExportError('')
+      setModalFormat(format)
+      return
+    }
     try {
       const resolved = await resolveAll()
       const slug = 'selected-articles'
 
-      if (format === 'md' && combined) {
-        exportChapterizedMd(resolved, 'Selected Articles')
-      } else if (format === 'md') {
+      if (format === 'md') {
         const zip = new JSZip()
         for (let i = 0; i < resolved.length; i++) {
           const a    = resolved[i]
@@ -140,8 +166,6 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
           zip.file(name + '.md', `# ${a.metadata.title}\n\n${a.content}`)
         }
         triggerDownload(await zip.generateAsync({ type: 'blob' }), slug + '-md.zip')
-      } else if (format === 'epub' && combined) {
-        await exportChapterizedEpub(resolved, 'Selected Articles')
       } else {
         const zip = new JSZip()
         for (let i = 0; i < resolved.length; i++) {
@@ -157,6 +181,22 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
       setExportStatus('error')
       setExportError(e.message || 'Export failed')
     }
+  }
+
+  // Modal-driven combined export. Doesn't close the modal — the modal
+  // closes itself on success via its own onClose, and stays open on
+  // error so the user can adjust inputs (most commonly: pick a
+  // different cover after a CORS-blocked URL paste). Throwing here
+  // surfaces the error inside the modal's banner.
+  async function handleModalExport({ format, options }) {
+    const resolved = await resolveAll()
+    if (format === 'md') {
+      exportChapterizedMd(resolved, options)
+    } else {
+      await exportChapterizedEpub(resolved, options)
+    }
+    setExportStatus('done')
+    setModalFormat(null)
   }
 
   // ── Bookmark handlers ───────────────────────────────────────────────────────
@@ -321,33 +361,38 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
     <div className="flex items-center gap-1.5 px-3 py-2 bg-neutral-900 border-b border-neutral-800 flex-shrink-0 flex-wrap">
       <span className="text-xs text-neutral-400 mr-1 flex-shrink-0">{count} selected</span>
 
-      {/* Export controls */}
-      {!pendingExport ? (
+      {/* Export controls.
+            Two top-level options:
+              • Individually — packs each article as its own .md or
+                .epub file inside a .zip. Format chosen in a follow-up
+                step. No collection-level metadata applies.
+              • Combined — opens the customization modal where the
+                user picks format + edits title/cover/credits/etc.
+                Modal handles both .md and .epub via its format radio. */}
+      {pendingExport === 'individually' ? (
         <>
-          <span className="text-xs text-neutral-600 flex-shrink-0">Export</span>
-          <button onClick={() => { setExportStatus(''); setPendingExport('md') }} disabled={busy}
-            className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
+          <span className="text-xs text-neutral-500 flex-shrink-0">Format:</span>
+          <button onClick={() => handleExport('md', false)} disabled={busy}
+            className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors">
             .md
           </button>
-          <button onClick={() => { setExportStatus(''); setPendingExport('epub') }} disabled={busy}
-            className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
+          <button onClick={() => handleExport('epub', false)} disabled={busy}
+            className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors">
             .epub
           </button>
+          <button onClick={() => setPendingExport(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
         </>
       ) : (
         <>
-          <span className="text-xs text-neutral-500 flex-shrink-0">
-            {pendingExport === 'md' ? '.md' : '.epub'} format:
-          </span>
-          <button onClick={() => handleExport(pendingExport, false)} disabled={busy}
-            className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors">
-            Separate .zip
+          <span className="text-xs text-neutral-600 flex-shrink-0">Export</span>
+          <button onClick={() => { setExportStatus(''); setPendingExport('individually') }} disabled={busy}
+            className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
+            Individually
           </button>
-          <button onClick={() => handleExport(pendingExport, true)} disabled={busy}
+          <button onClick={() => handleExport('epub', true)} disabled={busy}
             className="text-xs px-2 py-0.5 rounded border border-purple-800 text-purple-300 hover:text-purple-100 hover:border-purple-600 disabled:opacity-40 transition-colors">
-            Combined
+            Combined…
           </button>
-          <button onClick={() => setPendingExport(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
         </>
       )}
 
@@ -568,6 +613,16 @@ export default function BulkActionBar({ articles, profiles, lists, onAddToList, 
       <button onClick={onClearSelection} className="ml-auto text-xs text-neutral-600 hover:text-neutral-400 transition-colors">
         × clear
       </button>
+
+      <ExportCustomizationModal
+        open={!!modalFormat}
+        onClose={() => setModalFormat(null)}
+        onExport={handleModalExport}
+        defaultTitle="Selected Articles"
+        defaultArticleCount={count}
+        defaultFormat={modalFormat || 'epub'}
+        sessionUser={sessionUser}
+      />
     </div>
   )
 }

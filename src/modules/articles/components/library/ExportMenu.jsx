@@ -3,6 +3,8 @@ import JSZip from 'jszip'
 import { getNDK } from '../../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../../lib/epub.js'
 import { titleToSlug } from '../../../../lib/utils.js'
+import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
+import ExportCustomizationModal from './ExportCustomizationModal.jsx'
 
 /**
  * Fetches the full kind 30023 event content from relays for a given aTag.
@@ -40,10 +42,16 @@ async function resolveArticles(selectedArticles, onStatus) {
   const out = []
   for (const meta of selectedArticles) {
     const event = await fetchArticleContent(meta.aTag)
+    // pubkey + dTag pulled from the event when available, falling back
+    // to parsing the cached aTag — needed for the credits-page naddr
+    // / Primal / zap.cooking link generation in chapterized exports.
+    const aTagParts = (meta.aTag || '').split(':')
     out.push({
       content:  event?.content || '',
       author:   meta.author || '',
       metadata: buildMeta(event, meta),
+      pubkey:   event?.pubkey || aTagParts[1] || '',
+      dTag:     event?.tags?.find(t => t[0] === 'd')?.[1] || aTagParts.slice(2).join(':') || '',
     })
   }
   return out
@@ -63,6 +71,10 @@ export default function ExportMenu({ selectedArticles, listTitle, onClearSelecti
   const [pending, setPending] = useState(null)
   const [status,  setStatus]  = useState('')   // '' | 'fetching' | 'done' | 'error'
   const [error,   setError]   = useState('')
+  // Customization modal state — open with the pre-selected format so the
+  // user lands on the radio they came from, free to switch inside.
+  const [modalFormat, setModalFormat] = useState(null) // null | 'epub' | 'md'
+  const { sessionUser } = useOwnerContext()
 
   const count = selectedArticles.length
   if (!count) return null
@@ -82,12 +94,37 @@ export default function ExportMenu({ selectedArticles, listTitle, onClearSelecti
     }
   }
 
-  // ── EPUB handlers ────────────────────────────────────────────────────────────
+  // ── Combined exports go through the customization modal ─────────────
+  // Separate-files exports (zip of per-article epubs/mds) skip the
+  // modal — there's no collection metadata to customize when the user
+  // wants individual files.
 
-  async function handleEpubCombined() {
-    await run(async articles => {
-      await exportChapterizedEpub(articles, listTitle)
-    })
+  function openCombinedModal(format) {
+    setPending(null)
+    setError('')
+    setModalFormat(format)
+  }
+
+  // Modal-driven combined export. Errors propagate to the modal's
+  // banner; modal closes itself on success. Throwing here is what
+  // makes the modal stay open with an error rather than dismiss
+  // silently — important for CORS-blocked cover URLs.
+  async function handleModalExport({ format, options }) {
+    setStatus('fetching')
+    setError('')
+    try {
+      const articles = await resolveArticles(selectedArticles, setStatus)
+      if (format === 'md') {
+        exportChapterizedMd(articles, options)
+      } else {
+        await exportChapterizedEpub(articles, options)
+      }
+      setStatus('done')
+      setModalFormat(null)
+    } catch (e) {
+      setStatus('')
+      throw e
+    }
   }
 
   async function handleEpubSeparate() {
@@ -101,14 +138,6 @@ export default function ExportMenu({ selectedArticles, listTitle, onClearSelecti
       }
       const blob = await zip.generateAsync({ type: 'blob' })
       triggerDownload(blob, slug + '-epubs.zip')
-    })
-  }
-
-  // ── Markdown handlers ─────────────────────────────────────────────────────────
-
-  async function handleMdCombined() {
-    await run(articles => {
-      exportChapterizedMd(articles, listTitle)
     })
   }
 
@@ -135,28 +164,11 @@ export default function ExportMenu({ selectedArticles, listTitle, onClearSelecti
     <div className="flex items-center gap-2 px-4 py-2 bg-neutral-900 border-b border-neutral-800 flex-shrink-0 flex-wrap">
       <span className="text-xs text-neutral-400">{count} selected</span>
 
-      {/* Normal state — show .md and .epub buttons */}
-      {!pending && (
-        <>
-          <button
-            onClick={() => { setStatus(''); setPending('md') }}
-            disabled={busy}
-            className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors"
-          >
-            .md
-          </button>
-          <button
-            onClick={() => { setStatus(''); setPending('epub') }}
-            disabled={busy}
-            className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors"
-          >
-            .epub
-          </button>
-        </>
-      )}
-
-      {/* Format choice — .md */}
-      {pending === 'md' && (
+      {/* Two-tier export controls — top tier picks the bundling
+          mode, second tier (Individually only) picks the format.
+          Combined goes straight to the customization modal where
+          the user picks format + edits collection metadata. */}
+      {pending === 'individually' ? (
         <>
           <span className="text-xs text-neutral-500">Format:</span>
           <button
@@ -164,38 +176,33 @@ export default function ExportMenu({ selectedArticles, listTitle, onClearSelecti
             disabled={busy}
             className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors"
           >
-            Separate files (.zip)
+            .md
           </button>
-          <button
-            onClick={handleMdCombined}
-            disabled={busy}
-            className="text-xs px-2.5 py-1 rounded border border-purple-800 text-purple-300 hover:text-purple-100 hover:border-purple-600 disabled:opacity-40 transition-colors"
-          >
-            One combined .md
-          </button>
-          <button onClick={() => setPending(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
-        </>
-      )}
-
-      {/* Format choice — .epub */}
-      {pending === 'epub' && (
-        <>
-          <span className="text-xs text-neutral-500">Format:</span>
           <button
             onClick={handleEpubSeparate}
             disabled={busy}
             className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors"
           >
-            Separate files (.zip)
+            .epub
+          </button>
+          <button onClick={() => setPending(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
+        </>
+      ) : (
+        <>
+          <button
+            onClick={() => { setStatus(''); setPending('individually') }}
+            disabled={busy}
+            className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors"
+          >
+            Individually
           </button>
           <button
-            onClick={handleEpubCombined}
+            onClick={() => openCombinedModal('epub')}
             disabled={busy}
             className="text-xs px-2.5 py-1 rounded border border-purple-800 text-purple-300 hover:text-purple-100 hover:border-purple-600 disabled:opacity-40 transition-colors"
           >
-            One combined .epub
+            Combined…
           </button>
-          <button onClick={() => setPending(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
         </>
       )}
 
@@ -215,6 +222,16 @@ export default function ExportMenu({ selectedArticles, listTitle, onClearSelecti
       >
         clear
       </button>
+
+      <ExportCustomizationModal
+        open={!!modalFormat}
+        onClose={() => setModalFormat(null)}
+        onExport={handleModalExport}
+        defaultTitle={listTitle}
+        defaultArticleCount={count}
+        defaultFormat={modalFormat || 'epub'}
+        sessionUser={sessionUser}
+      />
     </div>
   )
 }

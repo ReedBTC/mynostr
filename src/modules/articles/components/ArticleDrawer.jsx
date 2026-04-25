@@ -4,6 +4,8 @@ import { nip19 } from 'nostr-tools'
 import { getNDK } from '../../../lib/ndk.js'
 import { buildEpubBlob, exportChapterizedEpub, exportChapterizedMd } from '../../../lib/epub.js'
 import { isSafeUrl, titleToSlug, buildFrontmatter, withTimeout } from '../../../lib/utils.js'
+import { useOwnerContext } from '../../../lib/ownerContext.jsx'
+import ExportCustomizationModal from './library/ExportCustomizationModal.jsx'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -46,6 +48,10 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
   const [pendingExport, setPendingExport] = useState(null)   // null | 'md' | 'epub'
   const [exportStatus,  setExportStatus]  = useState('')     // '' | 'exporting' | 'done' | 'error'
   const [exportError,   setExportError]   = useState('')
+  // Customization modal — opens for combined exports, stays closed
+  // for separate-files exports (no collection-level metadata to set).
+  const [modalFormat, setModalFormat] = useState(null)
+  const { sessionUser } = useOwnerContext()
 
   const authorName = user?.profile?.displayName || user?.profile?.name || ''
 
@@ -110,21 +116,36 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
     onClose()
   }
 
+  // Per-chapter input shape for chapterized exports — pubkey + dTag
+  // included so the credits page can build naddr / Primal / zap.cooking
+  // links per article.
+  function buildResolved() {
+    return articles.map(ev => ({
+      content:  ev.content,
+      author:   authorName,
+      metadata: buildMeta(ev),
+      pubkey:   ev.pubkey,
+      dTag:     getTag(ev, 'd'),
+    }))
+  }
+
   async function handleExportAll(format, combined) {
     setPendingExport(null)
+    if (combined) {
+      // Combined exports route through the customization modal — actual
+      // export fires in handleModalExport.
+      setExportStatus('')
+      setExportError('')
+      setModalFormat(format)
+      return
+    }
     setExportStatus('exporting')
     setExportError('')
     try {
-      const resolved = articles.map(ev => ({
-        content:  ev.content,
-        author:   authorName,
-        metadata: buildMeta(ev),
-      }))
+      const resolved = buildResolved()
       const slug = 'my-articles'
 
-      if (format === 'md' && combined) {
-        exportChapterizedMd(resolved, 'My Articles')
-      } else if (format === 'md') {
+      if (format === 'md') {
         const zip = new JSZip()
         for (let i = 0; i < resolved.length; i++) {
           const a    = resolved[i]
@@ -132,8 +153,6 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
           zip.file(name + '.md', buildFrontmatter(a.metadata, null) + a.content)
         }
         triggerDownload(await zip.generateAsync({ type: 'blob' }), slug + '-md.zip')
-      } else if (format === 'epub' && combined) {
-        await exportChapterizedEpub(resolved, 'My Articles')
       } else {
         const zip = new JSZip()
         for (let i = 0; i < resolved.length; i++) {
@@ -149,6 +168,29 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
     } catch (e) {
       setExportStatus('error')
       setExportError(e.message || 'Export failed')
+    }
+  }
+
+  // Throws on error so the modal can catch it and keep itself open
+  // with the error visible (otherwise the user has to reopen + re-
+  // fill all the fields after a CORS-blocked cover URL etc.). Caller
+  // — i.e. the modal — manages its own close and error display.
+  async function handleModalExport({ format, options }) {
+    setExportStatus('exporting')
+    setExportError('')
+    try {
+      const resolved = buildResolved()
+      if (format === 'md') {
+        exportChapterizedMd(resolved, options)
+      } else {
+        await exportChapterizedEpub(resolved, options)
+      }
+      setExportStatus('done')
+      setModalFormat(null)
+      setTimeout(() => setExportStatus(''), 2500)
+    } catch (e) {
+      setExportStatus('')
+      throw e
     }
   }
 
@@ -172,32 +214,30 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
           {/* Export All controls */}
           {articles.length > 0 && !loading && (
             <div className="flex items-center gap-1 ml-2">
-              {!pendingExport ? (
+              {pendingExport === 'individually' ? (
                 <>
-                  <span className="text-xs text-neutral-600">Export all</span>
-                  <button onClick={() => { setExportStatus(''); setPendingExport('md') }} disabled={busy}
-                    className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
+                  <span className="text-xs text-neutral-500">Format:</span>
+                  <button onClick={() => handleExportAll('md', false)} disabled={busy}
+                    className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors">
                     .md
                   </button>
-                  <button onClick={() => { setExportStatus(''); setPendingExport('epub') }} disabled={busy}
-                    className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
+                  <button onClick={() => handleExportAll('epub', false)} disabled={busy}
+                    className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors">
                     .epub
                   </button>
+                  <button onClick={() => setPendingExport(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
                 </>
               ) : (
                 <>
-                  <span className="text-xs text-neutral-500">
-                    {pendingExport === 'md' ? '.md' : '.epub'}:
-                  </span>
-                  <button onClick={() => handleExportAll(pendingExport, false)} disabled={busy}
-                    className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors">
-                    Separate .zip
+                  <span className="text-xs text-neutral-600">Export all</span>
+                  <button onClick={() => { setExportStatus(''); setPendingExport('individually') }} disabled={busy}
+                    className="text-xs px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 disabled:opacity-40 transition-colors">
+                    Individually
                   </button>
-                  <button onClick={() => handleExportAll(pendingExport, true)} disabled={busy}
+                  <button onClick={() => handleExportAll('epub', true)} disabled={busy}
                     className="text-xs px-2 py-0.5 rounded border border-purple-800 text-purple-300 hover:text-purple-100 hover:border-purple-600 disabled:opacity-40 transition-colors">
-                    Combined
+                    Combined…
                   </button>
-                  <button onClick={() => setPendingExport(null)} className="text-xs text-neutral-600 hover:text-neutral-400">✕</button>
                 </>
               )}
               {exportStatus === 'exporting' && (
@@ -284,6 +324,16 @@ export default function ArticleDrawer({ user, onLoad, onClose }) {
           </div>
         )}
       </div>
+
+      <ExportCustomizationModal
+        open={!!modalFormat}
+        onClose={() => setModalFormat(null)}
+        onExport={handleModalExport}
+        defaultTitle="My Articles"
+        defaultArticleCount={articles.length}
+        defaultFormat={modalFormat || 'epub'}
+        sessionUser={sessionUser}
+      />
     </>
   )
 }
