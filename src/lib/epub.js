@@ -1149,8 +1149,7 @@ export async function exportChapterizedEpub(articles, options = {}) {
   } else if (coverSource?.url && isSafeUrl(coverSource.url)) {
     coverImageUrl = coverSource.url
   }
-  const coverSubtitle = subtitle
-    || `Long Form Nostr Notes — ${chapters.length} article${chapters.length !== 1 ? 's' : ''}`
+  const coverSubtitle = subtitle || `${chapters.length} - Long Form Nostr Notes`
   // Author shown on cover only when explicitly entered. The "Various"
   // checkbox on the modal clears author to empty, and an empty/literal
   // "Various" should not appear on the cover.
