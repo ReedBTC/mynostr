@@ -1,5 +1,5 @@
 name = "mynostr-scheduler"
-main = "functions/scheduler/index.js"
+main = "cf-workers/scheduler/index.js"
 compatibility_date = "2024-09-23"
 
 # Cron trigger — fires every minute to publish due scheduled notes
