@@ -188,7 +188,7 @@ export function restoreFromSession({ ndk, clientSecret, bunkerPointer, userPubke
 // (older spec, still widely emitted) — both of which would be silently
 // ignored. nostr-login solves this the same way we do (see reference
 // implementation /tmp/nl-nip46.ts `parseNostrConnectReply` and `listen`).
-export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecretKey, onAuthUrl, signal, timeoutMs = 300000 }) {
+export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecretKey, onAuthUrl, signal, resubscribeBus, timeoutMs = 300000 }) {
   const uri = new URL(connectionUri)
   const relays = uri.searchParams.getAll('relay')
   const secret = uri.searchParams.get('secret')
@@ -205,13 +205,30 @@ export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecr
   //       a connect RPC call TO the client with the secret).
   // Also handle `result === "auth_url"` as a mid-handshake approval prompt
   // that does NOT complete the handshake — the real ack comes after.
-  const pool = new SimplePool()
+  //
+  // `resubscribeBus` (optional EventTarget) lets the caller force a fresh
+  // pool + subscription on demand — used on mobile when the tab returns
+  // from the background and the WebSocket may have been killed by the OS.
+  // NIP-46 uses kind 24133 which is ephemeral (relays MUST NOT retain it),
+  // so a missed reply during a backgrounded tab is irrecoverable from the
+  // relay side; we can only ensure that when the user comes back, our
+  // subscription is fresh and ready for any retry the bunker might do.
+  let pool
+  let sub
+  const filter = { kinds: [24133], '#p': [clientPubkey] }
+
   const bunkerPubkey = await new Promise((resolve, reject) => {
     let settled = false
+    function teardownPoolAndSub() {
+      try { sub?.close() } catch {}
+      try { pool?.close(relays) } catch {}
+      sub = null
+      pool = null
+    }
     const cleanup = () => {
-      try { sub.close() } catch {}
-      try { pool.close(relays) } catch {}
+      teardownPoolAndSub()
       if (signal) signal.removeEventListener('abort', onAbort)
+      if (resubscribeBus) resubscribeBus.removeEventListener('resubscribe', onResubscribe)
     }
     const onAbort = () => {
       if (settled) return
@@ -226,60 +243,80 @@ export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecr
       cleanup()
       reject(new Error('Signer did not respond to nostrconnect request.'))
     }, timeoutMs)
+
+    function onevent(event) {
+      if (settled) return
+      const plaintext = decryptNip46Content(clientSecretKey, event.pubkey, event.content)
+      if (!plaintext) return
+      let parsed
+      try { parsed = JSON.parse(plaintext) } catch { return }
+      const { method, params, result, error } = parsed
+
+      if (result === 'auth_url') {
+        try { onAuthUrl?.(error) } catch {}
+        return
+      }
+
+      if (result === secret || result === 'ack') {
+        settled = true
+        clearTimeout(timer)
+        if (signal) signal.removeEventListener('abort', onAbort)
+        if (resubscribeBus) resubscribeBus.removeEventListener('resubscribe', onResubscribe)
+        try { sub?.close() } catch {}
+        resolve(event.pubkey)
+        return
+      }
+
+      if (method === 'connect' && Array.isArray(params)) {
+        if (params.includes(secret)) {
+          settled = true
+          clearTimeout(timer)
+          if (signal) signal.removeEventListener('abort', onAbort)
+          if (resubscribeBus) resubscribeBus.removeEventListener('resubscribe', onResubscribe)
+          try { sub?.close() } catch {}
+          resolve(event.pubkey)
+          return
+        }
+      }
+
+      if (error && !result) {
+        settled = true
+        clearTimeout(timer)
+        cleanup()
+        reject(new Error(`Bunker refused: ${error}`))
+      }
+    }
+
+    function buildPoolAndSub() {
+      pool = new SimplePool()
+      sub = pool.subscribeMany(relays, filter, { onevent })
+    }
+
+    // Resubscribe handler — called when the caller signals that the
+    // existing connection may be stale (e.g. tab returned from background
+    // on mobile). Tear down the current pool/sub completely and rebuild
+    // from scratch. Doesn't reset the timeout — the user's overall
+    // patience window stays intact.
+    function onResubscribe() {
+      if (settled) return
+      teardownPoolAndSub()
+      buildPoolAndSub()
+    }
+
     if (signal) {
       if (signal.aborted) { onAbort(); return }
       signal.addEventListener('abort', onAbort)
     }
-    const sub = pool.subscribeMany(relays, {
-      kinds: [24133],
-      '#p': [clientPubkey],
-    }, {
-      onevent(event) {
-        if (settled) return
-        const plaintext = decryptNip46Content(clientSecretKey, event.pubkey, event.content)
-        if (!plaintext) return
-        let parsed
-        try { parsed = JSON.parse(plaintext) } catch { return }
-        const { method, params, result, error } = parsed
+    if (resubscribeBus) {
+      resubscribeBus.addEventListener('resubscribe', onResubscribe)
+    }
 
-        if (result === 'auth_url') {
-          try { onAuthUrl?.(error) } catch {}
-          return
-        }
-
-        if (result === secret || result === 'ack') {
-          settled = true
-          clearTimeout(timer)
-          if (signal) signal.removeEventListener('abort', onAbort)
-          try { sub.close() } catch {}
-          resolve(event.pubkey)
-          return
-        }
-
-        if (method === 'connect' && Array.isArray(params)) {
-          if (params.includes(secret)) {
-            settled = true
-            clearTimeout(timer)
-            if (signal) signal.removeEventListener('abort', onAbort)
-            try { sub.close() } catch {}
-            resolve(event.pubkey)
-            return
-          }
-        }
-
-        if (error && !result) {
-          settled = true
-          clearTimeout(timer)
-          cleanup()
-          reject(new Error(`Bunker refused: ${error}`))
-        }
-      },
-    })
+    buildPoolAndSub()
   })
 
   // The wait-for-reply pool is only for the handshake; BunkerSigner below
   // opens its own. Close ours to release the relay sockets.
-  try { pool.close(relays) } catch {}
+  try { pool?.close(relays) } catch {}
 
   // Now construct the real bunker signer with the handshake pubkey we just
   // learned, and drive get_public_key per spec.

@@ -89,6 +89,19 @@ export default function LoginScreen({ onLogin, embedded = false }) {
   // gesture* of tapping the rendered link bypasses the blocker.
   const [authUrl, setAuthUrl] = useState(null)
   const qrSignerRef = useRef(null)
+  // Bus the active QR flow listens to for "resubscribe now" signals.
+  // Fired by the visibilitychange handler when the tab returns from
+  // background — tears down the bunker-reply WebSocket pool and rebuilds
+  // it, in case the OS killed the original sockets. See nip46Signer.js
+  // for what the bus does on the receiving end.
+  const qrResubscribeBusRef = useRef(null)
+  // "Did your approval seem to get lost?" prompt visibility.
+  // Set when, after a tab-return resubscribe on mobile, the bunker still
+  // hasn't replied within ~10s — that's the irrecoverable ephemeral-event
+  // case (NIP-46 24133 isn't retained by relays per NIP-01). User taps
+  // Retry to start a fresh URI + fresh approval.
+  const [qrStuckPrompt, setQrStuckPrompt] = useState(false)
+  const qrStuckTimerRef = useRef(null)
   // Token for the extension-detection poll so a competing login flow can abort it.
   const extPollTokenRef = useRef({ aborted: true })
 
@@ -129,6 +142,47 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       }
     }
   }, [isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Mobile NIP-46 recovery. Background tabs on iOS Safari / Chrome iOS
+  // get their WebSockets killed within ~30s. The bunker's reply (kind
+  // 24133) is ephemeral so any reply that arrived while we were
+  // suspended is gone from the relay — but the bunker may still be
+  // online and willing to retry on reconnect, OR the user may need to
+  // re-approve. Two-stage recovery on visibility resume:
+  //
+  //   1. Fire 'resubscribe' on the active flow's bus → connectViaNostr-
+  //      ConnectUri rebuilds its pool with fresh sockets. If the bunker
+  //      republishes (or the relay buffered briefly), we catch it.
+  //   2. Arm a 10s timer. If still waiting at the end, surface a "Did
+  //      your approval get lost?" retry prompt — the user can restart
+  //      with a fresh URI rather than staring at a silent spinner.
+  useEffect(() => {
+    function onVis() {
+      if (document.visibilityState !== 'visible') return
+      if (!qrWaiting) return
+      // Stage 1 — refresh the subscription.
+      if (qrResubscribeBusRef.current) {
+        try {
+          qrResubscribeBusRef.current.dispatchEvent(new Event('resubscribe'))
+        } catch {}
+      }
+      // Stage 2 — arm the stuck-prompt timer. Clear any prior timer so
+      // multiple bg/fg cycles don't pile up.
+      if (qrStuckTimerRef.current) clearTimeout(qrStuckTimerRef.current)
+      qrStuckTimerRef.current = setTimeout(() => {
+        qrStuckTimerRef.current = null
+        // Only prompt if we're STILL waiting — handshake may have
+        // completed in the meantime.
+        if (qrSignerRef.current && qrWaiting) {
+          setQrStuckPrompt(true)
+        }
+      }, 10000)
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [qrWaiting])
 
   function cancelActiveQrFlow() {
     if (qrSignerRef.current) {
@@ -252,11 +306,23 @@ export default function LoginScreen({ onLogin, embedded = false }) {
 
   async function startQrFlow() {
     setError('')
+    setQrStuckPrompt(false)
+    if (qrStuckTimerRef.current) {
+      clearTimeout(qrStuckTimerRef.current)
+      qrStuckTimerRef.current = null
+    }
     setQrWaiting(true)
     // AbortController acts as the cancel handle for this flow. When the user
     // switches tabs or remounts, we abort the underlying fromURI subscription
     // so it doesn't keep running in the background.
     const aborter = new AbortController()
+    // Resubscribe bus — visibilitychange handler dispatches a 'resubscribe'
+    // event on this when the tab returns from background. The active
+    // connectViaNostrConnectUri call listens and rebuilds its bunker-reply
+    // pool against fresh WebSockets. Fixes mobile flows where the original
+    // pool was killed by the OS while the user was approving in the signer.
+    const resubscribeBus = new EventTarget()
+    qrResubscribeBusRef.current = resubscribeBus
     const handle = { abort: () => aborter.abort(), close: () => aborter.abort() }
     qrSignerRef.current = handle
     try {
@@ -315,6 +381,7 @@ export default function LoginScreen({ onLogin, embedded = false }) {
         connectionUri: nostrConnectUri,
         clientSecretKey,
         signal: aborter.signal,
+        resubscribeBus,
         onAuthUrl: (url) => {
           try {
             const parsed = new URL(url)
@@ -334,6 +401,13 @@ export default function LoginScreen({ onLogin, embedded = false }) {
         return
       }
       qrSignerRef.current = signer
+      qrResubscribeBusRef.current = null
+      // Clear any pending "didn't get your approval?" prompt — we got it.
+      setQrStuckPrompt(false)
+      if (qrStuckTimerRef.current) {
+        clearTimeout(qrStuckTimerRef.current)
+        qrStuckTimerRef.current = null
+      }
 
       setQrWaiting(false)
       setLoading(true)
@@ -352,6 +426,11 @@ export default function LoginScreen({ onLogin, embedded = false }) {
     } catch (err) {
       if (qrSignerRef.current !== handle) return
       setQrWaiting(false)
+      qrResubscribeBusRef.current = null
+      if (qrStuckTimerRef.current) {
+        clearTimeout(qrStuckTimerRef.current)
+        qrStuckTimerRef.current = null
+      }
       setError('QR login failed: ' + (err.message || 'unknown error'))
     } finally {
       setLoading(false)
@@ -364,6 +443,12 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       try { qrSignerRef.current.close?.() } catch {}
       qrSignerRef.current = null
     }
+    qrResubscribeBusRef.current = null
+    if (qrStuckTimerRef.current) {
+      clearTimeout(qrStuckTimerRef.current)
+      qrStuckTimerRef.current = null
+    }
+    setQrStuckPrompt(false)
     setQrUri(null)
     setQrWaiting(false)
     setError('')
@@ -576,10 +661,34 @@ export default function LoginScreen({ onLogin, embedded = false }) {
               {copied ? 'Copied!' : 'Copy connection link'}
             </button>
           )}
-          {qrWaiting && qrUri && (
+          {qrWaiting && qrUri && !qrStuckPrompt && (
             <div className="flex items-center justify-center gap-2 text-xs text-neutral-500">
               <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
               Waiting for signer...
+            </div>
+          )}
+
+          {/* "Did your approval get lost?" prompt — surfaces ~10s after
+              the tab returns from background if the bunker still hasn't
+              replied. NIP-46's reply event is ephemeral; if the OS killed
+              our WebSocket while you were in the signer, the reply was
+              delivered to the relay and dropped before we could see it.
+              No way to recover the original — fresh URI + fresh approval
+              is the only path. */}
+          {qrWaiting && qrUri && qrStuckPrompt && (
+            <div className="space-y-2 px-3 py-2.5 rounded-lg border border-amber-900/60 bg-amber-950/20">
+              <p className="text-xs text-amber-300 leading-snug">
+                Didn't see your approval. Mobile can drop the connection
+                while you're in the signer — try again with a fresh
+                connection link.
+              </p>
+              <button
+                type="button"
+                onClick={cancelQrFlow}
+                className="w-full py-1.5 px-3 rounded text-xs bg-amber-700 hover:bg-amber-600 text-white transition-colors"
+              >
+                Try again
+              </button>
             </div>
           )}
 
@@ -642,10 +751,28 @@ export default function LoginScreen({ onLogin, embedded = false }) {
                     Refresh QR
                   </button>
                 </div>
-                <div className="flex items-center gap-2 text-xs text-neutral-500">
-                  <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                  Waiting for signer to connect...
-                </div>
+                {!qrStuckPrompt && (
+                  <div className="flex items-center gap-2 text-xs text-neutral-500">
+                    <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                    Waiting for signer to connect...
+                  </div>
+                )}
+                {qrStuckPrompt && (
+                  <div className="w-full space-y-2 px-3 py-2.5 rounded-lg border border-amber-900/60 bg-amber-950/20">
+                    <p className="text-xs text-amber-300 leading-snug">
+                      Didn't see your approval. The connection may have
+                      been dropped while you were in the signer — try
+                      again with a fresh QR.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={cancelQrFlow}
+                      className="w-full py-1.5 px-3 rounded text-xs bg-amber-700 hover:bg-amber-600 text-white transition-colors"
+                    >
+                      Try again
+                    </button>
+                  </div>
+                )}
               </div>
             </>
           ) : qrWaiting ? (
