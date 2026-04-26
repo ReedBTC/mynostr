@@ -25,7 +25,8 @@
 
 import { generateSecretKey, getPublicKey, finalizeEvent, SimplePool } from 'nostr-tools'
 import { nip19 } from 'nostr-tools'
-import { FALLBACK_RELAYS } from './ndk.js'
+import { NDKEvent } from '@nostr-dev-kit/ndk'
+import { FALLBACK_RELAYS, getNDK, signWithTimeout } from './ndk.js'
 import { withTimeout } from './utils.js'
 
 // ─── Project owner constants ────────────────────────────────────────────────
@@ -161,10 +162,19 @@ export async function fetchLnurlInvoice(callbackUrl, amountMsats, comment) {
 /**
  * Build, sign, and publish a kind 30078 donation_boostagram event.
  *
+ * Two signing paths controlled by `burnerSk`:
+ *   • Burner key supplied  → signed with that single-use key (anonymous mode).
+ *     Caller is expected to zero the bytes immediately after this returns.
+ *   • Burner key not supplied → signed with the NDK session signer (the
+ *     donor's real Nostr key). Used when the donor wants the event
+ *     attributed to them. Privacy delta is tolerable because the user
+ *     already opted out of anonymous mode; for those still concerned,
+ *     anonymous remains the default.
+ *
  * @param {object} params
- * @param {Uint8Array} params.burnerSk        - Secret key (ephemeral — caller discards after this)
+ * @param {?Uint8Array} params.burnerSk       - Optional. If supplied, sign with this; else use session signer.
  * @param {string}     params.paymentHash     - Hex payment hash from the bolt11 invoice
- * @param {string}     params.donorNpub       - Full npub of the donor (from their Nostr session)
+ * @param {string}     params.donorNpub       - Full npub of the donor (from their Nostr session) — '' for anon
  * @param {string}     params.recipientLud16  - lud16 of the recipient
  * @param {number}     params.amountMsats     - Amount in millisatoshis
  * @param {string}     params.message         - Donor's message (may be empty)
@@ -172,7 +182,7 @@ export async function fetchLnurlInvoice(callbackUrl, amountMsats, comment) {
  * @returns {Promise<{eventId: string, published: boolean}>}
  */
 export async function publishDonationBoostagram({
-  burnerSk,
+  burnerSk = null,
   paymentHash,
   donorNpub,
   recipientLud16,
@@ -195,7 +205,17 @@ export async function publishDonationBoostagram({
     ],
   }
 
-  const signedEvent = finalizeEvent(eventTemplate, burnerSk)
+  // Sign — burner path is synchronous (raw key + nostr-tools); session
+  // path is async (round-trip to NIP-07 / bunker / etc. via NDK signer).
+  let signedEvent
+  if (burnerSk) {
+    signedEvent = finalizeEvent(eventTemplate, burnerSk)
+  } else {
+    const ndk = getNDK()
+    const ev = new NDKEvent(ndk, eventTemplate)
+    await signWithTimeout(ev)
+    signedEvent = await ev.toNostrEvent()
+  }
 
   const pool = new SimplePool()
   let published = false
@@ -209,6 +229,95 @@ export async function publishDonationBoostagram({
   }
 
   return { eventId: signedEvent.id, published }
+}
+
+// ─── Kind 1 boost share — donor's "I just boosted X" feed note ─────────────
+/**
+ * Optional second event published when the donor opts into "Share to
+ * feed." A regular kind 1 note signed by the donor's real key, posted
+ * to their normal write relays so their followers see it natively.
+ *
+ * Kept separate from the kind 30078 boostagram event because:
+ *   • This one is for social sharing (followers' feeds); the 30078 is
+ *     for the recipient's bot to correlate against the LND payment.
+ *   • Kind 1 goes to the donor's outbox; 30078 goes to BOOSTAGRAM_RELAYS.
+ *   • Donors can want one without the other (attributed-but-private
+ *     mode signs the 30078 with their key but skips this kind 1).
+ *
+ * Caller is expected to call this only after the LUD-21 verify URL
+ * confirms the payment settled — otherwise an abandoned boost would
+ * pollute the donor's feed with a "I just boosted!" note for a
+ * payment that never happened.
+ *
+ * @param {object} params
+ * @param {string}     params.message         - Donor's boost message (may be empty)
+ * @param {string}     params.recipientNpub   - Recipient's npub (for nostr: mention + p tag)
+ * @param {string}     params.pageUrl         - URL to include in the note (typically site root)
+ * @param {number}     params.amountSats      - Amount in sats (for the visible message)
+ * @returns {Promise<{eventId: string, published: boolean}>}
+ */
+export async function publishBoostShareNote({
+  message,
+  recipientNpub,
+  pageUrl,
+  amountSats,
+}) {
+  const ndk = getNDK()
+
+  // Decode recipient's npub to hex for the p-tag (kind-1 mention conventions
+  // expect hex authors in p-tags so clients can resolve the profile).
+  let recipientPubkey = ''
+  try {
+    const decoded = nip19.decode(recipientNpub)
+    if (decoded.type === 'npub') recipientPubkey = decoded.data
+  } catch {
+    // Bad npub — skip the p-tag; the nostr: link in content still works.
+  }
+
+  // Compose the visible content. Format chosen to read naturally on a
+  // follower's feed: lead with the action, donor's message inline if any,
+  // close with the link + nostr: mention so clients render the recipient
+  // as a clickable profile.
+  const lines = [
+    `Just boosted ⚡ ${amountSats.toLocaleString()} sats to nostr:${recipientNpub}`,
+  ]
+  if (message && message.trim()) {
+    lines.push('')
+    lines.push(message.trim())
+  }
+  lines.push('')
+  lines.push(pageUrl)
+  const content = lines.join('\n')
+
+  const tags = [
+    ['t', 'mynostr'],
+    ['t', 'boost'],
+    ['r', pageUrl],
+    ['client', 'mynostr'],
+  ]
+  if (recipientPubkey) tags.push(['p', recipientPubkey])
+
+  const ev = new NDKEvent(ndk, {
+    kind: 1,
+    created_at: Math.floor(Date.now() / 1000),
+    content,
+    tags,
+  })
+  await signWithTimeout(ev)
+
+  // Publish to the user's own write relays via NDK's default publish
+  // (kind 1 belongs on the donor's normal feed, not the boostagram
+  // relay set). Failures are non-fatal — the boost succeeded; the
+  // share is best-effort.
+  let published = false
+  try {
+    const ackd = await ev.publish()
+    published = ackd && ackd.size > 0
+  } catch {
+    published = false
+  }
+
+  return { eventId: ev.id, published }
 }
 
 // ─── LUD-21 payment verify poller ────────────────────────────────────────────

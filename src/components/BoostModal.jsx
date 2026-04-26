@@ -9,6 +9,7 @@ import {
   bolt11PaymentHash,
   generateBurnerKeypair,
   publishDonationBoostagram,
+  publishBoostShareNote,
   pollVerify,
 } from '../lib/boostagram.js'
 import { isSafeUrl } from '../lib/utils.js'
@@ -36,9 +37,21 @@ export default function BoostModal({ user, onClose, readOnly }) {
   const [copied, setCopied] = useState(false)
   const [paid, setPaid] = useState(false)
 
+  // Share-to-feed (optional kind 1 note) — only available when the donor
+  // has a real Nostr signer (not anonymous, not read-only). Auto-clears
+  // when anonymous flips on so we don't carry a stale opt-in into a
+  // mode that can't honor it.
+  const [shareToFeed, setShareToFeed] = useState(false)
+  const [shareAttempted, setShareAttempted] = useState(false)
+  const [sharePublished, setSharePublished] = useState(false)
+  const [shareError, setShareError] = useState('')
+
   const stopPollRef = useRef(null)
   const donorNpub = user?.npub || ''
   const profile = user?.profile
+
+  // Whether the donor has a usable signer for the kind 1 share.
+  const canShareToFeed = !anonymous && !readOnly && !!donorNpub
 
   // Resolve project owner's lud16 from their kind 0 profile on mount
   useEffect(() => {
@@ -70,6 +83,42 @@ export default function BoostModal({ user, onClose, readOnly }) {
   useEffect(() => {
     if (paid) stopPollRef.current?.()
   }, [paid])
+
+  // Force shareToFeed off when anonymous flips on — the two are mutually
+  // exclusive (sharing requires a real signer; anonymous mode means
+  // intentionally not using one).
+  useEffect(() => {
+    if (anonymous && shareToFeed) setShareToFeed(false)
+  }, [anonymous, shareToFeed])
+
+  // Publish the kind 1 share note once payment confirms — only if the
+  // donor opted in, has a signer, and we haven't already attempted.
+  // Failures are non-fatal: the boost succeeded; the share is best-effort.
+  useEffect(() => {
+    if (!paid || !shareToFeed || shareAttempted) return
+    if (!canShareToFeed) return
+    setShareAttempted(true)
+    let cancelled = false
+    ;(async () => {
+      try {
+        const r = await publishBoostShareNote({
+          message: message.trim(),
+          recipientNpub: PROJECT_OWNER_NPUB,
+          // Hardcoded prod URL — kind 1's published to followers should
+          // direct them to the live site, not the env we authored from.
+          pageUrl: 'https://mynostr.app',
+          amountSats: parseInt(amount, 10) || 0,
+        })
+        if (cancelled) return
+        if (r.published) setSharePublished(true)
+        else setShareError('Couldn\'t reach your relays.')
+      } catch (e) {
+        if (cancelled) return
+        setShareError(e?.message || 'Failed to publish to your feed.')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [paid, shareToFeed, shareAttempted, canShareToFeed, message, amount])
 
   useEffect(() => {
     function handleKey(e) { if (e.key === 'Escape') onClose() }
@@ -105,11 +154,15 @@ export default function BoostModal({ user, onClose, readOnly }) {
       // 2. Extract payment hash — links the kind 30078 event to this specific invoice
       const paymentHash = bolt11PaymentHash(pr) || crypto.randomUUID().replace(/-/g, '')
 
-      // 3. Generate burner keypair, publish kind 30078, then immediately let sk fall out of scope
-      const { sk: burnerSk } = generateBurnerKeypair()
+      // 3. Sign + publish kind 30078. Anonymous → single-use burner key
+      //    (zeroed immediately after); attributed → donor's real signer
+      //    (NIP-07 / bunker via NDK). Either way, publishes synchronously
+      //    so the recipient's bot can correlate the moment the bolt11
+      //    settles.
+      const burner = anonymous ? generateBurnerKeypair() : null
       try {
         const { eventId: eid } = await publishDonationBoostagram({
-          burnerSk,
+          burnerSk: burner?.sk || null,
           paymentHash,
           donorNpub: anonymous ? '' : donorNpub,
           recipientLud16: recipientLud16 || FALLBACK_LUD16,
@@ -122,7 +175,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
         setEventId(eid)
         setVerifyUrl(verify)
       } finally {
-        burnerSk.fill(0)
+        if (burner?.sk) burner.sk.fill(0)
       }
     } catch (e) {
       setError(e.message)
@@ -160,6 +213,11 @@ export default function BoostModal({ user, onClose, readOnly }) {
     setVerifyUrl(null)
     setPaid(false)
     setError('')
+    // Clear share-flow state too so a previous attempt's status doesn't
+    // bleed into the next boost.
+    setShareAttempted(false)
+    setSharePublished(false)
+    setShareError('')
   }
 
   return (
@@ -258,6 +316,28 @@ export default function BoostModal({ user, onClose, readOnly }) {
                   />
                 </div>
 
+                {/* Share-to-feed opt-in — only when the donor has a real
+                    signer to publish a kind 1 with. Hidden in anonymous
+                    or read-only modes since neither can sign a kind 1
+                    that lands on the donor's actual feed. */}
+                {canShareToFeed && (
+                  <label className="flex items-start gap-2 text-xs text-neutral-400 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={shareToFeed}
+                      onChange={e => setShareToFeed(e.target.checked)}
+                      className="accent-amber-600 mt-0.5"
+                    />
+                    <span className="leading-snug">
+                      Share to my feed
+                      <span className="block text-[10px] text-neutral-600 mt-0.5">
+                        Posts a kind 1 note to your followers — your
+                        message + a link back here.
+                      </span>
+                    </span>
+                  </label>
+                )}
+
                 {error && <p className="text-xs text-red-400">{error}</p>}
 
                 <button
@@ -318,6 +398,27 @@ export default function BoostModal({ user, onClose, readOnly }) {
                     Thanks for the boost ⚡ It helps keep MyNostr going.
                   </p>
                 </div>
+                {/* Share-to-feed result. Only relevant when the donor
+                    opted in. Pending → amber pulse; success → green ✓;
+                    failure → amber warning (the boost itself succeeded). */}
+                {shareToFeed && shareAttempted && !sharePublished && !shareError && (
+                  <p className="text-xs text-neutral-500 flex items-center gap-1.5">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                    Sharing to your feed…
+                  </p>
+                )}
+                {shareToFeed && sharePublished && (
+                  <p className="text-xs text-green-400 flex items-center gap-1.5">
+                    <span>✓</span>
+                    Shared to your feed
+                  </p>
+                )}
+                {shareToFeed && shareError && (
+                  <p className="text-xs text-amber-500 max-w-xs">
+                    Couldn't share to your feed — {shareError}
+                  </p>
+                )}
+
                 {eventId && (
                   <p className="text-xs text-neutral-700 font-mono break-all">
                     receipt: {eventId.slice(0, 16)}…
