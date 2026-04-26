@@ -30,6 +30,15 @@ export default function BoostModal({ user, onClose, readOnly }) {
   const [invoice, setInvoice] = useState('')
   const [eventId, setEventId] = useState('')
   const [verifyUrl, setVerifyUrl] = useState(null)
+  // payment_hash from the bolt11. Used for the optional LUD-21 preimage
+  // cross-check during verify polling. May be empty if the bolt11
+  // decoder couldn't extract it (malformed invoice) — in which case
+  // the cross-check is skipped.
+  const [paymentHash, setPaymentHash] = useState('')
+  // Whether the kind 30078 metadata event actually reached at least one
+  // boostagram relay. Surfaced in the success view so users know if
+  // their boost will be visible to bots watching the metadata stream.
+  const [metaPublished, setMetaPublished] = useState(true)
 
   const [anonymous, setAnonymous] = useState(!!readOnly)
   const [loading, setLoading] = useState(false)
@@ -78,16 +87,26 @@ export default function BoostModal({ user, onClose, readOnly }) {
     init()
   }, [])
 
-  // Start polling once we have an invoice + verify URL
+  // Start polling once we have an invoice + verify URL. When `paid` flips
+  // true, the effect re-runs with the early-return path and the previous
+  // run's cleanup (the pollVerify cancel function) fires — that's what
+  // stops the polling. Including `paid` in the deps means the previous
+  // separate "stop on paid" effect is unnecessary; this single effect
+  // handles both start and stop.
+  //
+  // `paymentHash` is passed through so pollVerify can perform the
+  // optional LUD-21 preimage cross-check (rejects servers that lie
+  // about settled status).
   useEffect(() => {
     if (!verifyUrl || !invoice || paid) return
-    stopPollRef.current = pollVerify(verifyUrl, POLL_INTERVAL_MS, () => setPaid(true))
+    stopPollRef.current = pollVerify(
+      verifyUrl,
+      POLL_INTERVAL_MS,
+      () => setPaid(true),
+      paymentHash || null,
+    )
     return () => stopPollRef.current?.()
-  }, [verifyUrl, invoice])
-
-  useEffect(() => {
-    if (paid) stopPollRef.current?.()
-  }, [paid])
+  }, [verifyUrl, invoice, paid, paymentHash])
 
   // Force shareToFeed off when anonymous flips on — the two are mutually
   // exclusive (sharing requires a real signer; anonymous mode means
@@ -157,8 +176,15 @@ export default function BoostModal({ user, onClose, readOnly }) {
       // 1. Fetch invoice
       const { pr, verify } = await fetchLnurlInvoice(lnurlMeta.callback, sats * 1000, trimmedComment)
 
-      // 2. Extract payment hash — links the kind 30078 event to this specific invoice
-      const paymentHash = bolt11PaymentHash(pr) || crypto.randomUUID().replace(/-/g, '')
+      // 2. Extract payment hash — links the kind 30078 event to this specific invoice.
+      //    realPaymentHash is the actual bolt11-derived hash; null when the
+      //    decoder couldn't parse the invoice (we still need a d-tag value
+      //    so we generate a UUID fallback). The real hash also goes to
+      //    pollVerify for the LUD-21 preimage cross-check — without a real
+      //    hash we can't verify, so the cross-check is skipped.
+      const realPaymentHash = bolt11PaymentHash(pr)
+      const paymentHashTag = realPaymentHash || crypto.randomUUID().replace(/-/g, '')
+      setPaymentHash(realPaymentHash || '')
 
       // 3. Sign + publish kind 30078. Anonymous → single-use burner key
       //    (zeroed immediately after); attributed → donor's real signer
@@ -176,9 +202,9 @@ export default function BoostModal({ user, onClose, readOnly }) {
         : 'Approve in your signer app…')
       const burner = anonymous ? generateBurnerKeypair() : null
       try {
-        const { eventId: eid } = await publishDonationBoostagram({
+        const { eventId: eid, published } = await publishDonationBoostagram({
           burnerSk: burner?.sk || null,
-          paymentHash,
+          paymentHash: paymentHashTag,
           donorNpub: anonymous ? '' : donorNpub,
           recipientLud16: recipientLud16 || FALLBACK_LUD16,
           amountMsats: sats * 1000,
@@ -193,6 +219,11 @@ export default function BoostModal({ user, onClose, readOnly }) {
         setInvoice(pr)
         setEventId(eid)
         setVerifyUrl(verify)
+        // Surface the publish result — if no relay accepted the kind
+        // 30078, the LN payment will still go through but the bot
+        // watching the metadata stream won't find anything to enrich
+        // it with. User should know.
+        setMetaPublished(!!published)
       } finally {
         if (burner?.sk) burner.sk.fill(0)
       }
@@ -231,6 +262,8 @@ export default function BoostModal({ user, onClose, readOnly }) {
     setInvoice('')
     setEventId('')
     setVerifyUrl(null)
+    setPaymentHash('')
+    setMetaPublished(true)
     setPaid(false)
     setError('')
     // Clear share-flow state too so a previous attempt's status doesn't
@@ -448,6 +481,20 @@ export default function BoostModal({ user, onClose, readOnly }) {
                 {shareToFeed && shareError && (
                   <p className="text-xs text-amber-500 max-w-xs">
                     Couldn't share to your feed — {shareError}
+                  </p>
+                )}
+
+                {/* Metadata-publish warning. The Lightning payment
+                    succeeded, but no relay in the boostagram set ack'd
+                    the kind 30078 — bots watching the metadata stream
+                    won't see this boost. Worth telling the user since
+                    the receipt below would otherwise look like
+                    everything's fine. */}
+                {!metaPublished && (
+                  <p className="text-xs text-amber-500 max-w-xs">
+                    Boost succeeded, but the metadata event didn't reach
+                    any boostagram relay. The recipient's bot won't have
+                    your message attached.
                   </p>
                 )}
 
