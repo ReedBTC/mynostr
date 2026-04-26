@@ -107,7 +107,17 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   // Multi-JSON import — each file becomes a new draft. Size-capped per file
   // to match the single-file import path. Returns a summary so the tray can
   // surface per-file errors without blocking the successful ones.
+  //
+  // If the first draft in the tray was empty before this run (e.g. the
+  // hook's freshly-seeded blank draft on first visit), it gets dropped
+  // after a successful import so the user ends up with N drafts after
+  // importing N — not N + 1 with a leftover empty.
   const handleImportDrafts = useCallback(async (files) => {
+    const seedDraft = drafts[0]
+    const seedWasEmpty = seedDraft &&
+      !seedDraft.snapshot?.content?.trim() &&
+      !seedDraft.publishable
+
     const result = { imported: 0, errors: [] }
     for (const file of files) {
       const name = file.name || 'file'
@@ -139,8 +149,12 @@ export default function NotesModule({ user, sessionUser, subtab }) {
         result.errors.push(`${name}: ${e.message || 'invalid JSON'}`)
       }
     }
+
+    if (result.imported > 0 && seedWasEmpty) {
+      deleteDraft(seedDraft.id)
+    }
     return result
-  }, [createDraft, sessionUser?.pubkey])
+  }, [createDraft, deleteDraft, drafts, sessionUser?.pubkey])
 
   // Export every draft with a valid publishable payload as its own JSON file.
   // Staggered downloads give the browser's "allow multiple downloads" prompt
@@ -156,6 +170,11 @@ export default function NotesModule({ user, sessionUser, subtab }) {
         created_at: Math.floor(Date.now() / 1000),
         content,
         tags,
+        // Sidecar: full UI snapshot (relayOverride, zapSplits, mentions,
+        // reply/quote inputs) so re-importing into mynostr restores the
+        // composer state exactly. Other Nostr clients ignore unknown
+        // top-level keys.
+        _mynostr_form: d.snapshot,
       }
       const blob = new Blob([JSON.stringify(event, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)

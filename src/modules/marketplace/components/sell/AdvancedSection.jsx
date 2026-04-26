@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import RelayOverrideSection from '../../../notes/components/RelayOverrideSection.jsx'
+import MarketplaceRelaySuggestions from './MarketplaceRelaySuggestions.jsx'
 
 /**
  * AdvancedSection — collapsible "extra knobs" for the Sell composer.
@@ -109,6 +111,22 @@ export default function AdvancedSection({ form, updateForm, open, onToggle }) {
           <SpecsEditor
             specs={form.specs || []}
             onChange={(specs) => updateForm({ specs })}
+          />
+
+          {/* Marketplace relay suggestions — popular marketplace relays
+              with ✓/+ controls that add the relay to the user's own
+              kind 10002 list (vs. supplementing per-publish). This way
+              every future publish/edit/delete naturally reaches them,
+              and NIP-09 deletions land where the listing actually
+              lives. Reuses the profile module's CopyButton. */}
+          <MarketplaceRelaySuggestions />
+
+          {/* Relay override — same component Notes uses, identical
+              UX. When enabled, the listing is published only to the
+              listed wss:// relays (private-group flow). */}
+          <RelayOverrideSection
+            relayOverride={form.relayOverride || { enabled: false, relays: [] }}
+            onChange={(relayOverride) => updateForm({ relayOverride })}
           />
 
           {/* NSFW — keep last so it's visually separate from the

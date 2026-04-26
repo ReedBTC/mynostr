@@ -32,6 +32,46 @@ export const DEFAULT_MARKETPLACE_RELAYS = Object.freeze([
 ])
 
 /**
+ * Curated marketplace relays surfaced in the Sell composer's Advanced
+ * section as "add to your relay list" suggestions.
+ *
+ * Distinct from `DEFAULT_MARKETPLACE_RELAYS`:
+ *   • DEFAULT_MARKETPLACE_RELAYS — for *reading* — broad coverage so
+ *     Search finds non-mynostr listings too. Mixes marketplace-
+ *     specific and general-purpose relays.
+ *
+ *   • SUPPLEMENTAL_PUBLISH_RELAYS — for *writing* — narrowly scoped
+ *     to relays where marketplace clients actually look. Surfaced as
+ *     ✓/+ buttons that add the relay to the user's own kind 10002
+ *     list rather than supplementing on a per-publish basis. This
+ *     way future edits/deletes naturally reach those relays too.
+ *
+ * Entry shape:
+ *   url       — wss:// URL
+ *   label     — short display name
+ *   hint      — one-line description
+ *   paid?     — true if the relay requires payment to write
+ *   signupUrl?— landing page where users can sign up / pay (paid only)
+ */
+export const SUPPLEMENTAL_PUBLISH_RELAYS = Object.freeze([
+  {
+    url:   'wss://relay.plebeian.market',
+    label: 'Plebeian Market',
+    hint:  'Plebeian Market\'s home relay',
+  },
+  {
+    url:   'wss://purplerelay.com',
+    label: 'Purple Relay',
+    hint:  'Free Plebeian-friendly relay',
+  },
+  {
+    url:   'wss://relay.nostr.band',
+    label: 'nostr.band',
+    hint:  'Indexed by nostr.band\'s search',
+  },
+])
+
+/**
  * Augment a user's relay set with the marketplace defaults, deduped.
  * Pass the user's read relays as `userRelays` (an array of wss:// URLs).
  * The user's relays come first so any latency wins go to their primary

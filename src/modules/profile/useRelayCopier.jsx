@@ -30,13 +30,21 @@ import {
   publishDmRelayList,
 } from '../../lib/relayInfo.js'
 
-export function useRelayCopier({ kind }) {
+/**
+ * @param {object} opts
+ * @param {'main'|'dm'} opts.kind
+ * @param {boolean} [opts.allowOwn=false] — when true, the +/✓ controls
+ *   render on the user's own page too. Used by the marketplace Sell
+ *   composer to suggest popular marketplace relays for the user's
+ *   own kind 10002. The default (false) preserves the original
+ *   "steal a relay from someone else's profile" behavior.
+ */
+export function useRelayCopier({ kind, allowOwn = false }) {
   const { sessionUser, viewedUser } = useOwnerContext()
   const canCopy = !!(
     sessionUser?.pubkey &&
     !sessionUser.readOnly &&
-    viewedUser?.pubkey &&
-    sessionUser.pubkey !== viewedUser.pubkey
+    (allowOwn || (viewedUser?.pubkey && sessionUser.pubkey !== viewedUser.pubkey))
   )
 
   // main: [{url, read, write}, ...]  |  dm: [url, ...]  |  null: not yet loaded

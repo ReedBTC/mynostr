@@ -3,14 +3,42 @@
  * Shared between NoteComposer's JSON-import flow and the DraftsTray's
  * multi-JSON-import flow so both produce identical hydration.
  *
- * Rewrites nostr:npub URIs to @DisplayName (fetches profiles), splits out
- * zap tags, pulls reply/quote references from NIP-10 markers + content, and
- * retains any non-auto tags as manualTags.
+ * Two paths:
+ *   1. mynostr-to-mynostr — when the event JSON carries a
+ *      `_mynostr_form` sidecar (produced by handleExportJson +
+ *      handleExportAllDrafts), restore from it directly. Lossless:
+ *      relayOverride, manualTags, zapSplits all preserved exactly.
+ *   2. Cross-client (or older mynostr exports without the sidecar) —
+ *      heuristically rebuild from the canonical event tags + content.
+ *      Rewrites nostr:npub URIs to @DisplayName (fetches profiles),
+ *      splits out zap tags, pulls reply/quote references from NIP-10
+ *      markers + content, retains non-auto tags as manualTags.
  */
 import { nip19 } from 'nostr-tools'
 import { fetchProfiles } from './primal.js'
 
+const DEFAULT_SNAPSHOT = {
+  content: '',
+  zapSplits: [],
+  userZapPct: null,
+  manualTags: [],
+  mentions: {},
+  replyToInput: '',
+  replyTarget: null,
+  quoteInput: '',
+  quoteTarget: null,
+  relayOverride: { enabled: false, relays: [] },
+  publishAt: null,
+}
+
 export async function buildDraftSnapshotFromEvent(event, userPubkey) {
+  // Sidecar fast path — full UI state restored from the export.
+  // Spread over DEFAULT_SNAPSHOT so older exports with a partial
+  // sidecar still get sensible defaults for any newly-added fields.
+  if (event && event._mynostr_form && typeof event._mynostr_form === 'object') {
+    return { ...DEFAULT_SNAPSHOT, ...event._mynostr_form }
+  }
+
   const rawContent = event.content || ''
   const tags = event.tags || []
 

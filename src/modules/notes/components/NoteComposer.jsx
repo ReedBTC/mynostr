@@ -671,7 +671,12 @@ export default function NoteComposer({
     return othersTotal + effectiveUserPct > 100
   }, [zapSplits, userZapPct])
 
-  // Export current note as a kind 1 JSON file
+  // Export current note as a kind 1 JSON file. Includes a
+  // `_mynostr_form` sidecar with the full snapshot — relayOverride,
+  // zapSplits, mentions, reply/quote inputs — so re-importing into
+  // mynostr restores the editor exactly. Other Nostr clients ignore
+  // unknown top-level keys, so the event itself stays standards-
+  // compliant.
   const handleExportJson = useCallback(() => {
     const event = {
       kind: 1,
@@ -679,6 +684,7 @@ export default function NoteComposer({
       created_at: Math.floor(Date.now() / 1000),
       content: expandedContent,
       tags: finalTags,
+      _mynostr_form: snapshot,
     }
     const blob = new Blob([JSON.stringify(event, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -687,7 +693,7 @@ export default function NoteComposer({
     a.download = `note-${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
-  }, [expandedContent, finalTags, user?.pubkey])
+  }, [expandedContent, finalTags, user?.pubkey, snapshot])
 
   const handlePublish = useCallback(async () => {
     if (onPublish) await onPublish()
