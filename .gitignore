@@ -38,3 +38,6 @@ npm-debug.log*
 
 # ── Wrangler local state ───────────────────────────────────
 .wrangler/
+
+# ── Working drafts of content not yet ready to publish ─────
+docs/v4v-2.0-spec.md
