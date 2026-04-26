@@ -168,7 +168,11 @@ export default function BoostModal({ user, onClose, readOnly }) {
           recipientLud16: recipientLud16 || FALLBACK_LUD16,
           amountMsats: sats * 1000,
           message: message.trim(),
-          pageUrl: window.location.origin + window.location.pathname,
+          // Just the site root — readers / bots / share notes shouldn't
+          // care which page the booster was on. Was previously
+          // origin + pathname which leaked the whole URL (including
+          // the viewed user's npub) into every boost record.
+          pageUrl: window.location.origin,
         })
 
         setInvoice(pr)
