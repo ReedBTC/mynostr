@@ -17,18 +17,12 @@
 import { useCallback, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
-import { prefetchRates } from '../../lib/currency.js'
 import SellComposer from './components/sell/SellComposer.jsx'
 
 export default function MarketplaceModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
   const navigate = useNavigate()
   const npub = user?.npub
-
-  // Warm the BTC/fiat rate cache on mount so the Sell composer's price
-  // dual-mode field doesn't flash placeholders on first render. Cheap —
-  // single ~200-byte request, dedupe + 5min TTL inside currency.js.
-  useEffect(() => { prefetchRates() }, [])
 
   // ── Module tab derived from URL subtab ──────────────────────────────────
   // Bare `/marketplace` lands on `selling` (the public-visible owner page),

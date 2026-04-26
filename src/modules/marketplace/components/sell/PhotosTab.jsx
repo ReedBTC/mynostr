@@ -3,6 +3,10 @@ import { uploadToBlossom } from '../../../../lib/blossom.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
 
 const MAX_IMAGES = 8
+// Matches the 5 MB ceiling Articles' Editor + cover-image picker enforce.
+// Most product photos compress well under 1 MB; 5 MB leaves room for
+// uncompressed phone shots without inviting accidental 50 MB drops.
+const MAX_PHOTO_BYTES = 5 * 1024 * 1024
 
 /**
  * Photos tab — image management.
@@ -48,6 +52,10 @@ export default function PhotosTab({ form, updateForm }) {
     if (!file) return
     if (atCap) {
       setError(`Up to ${MAX_IMAGES} images per listing.`)
+      return
+    }
+    if (file.size > MAX_PHOTO_BYTES) {
+      setError(`Image too large — max ${Math.round(MAX_PHOTO_BYTES / 1024 / 1024)} MB.`)
       return
     }
     setError('')

@@ -183,9 +183,16 @@ export default function SellComposer({ sessionUser, initialForm = null }) {
       const gammaForm = toGammaForm(form)
       const { naddr } = await publishProduct(gammaForm)
       setPublishedNaddr(naddr)
-      // Carry the resolved dTag back into form state so subsequent
-      // edits replace the same listing rather than spawning a new one.
-      setForm(prev => ({ ...prev, dTag: gammaForm.dTag }))
+      // Reset the form to a fresh empty state so the composer is
+      // ready for the next listing rather than displaying the
+      // just-published one. The dTag is intentionally NOT preserved —
+      // future edits go through My Selling (Phase 2), which will
+      // load the existing event into the composer with its own dTag.
+      // formToken bumps remount children (PriceField etc.) so their
+      // internal state re-derives from the fresh empty form.
+      setForm(emptySellForm())
+      setFormToken(t => t + 1)
+      setActiveTab('listing')
       clearDraft()
     } catch (e) {
       setPublishError(e?.message || 'Publish failed')

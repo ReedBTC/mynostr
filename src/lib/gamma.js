@@ -168,15 +168,13 @@ export function decodeProduct(event) {
   const visibilityRaw = pickFirstValue(tags, 'visibility').toLowerCase()
   const statusRaw     = pickFirstValue(tags, 'status').toLowerCase()
 
-  const extraTags = tags.filter(t => {
-    if (PRODUCT_KNOWN_TAGS.has(t[0])) {
-      // "a" leftovers are kept on _extraTags above — exclude all "a"
-      // tags here and let aLeftovers handle the unknown ones.
-      if (t[0] !== 'a') return false
-      return false
-    }
-    return true
-  }).concat(aLeftovers)
+  // Anything we recognise as "known" is consumed into the structured
+  // shape above; "a" tags are special-cased into collectionRefs /
+  // productRefs / aLeftovers earlier in this function. Everything else
+  // rides through verbatim on _extraTags for round-trip preservation.
+  const extraTags = tags
+    .filter(t => !PRODUCT_KNOWN_TAGS.has(t[0]))
+    .concat(aLeftovers)
 
   return {
     pubkey:      event.pubkey || '',
@@ -338,10 +336,12 @@ export function decodeCollection(event) {
     extraCost: parseNumberOrNull(t[2]),
   })).filter(s => s.ref)
 
-  const extraTags = tags.filter(t => {
-    if (COLLECTION_KNOWN_TAGS.has(t[0])) return t[0] === 'a' ? false : false
-    return true
-  }).concat(aLeftovers)
+  // Same pattern as decodeProduct — known tags are consumed above,
+  // unknown ones round-trip via _extraTags so editing through MyNostr
+  // doesn't strip fields we don't understand.
+  const extraTags = tags
+    .filter(t => !COLLECTION_KNOWN_TAGS.has(t[0]))
+    .concat(aLeftovers)
 
   return {
     pubkey:    event.pubkey || '',

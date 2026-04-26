@@ -663,7 +663,10 @@ function articleTitlePageXhtml({ title, subtitle, author, npub, dateStr, coverHr
 // Decode the handful of HTML entities likely to appear in an HTML
 // attribute value. Marked + DOMPurify entity-encode `&` to `&amp;` in
 // URLs; left undecoded, the literal `&amp;` ends up in the fetch URL
-// and the server returns a 404 for the wrong query string.
+// and the server returns a 404 for the wrong query string. Numeric
+// entities (decimal `&#38;` / hex `&#x26;`) are also decoded so a
+// future toolchain change that emits them doesn't silently break
+// inline-image fetching.
 function decodeHtmlEntitiesForUrl(s) {
   return String(s || '')
     .replace(/&amp;/g, '&')
@@ -671,6 +674,8 @@ function decodeHtmlEntitiesForUrl(s) {
     .replace(/&gt;/g,  '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
 }
 
 // Embed inline `<img>` images from chapter HTML into the EPUB.
@@ -703,12 +708,16 @@ async function embedInlineImages(html, chapterIdx) {
   // the request goes to a literal `&amp;` host.
   const srcs = []
   const seen = new Set()
-  // Match src attribute regardless of attribute order. The non-greedy
-  // [^>]*? before src handles cases like `<img alt="…" src="…"/>`.
-  const imgRe = /<img\b[^>]*?\bsrc\s*=\s*"([^"]+)"[^>]*\/?>/gi
+  // Match src attribute regardless of attribute order or quote style.
+  // The non-greedy [^>]*? before src handles cases like
+  // `<img alt="…" src="…"/>`; the captured quote group ((["']))
+  // matches the closing quote so we accept both " and '. DOMPurify
+  // currently emits doubles, but staying quote-agnostic keeps us
+  // robust to sanitizer / markdown-renderer changes.
+  const imgRe = /<img\b[^>]*?\bsrc\s*=\s*(["'])([^"']+)\1[^>]*\/?>/gi
   let m
   while ((m = imgRe.exec(html)) !== null) {
-    const src = m[1]
+    const src = m[2]
     if (seen.has(src)) continue
     seen.add(src)
     if (!isSafeUrl(decodeHtmlEntitiesForUrl(src))) continue
@@ -744,14 +753,16 @@ async function embedInlineImages(html, chapterIdx) {
   }
   if (urlMap.size === 0) return empty
 
-  // Rewrite src attrs in HTML to relative manifest paths. Untouched
-  // imgs (CORS-blocked, 404, etc.) keep their external URLs so the
-  // article still reads coherently when the reader has internet.
+  // Rewrite src attrs in HTML to relative manifest paths. Quote
+  // group is captured so we re-emit with the same quote style we
+  // matched. Untouched imgs (CORS-blocked, 404, etc.) keep their
+  // external URLs so the article still reads coherently when the
+  // reader has internet.
   const rewritten = html.replace(
-    /(<img\b[^>]*?\bsrc\s*=\s*")([^"]+)("[^>]*\/?>)/gi,
-    (match, before, src, after) => {
+    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])([^"']+)\2([^>]*\/?>)/gi,
+    (match, before, quote, src, after) => {
       const newHref = urlMap.get(src)
-      return newHref ? `${before}${newHref}${after}` : match
+      return newHref ? `${before}${quote}${newHref}${quote}${after}` : match
     },
   )
 
