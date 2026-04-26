@@ -27,11 +27,22 @@ export default function NoteActionsMenu({ open, onClose, note, triggerRef }) {
   // Recomputed whenever the menu opens. We close on scroll/resize
   // rather than reposition; dropdowns typically dismiss on outside
   // interaction and re-anchoring mid-scroll is the wrong mental model.
+  // Anchors below the trigger by default. When the trigger sits near the
+  // viewport bottom and the menu wouldn't fit there, flips to anchor
+  // above via `bottom` instead of `top`. Caps maxHeight to available
+  // space so the menu can't extend past either viewport edge.
   const [menuPos, setMenuPos] = useState(null)
   useEffect(() => {
     if (!open || !triggerRef?.current) return
     const rect = triggerRef.current.getBoundingClientRect()
-    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    const ESTIMATED_HEIGHT = 300
+    const spaceBelow = window.innerHeight - rect.bottom
+    const spaceAbove = rect.top
+    const flipAbove  = spaceBelow < ESTIMATED_HEIGHT && spaceAbove > spaceBelow
+    const maxHeight = Math.max(120, (flipAbove ? spaceAbove : spaceBelow) - 8)
+    setMenuPos(flipAbove
+      ? { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right, maxHeight }
+      : { top: rect.bottom + 4, right: window.innerWidth - rect.right, maxHeight })
     function dismiss() { onClose?.() }
     window.addEventListener('scroll', dismiss, true)
     window.addEventListener('resize', dismiss)
@@ -107,7 +118,7 @@ export default function NoteActionsMenu({ open, onClose, note, triggerRef }) {
     <div
       data-note-actions-menu="true"
       className={`fixed bg-neutral-800 border border-neutral-700 rounded shadow-xl ${Z.portaledMenu} w-[240px] max-h-[70vh] overflow-y-auto`}
-      style={{ top: menuPos.top, right: menuPos.right }}
+      style={menuPos}
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
     >

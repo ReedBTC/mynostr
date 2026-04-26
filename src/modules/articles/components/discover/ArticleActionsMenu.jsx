@@ -84,11 +84,31 @@ export default function ArticleActionsMenu({
   // rendered inline — backward-compatible with any legacy callsite).
   // Closes on scroll/resize rather than trying to reposition, matching
   // NoteActionsMenu's pattern.
+  //
+  // Anchors below the trigger by default. When the trigger sits near the
+  // viewport bottom and the menu wouldn't fit there, flips to anchor
+  // above the trigger via `bottom` instead of `top`. Also caps maxHeight
+  // to the available space so the menu can't extend past either viewport
+  // edge.
   const [menuPos, setMenuPos] = useState(null)
   useEffect(() => {
     if (!open || !triggerRef?.current) { setMenuPos(null); return }
     const rect = triggerRef.current.getBoundingClientRect()
-    setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    // Heuristic estimate of the menu's preferred height. The actual menu
+    // varies by which sections are rendered (bookmarks submenu, export
+    // section, etc.) — 300px is a conservative-but-not-paranoid guess
+    // that covers the common case (~6 menu items + a possible submenu).
+    const ESTIMATED_HEIGHT = 300
+    const spaceBelow = window.innerHeight - rect.bottom
+    const spaceAbove = rect.top
+    const flipAbove  = spaceBelow < ESTIMATED_HEIGHT && spaceAbove > spaceBelow
+    // Cap maxHeight to available space (minus an 8px breather) so the
+    // menu never extends past either viewport edge. The 70vh in the
+    // className still applies as a separate ceiling.
+    const maxHeight = Math.max(120, (flipAbove ? spaceAbove : spaceBelow) - 8)
+    setMenuPos(flipAbove
+      ? { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right, maxHeight }
+      : { top: rect.bottom + 4, right: window.innerWidth - rect.right, maxHeight })
     function dismiss() { onClose?.() }
     window.addEventListener('scroll', dismiss, true)
     window.addEventListener('resize', dismiss)
@@ -335,7 +355,7 @@ export default function ArticleActionsMenu({
           ? `fixed bg-neutral-800 border border-neutral-700 rounded shadow-xl ${Z.portaledMenu} w-[240px] max-h-[70vh] overflow-y-auto`
           : 'absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 w-[240px] max-h-[70vh] overflow-y-auto'
       }
-      style={triggerRef ? { top: menuPos.top, right: menuPos.right } : undefined}
+      style={triggerRef ? menuPos : undefined}
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
     >
