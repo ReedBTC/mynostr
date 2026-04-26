@@ -671,6 +671,31 @@ export default function NoteComposer({
     return othersTotal + effectiveUserPct > 100
   }, [zapSplits, userZapPct])
 
+  const handlePublish = useCallback(async () => {
+    if (onPublish) await onPublish()
+  }, [onPublish])
+
+  // Snapshot emitted upward to the parent hook so it can persist the draft
+  // and expose `publishable` for Publish-all. Parent hook already debounces
+  // localStorage writes, so this can fire on every change.
+  //
+  // Declared *before* handleExportJson because the export's _mynostr_form
+  // sidecar reads the snapshot — putting it after the export would TDZ-
+  // crash NoteComposer on every render via the useCallback deps array.
+  const snapshot = useMemo(() => ({
+    content,
+    zapSplits,
+    userZapPct: userZapPct === undefined ? null : userZapPct,
+    manualTags,
+    mentions: Object.fromEntries(mentions),
+    replyToInput,
+    replyTarget: null,
+    quoteInput,
+    quoteTarget: null,
+    relayOverride,
+    publishAt: initial.publishAt || null,
+  }), [content, zapSplits, userZapPct, manualTags, mentions, replyToInput, quoteInput, relayOverride, initial.publishAt])
+
   // Export current note as a kind 1 JSON file. Includes a
   // `_mynostr_form` sidecar with the full snapshot — relayOverride,
   // zapSplits, mentions, reply/quote inputs — so re-importing into
@@ -694,27 +719,6 @@ export default function NoteComposer({
     a.click()
     URL.revokeObjectURL(url)
   }, [expandedContent, finalTags, user?.pubkey, snapshot])
-
-  const handlePublish = useCallback(async () => {
-    if (onPublish) await onPublish()
-  }, [onPublish])
-
-  // Snapshot emitted upward to the parent hook so it can persist the draft
-  // and expose `publishable` for Publish-all. Parent hook already debounces
-  // localStorage writes, so this can fire on every change.
-  const snapshot = useMemo(() => ({
-    content,
-    zapSplits,
-    userZapPct: userZapPct === undefined ? null : userZapPct,
-    manualTags,
-    mentions: Object.fromEntries(mentions),
-    replyToInput,
-    replyTarget: null,
-    quoteInput,
-    quoteTarget: null,
-    relayOverride,
-    publishAt: initial.publishAt || null,
-  }), [content, zapSplits, userZapPct, manualTags, mentions, replyToInput, quoteInput, relayOverride, initial.publishAt])
 
   // Block publish when a reply/quote input has text but doesn't parse as a
   // note ID. Otherwise the note would go out silently missing its thread
