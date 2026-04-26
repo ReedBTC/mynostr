@@ -33,6 +33,11 @@ export default function BoostModal({ user, onClose, readOnly }) {
 
   const [anonymous, setAnonymous] = useState(!!readOnly)
   const [loading, setLoading] = useState(false)
+  // Mid-flow loading sub-state: tells the user *what* we're waiting on.
+  // Especially useful during the signer round-trip in attributed mode —
+  // a NIP-07 / bunker prompt may pop up in another window/app and the
+  // user wouldn't otherwise know to look for it.
+  const [loadingStep, setLoadingStep] = useState('')
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [paid, setPaid] = useState(false)
@@ -147,6 +152,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
     const trimmedComment = maxLen > 0 ? comment.slice(0, maxLen) : comment
 
     setLoading(true)
+    setLoadingStep('Fetching invoice…')
     try {
       // 1. Fetch invoice
       const { pr, verify } = await fetchLnurlInvoice(lnurlMeta.callback, sats * 1000, trimmedComment)
@@ -159,6 +165,15 @@ export default function BoostModal({ user, onClose, readOnly }) {
       //    (NIP-07 / bunker via NDK). Either way, publishes synchronously
       //    so the recipient's bot can correlate the moment the bolt11
       //    settles.
+      //
+      //    The signer round-trip in attributed mode can take 20s if the
+      //    user's signer is in another window/app (Primal app, Alby
+      //    popup, bunker). Surface a clear "approve" hint so the user
+      //    knows to look for the prompt rather than thinking the modal
+      //    is stuck.
+      setLoadingStep(anonymous
+        ? 'Publishing receipt…'
+        : 'Approve in your signer app…')
       const burner = anonymous ? generateBurnerKeypair() : null
       try {
         const { eventId: eid } = await publishDonationBoostagram({
@@ -185,6 +200,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
       setError(e.message)
     } finally {
       setLoading(false)
+      setLoadingStep('')
     }
   }
 
@@ -343,6 +359,18 @@ export default function BoostModal({ user, onClose, readOnly }) {
                 )}
 
                 {error && <p className="text-xs text-red-400">{error}</p>}
+
+                {/* Loading sub-state — visible while the modal is mid-flow.
+                    Particularly useful during the attributed-mode signer
+                    round-trip, when a NIP-07 / bunker prompt may pop up
+                    in another window/app and the user wouldn't otherwise
+                    know to look. */}
+                {loading && loadingStep && (
+                  <p className="text-xs text-amber-400 flex items-center gap-1.5">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                    {loadingStep}
+                  </p>
+                )}
 
                 <button
                   onClick={handleGenerate}
