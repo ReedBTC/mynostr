@@ -36,7 +36,7 @@ export const MODULES = [
   { id: 'notes',       label: 'Notes',       icon: '📝', status: 'live', description: 'Kind 1 short notes' },
   { id: 'articles',    label: 'Articles',    icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
   { id: 'events',      label: 'Events',      icon: '📅', status: 'soon', description: 'Kind 31923 events' },
-  { id: 'marketplace', label: 'Marketplace', icon: '🛒', status: 'soon', description: 'Kind 30402 listings' },
+  { id: 'marketplace', label: 'Marketplace', icon: '🛒', status: 'live', description: 'Kind 30402 listings' },
 ]
 
 const MODULE_COMPONENTS = {
@@ -53,7 +53,15 @@ const DEFAULT_MODULE = 'notes'
 // the sidebar nav — mirrors the old pre-URL-routing default. Visitors
 // (and owners clicking into someone else's page) get the bare feed URL
 // so the deep link is shareable and doesn't flash the composer.
-const MODULES_WITH_WRITE = new Set(['notes', 'articles'])
+//
+// Each entry maps moduleId → the URL subtab that surfaces its composer.
+// Notes/Articles call it "write"; the marketplace composer is "sell".
+const MODULE_WRITE_SUBTAB = {
+  notes:       'write',
+  articles:    'write',
+  marketplace: 'sell',
+}
+const MODULES_WITH_WRITE = new Set(Object.keys(MODULE_WRITE_SUBTAB))
 
 export default function App() {
   const [sessionUser, setSessionUser] = useState(null)
@@ -194,7 +202,7 @@ function HomeRoute({ sessionUser, onLogout }) {
     }
     const npub = sessionUser.npub
     if (MODULES_WITH_WRITE.has(id)) {
-      navigate(`/${npub}/${id}/write`)
+      navigate(`/${npub}/${id}/${MODULE_WRITE_SUBTAB[id]}`)
       return
     }
     navigate(`/${npub}/${id}`)
@@ -245,7 +253,7 @@ function ModuleRoute({ sessionUser, onLogout }) {
 
   const handleModuleChange = useCallback((id) => {
     if (viewingOwnPage && MODULES_WITH_WRITE.has(id)) {
-      navigate(`/${npub}/${id}/write`)
+      navigate(`/${npub}/${id}/${MODULE_WRITE_SUBTAB[id]}`)
       return
     }
     navigate(`/${npub}/${id}`)
