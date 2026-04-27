@@ -4,24 +4,35 @@ import { isSafeUrl } from '../../../../lib/utils.js'
 import { uploadToBlossom } from '../../../../lib/blossom.js'
 
 /**
- * WatchlistEditModal — small modal for editing the user's watchlist
- * collection metadata (title, summary, image).
+ * CollectionEditModal — create or edit a Gamma collection (kind 30405)
+ * with title, summary, and cover image.
  *
- * Defaults are seeded from the existing watchlist; "Watchlist" is the
- * fallback title for a fresh / unset watchlist. The cover image
- * accepts either a pasted URL or a local file uploaded to Blossom
- * (same 5 MB cap pattern as the Sell composer's photos).
+ * Two modes selected by `mode`:
+ *   • 'create' — pristine fields, "Save" calls `onSave({ title, summary, image })`
+ *     and the parent (CollectionsTab) calls `useCollections.createCollection`.
+ *   • 'edit'   — fields seeded from `initial*` props; "Save" calls
+ *     `onSave({ title, summary, image })` and the parent maps that to
+ *     `useCollections.updateMetadata(dTag, patch)`.
  *
- * Save calls onSave with the patch; modal stays open while the
- * publish is in flight (caller surfaces errors via the panel state),
- * closes on success.
+ * Cover image: pasted https URL or local file uploaded to Blossom
+ * (5 MB cap, same pattern as the Sell composer's photos).
  */
 const MAX_COVER_BYTES = 5 * 1024 * 1024
 
-export default function WatchlistEditModal({
+export default function CollectionEditModal({
+  mode = 'edit',                // 'create' | 'edit'
   initialTitle = '',
   initialSummary = '',
   initialImage = '',
+  // Title shown in the modal header. Defaults differ for create vs
+  // edit mode but parent can override (e.g. "Edit watchlist" for the
+  // d:watchlist case).
+  headerLabel,
+  // When this modal is launched from inside another modal (e.g. the
+  // AddToCollectionModal's "+ New collection" button) it must render
+  // ABOVE that parent. Pass `nested` so we use the higher z-layer.
+  // Defaults to false → standard modal layer.
+  nested = false,
   onClose,
   onSave,
 }) {
@@ -34,7 +45,6 @@ export default function WatchlistEditModal({
   const [uploading,   setUploading]   = useState(false)
   const fileInputRef = useRef(null)
 
-  // Esc closes when not in flight.
   useEffect(() => {
     function onKey(e) { if (e.key === 'Escape' && !saving && !uploading) onClose() }
     window.addEventListener('keydown', onKey)
@@ -62,9 +72,10 @@ export default function WatchlistEditModal({
   async function handleSave() {
     if (saving) return
     setError('')
-    // Trim & validate the image URL — empty is fine (clears the image),
-    // but a non-empty value must pass isSafeUrl so we don't store a
-    // javascript:/data: URL on the user's relays.
+    if (!title.trim()) {
+      setError('Title is required.')
+      return
+    }
     const trimmedImage = image.trim()
     if (trimmedImage && !isSafeUrl(trimmedImage) && !trimmedImage.startsWith('https://')) {
       setError('Image URL must start with https://')
@@ -87,21 +98,27 @@ export default function WatchlistEditModal({
   }
 
   const busy = saving || uploading
+  const titleLabel = headerLabel || (mode === 'create' ? 'New collection' : 'Edit collection')
+
+  // Z-layer: standard modal by default, nestedConfirm (z-[60]) when
+  // launched from inside another modal so we paint on top of the
+  // parent rather than under it.
+  const overlayClass = nested ? Z.nestedConfirm : Z.modal
+  const contentClass = nested ? Z.nestedConfirm : Z.modalContent
 
   return (
     <div
-      className={`fixed inset-0 ${Z.modal} flex items-center justify-center p-4`}
+      className={`fixed inset-0 ${overlayClass} flex items-center justify-center p-4`}
       onMouseDown={busy ? undefined : onClose}
       role="dialog"
       aria-modal="true"
     >
       <div
-        className={`bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl w-full max-w-md ${Z.modalContent}`}
+        className={`bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl w-full max-w-md ${contentClass}`}
         onMouseDown={e => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
-          <h2 className="text-sm font-semibold text-neutral-200">Edit watchlist</h2>
+          <h2 className="text-sm font-semibold text-neutral-200">{titleLabel}</h2>
           <button
             onClick={onClose}
             disabled={busy}
@@ -110,20 +127,19 @@ export default function WatchlistEditModal({
           >✕</button>
         </div>
 
-        {/* Body */}
         <div className="px-4 py-4 space-y-4">
-          <Field label="Title" hint="What you want this watchlist called.">
+          <Field label="Title" hint="What you want this collection called.">
             <input
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               maxLength={120}
-              placeholder="Watchlist"
+              placeholder={mode === 'create' ? 'My new collection' : 'Collection'}
               className="w-full px-3 py-2 text-sm rounded border border-neutral-800 bg-neutral-950 text-neutral-100 outline-none focus:border-purple-600 transition-colors"
             />
           </Field>
 
-          <Field label="Summary" hint="Optional. Short description of what's in this list.">
+          <Field label="Summary" hint="Optional. Short description of what's in this collection.">
             <input
               type="text"
               value={summary}
@@ -163,7 +179,6 @@ export default function WatchlistEditModal({
             </div>
             {uploadError && <p className="text-xs text-red-400 mt-1">{uploadError}</p>}
 
-            {/* Preview when we have a usable URL */}
             {image && isSafeUrl(image) && (
               <div className="mt-2 border border-neutral-800 rounded overflow-hidden">
                 <img
@@ -179,7 +194,6 @@ export default function WatchlistEditModal({
           {error && <p className="text-xs text-red-400">{error}</p>}
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-neutral-800">
           <button
             onClick={onClose}
@@ -193,7 +207,7 @@ export default function WatchlistEditModal({
             disabled={busy}
             className="text-xs px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white font-semibold transition-colors disabled:opacity-40"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? 'Saving…' : (mode === 'create' ? 'Create' : 'Save')}
           </button>
         </div>
       </div>

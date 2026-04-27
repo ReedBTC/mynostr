@@ -7,7 +7,6 @@ import {
   KIND_PRODUCT,
   buildProductCoord,
 } from '../../../../lib/gamma.js'
-import { useWatchlist } from '../../../../lib/useWatchlist.js'
 
 /**
  * Three-dot action menu for a product card.
@@ -34,9 +33,9 @@ export default function ProductActionsMenu({
   listing,
   sessionUser,
   triggerRef,
+  onOpenSavePicker,
 }) {
   const sessionPubkey = sessionUser?.pubkey || null
-  const { has, add, remove, pending } = useWatchlist(sessionPubkey)
 
   const [menuPos, setMenuPos] = useState(null)
   const [copied,  setCopied]  = useState(null)  // 'naddr' | 'url' | null
@@ -54,11 +53,22 @@ export default function ProductActionsMenu({
       ? { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right, maxHeight }
       : { top: rect.bottom + 4, right: window.innerWidth - rect.right, maxHeight })
     function dismiss() { onClose?.() }
+    // Close on outside click. Items inside the menu have onMouseDown
+    // stopPropagation so they don't reach this handler. Trigger button
+    // is also excluded so a second click on the same trigger doesn't
+    // close-then-reopen in one frame.
+    function onDocMouseDown(e) {
+      if (triggerRef.current?.contains(e.target)) return
+      if (e.target.closest('[data-product-actions-menu]')) return
+      onClose?.()
+    }
     window.addEventListener('scroll', dismiss, true)
     window.addEventListener('resize', dismiss)
+    document.addEventListener('mousedown', onDocMouseDown)
     return () => {
       window.removeEventListener('scroll', dismiss, true)
       window.removeEventListener('resize', dismiss)
+      document.removeEventListener('mousedown', onDocMouseDown)
     }
   }, [open, triggerRef, onClose])
 
@@ -77,7 +87,7 @@ export default function ProductActionsMenu({
     } catch { return null }
   })()
 
-  const inWatchlist  = aTag ? has(aTag) : false
+  // Save-to-collection requires a session signer + a valid product coord.
   const canWatchlist = !!sessionPubkey && !!aTag
 
   async function handleCopy(kind) {
@@ -87,13 +97,6 @@ export default function ProductActionsMenu({
     if (!ok) return
     setCopied(kind)
     setTimeout(() => { setCopied(null); onClose?.() }, 1200)
-  }
-
-  async function handleWatchlistToggle() {
-    if (!canWatchlist || pending) return
-    if (inWatchlist) await remove(aTag)
-    else             await add(aTag)
-    onClose?.()
   }
 
   const menuContent = (
@@ -108,22 +111,16 @@ export default function ProductActionsMenu({
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
     >
-      {/* Watchlist toggle — only when there's a session signer to use */}
+      {/* Save-to-collection picker — unified entry point. The
+          watchlist is just one collection in the picker; users who
+          want one-click "save to watchlist" use the WatchlistButton
+          on the product drawer instead. */}
       {canWatchlist && (
         <button
-          onClick={handleWatchlistToggle}
-          disabled={pending}
-          className={`w-full text-left px-3 py-2 text-xs transition-colors disabled:opacity-50 ${
-            inWatchlist
-              ? 'text-amber-300 hover:bg-amber-950/30'
-              : 'text-neutral-300 hover:bg-neutral-700'
-          }`}
+          onClick={() => { onOpenSavePicker?.(); onClose?.() }}
+          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
         >
-          {pending
-            ? '…'
-            : inWatchlist
-              ? '★ Remove from watchlist'
-              : '☆ Add to watchlist'}
+          Save to collection…
         </button>
       )}
 
@@ -173,5 +170,7 @@ export default function ProductActionsMenu({
     </div>
   )
 
+  // Picker is owned by the parent (ProductCard / ProductDrawer) so it
+  // survives this menu unmounting on close — see onOpenSavePicker.
   return triggerRef ? createPortal(menuContent, document.body) : menuContent
 }

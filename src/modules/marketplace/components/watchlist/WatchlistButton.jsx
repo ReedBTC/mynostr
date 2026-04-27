@@ -1,34 +1,34 @@
-import { useWatchlist } from '../../../../lib/useWatchlist.js'
-import { buildProductCoord } from '../../../../lib/gamma.js'
+import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
+import { buildProductCoord, WATCHLIST_D_TAG } from '../../../../lib/gamma.js'
 
 /**
  * WatchlistButton — toggles a product in/out of the session user's
- * kind 30405 watchlist (d:watchlist).
+ * d:watchlist collection.
  *
- * Hidden when there's no session user / no signer (read-only sessions
- * can't sign a kind 30405 mutation, so the button would be a footgun).
+ * Reads from SessionCollectionsContext (provided by MarketplaceModule)
+ * so every WatchlistButton on a product feed shares one fetch instead
+ * of firing N parallel queries on render.
  *
- * The hook is scoped to the session user's pubkey — adding/removing
- * always mutates *your* watchlist, regardless of which page or
- * product you're looking at. That's the right semantic for a personal
- * tracking list: when on Bob's product, "Add to watchlist" adds Bob's
- * product to Reed's watchlist (not Bob's).
+ * Hidden when no session pubkey or no provider available — read-only
+ * sessions can't sign a kind 30405 mutation, so the button would be
+ * a footgun.
  */
 export default function WatchlistButton({ listing, sessionUser }) {
   const sessionPubkey = sessionUser?.pubkey || null
-  const { has, add, remove, pending } = useWatchlist(sessionPubkey)
+  const ctx = useSessionCollections()
 
-  if (!sessionPubkey) return null
+  if (!sessionPubkey || !ctx) return null
 
+  const { containingCollections, addToCollection, removeFromCollection, pending } = ctx
   const aTag = buildProductCoord(listing.event.pubkey, listing.decoded.dTag)
   if (!aTag) return null
 
-  const inList = has(aTag)
+  const inList = containingCollections(aTag).includes(WATCHLIST_D_TAG)
 
   async function handleClick() {
     if (pending) return
-    if (inList) await remove(aTag)
-    else        await add(aTag)
+    if (inList) await removeFromCollection(WATCHLIST_D_TAG, aTag)
+    else        await addToCollection(WATCHLIST_D_TAG, aTag)
   }
 
   return (

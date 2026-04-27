@@ -8,6 +8,7 @@ import {
   formatAmount,
 } from '../../../../lib/currency.js'
 import ProductActionsMenu from './ProductActionsMenu.jsx'
+import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
 
 /**
  * ProductCard — feed entry for one listing.
@@ -38,6 +39,9 @@ export default function ProductCard({ listing, sessionUser, onClick }) {
   // invalid HTML and the article cards use this same split pattern.
   const menuTriggerRef = useRef(null)
   const [menuOpen, setMenuOpen] = useState(false)
+  // Picker is owned here (not in the menu) so closing the menu after
+  // the user clicks "Save to collection…" doesn't unmount it.
+  const [pickerOpen, setPickerOpen] = useState(false)
 
   return (
     <div
@@ -118,14 +122,30 @@ export default function ProductCard({ listing, sessionUser, onClick }) {
             <circle cx="13" cy="8" r="1.4" />
           </svg>
         </button>
-        <ProductActionsMenu
-          open={menuOpen}
-          onClose={() => setMenuOpen(false)}
+        {/* Lazy-mount the menu — keeping it always mounted means
+            ProductActionsMenu's useCollections fires per-card on
+            every feed render (10-20 simultaneous fetches when the
+            grid first paints, which thrashes relays). Mounting only
+            when open keeps the fetch storm out of the critical path. */}
+        {menuOpen && (
+          <ProductActionsMenu
+            open={menuOpen}
+            onClose={() => setMenuOpen(false)}
+            listing={listing}
+            sessionUser={sessionUser}
+            triggerRef={menuTriggerRef}
+            onOpenSavePicker={() => setPickerOpen(true)}
+          />
+        )}
+      </div>
+
+      {pickerOpen && (
+        <AddToCollectionModal
           listing={listing}
           sessionUser={sessionUser}
-          triggerRef={menuTriggerRef}
+          onClose={() => setPickerOpen(false)}
         />
-      </div>
+      )}
     </div>
   )
 }

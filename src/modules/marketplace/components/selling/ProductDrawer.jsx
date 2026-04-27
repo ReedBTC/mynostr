@@ -14,6 +14,7 @@ import {
 import { deleteProduct } from '../../../../lib/deleteProduct.js'
 import { KIND_PRODUCT } from '../../../../lib/gamma.js'
 import WatchlistButton from '../watchlist/WatchlistButton.jsx'
+import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
 
 /**
  * ProductDrawer — full detail view for one listing, opened from a
@@ -458,22 +459,42 @@ function ExternalLinks({ plebeianUrl, shopstrUrl, isOwner, listing, sessionUser 
         </div>
       </div>
 
-      {/* Watchlist + zap row. Watchlist mutates the SESSION user's
-          watchlist (not the listing-author's), so the gate is on
-          having a signer — not on whether you're "the owner" of the
-          page. Lets you watchlist your own listings too, which is a
-          minor edge case but harmless. Zap is still Phase-deferred. */}
+      {/* Watchlist quick toggle + Save-to-collection picker + zap.
+          Quick toggle is the one-click case (the watchlist is one
+          collection among many). The picker lets users add to any
+          named collection. Both mutate the SESSION user's
+          collections. Zap is Phase-deferred. */}
       {sessionUser?.pubkey && (
-        <div className="flex items-center gap-2 flex-wrap">
-          <WatchlistButton listing={listing} sessionUser={sessionUser} />
-          <button
-            disabled
-            title="Coming soon"
-            className="text-xs px-3 py-1.5 rounded border border-neutral-800 text-neutral-600 cursor-not-allowed"
-          >
-            ⚡ Zap author
-          </button>
-        </div>
+        <ProductDrawerActions listing={listing} sessionUser={sessionUser} />
+      )}
+    </div>
+  )
+}
+
+function ProductDrawerActions({ listing, sessionUser }) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <WatchlistButton listing={listing} sessionUser={sessionUser} />
+      <button
+        onClick={() => setPickerOpen(true)}
+        className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 transition-colors"
+      >
+        Save to collection…
+      </button>
+      <button
+        disabled
+        title="Coming soon"
+        className="text-xs px-3 py-1.5 rounded border border-neutral-800 text-neutral-600 cursor-not-allowed"
+      >
+        ⚡ Zap author
+      </button>
+      {pickerOpen && (
+        <AddToCollectionModal
+          listing={listing}
+          sessionUser={sessionUser}
+          onClose={() => setPickerOpen(false)}
+        />
       )}
     </div>
   )

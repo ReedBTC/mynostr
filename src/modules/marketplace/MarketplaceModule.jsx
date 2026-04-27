@@ -19,12 +19,14 @@ import { useNavigate } from 'react-router-dom'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { useSellDrafts } from '../../lib/useSellDrafts.js'
+import { useCollections } from '../../lib/useCollections.js'
+import { SessionCollectionsContext } from '../../lib/sessionCollectionsContext.jsx'
 import { eventToForm, formToEventTemplate, isFormMeaningful } from '../../lib/sellForm.js'
 import { titleToSlug } from '../../lib/utils.js'
 import SellComposer from './components/sell/SellComposer.jsx'
 import SellDraftsTray, { fetchListingForLoader } from './components/sell/SellDraftsTray.jsx'
 import SellingTab from './components/selling/SellingTab.jsx'
-import WatchlistTab from './components/watchlist/WatchlistTab.jsx'
+import CollectionsTab from './components/collections/CollectionsTab.jsx'
 
 export default function MarketplaceModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
@@ -38,6 +40,14 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
   // see the Sell tab at all but the hook needs to be called
   // unconditionally for hook-rule compliance.
   const drafts = useSellDrafts(ownerPubkey)
+
+  // Session user's collections — single source of truth for every
+  // collection-mutation surface in the marketplace (WatchlistButton,
+  // the three-dot menu's Save-to-collection picker, etc.). Without
+  // this hoist, each ProductCard's menu would fire its own
+  // useCollections fetch on render — N cards × 1 fetch = a relay
+  // storm that hits the timeout. See sessionCollectionsContext.jsx.
+  const sessionCollections = useCollections(sessionUser?.pubkey || null)
 
   const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
 
@@ -219,6 +229,7 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
       ]
 
   return (
+    <SessionCollectionsContext.Provider value={sessionCollections}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar ── */}
@@ -292,7 +303,7 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
           />
         )}
         {moduleTab === 'collections' && (
-          <WatchlistTab
+          <CollectionsTab
             user={user}
             sessionUser={sessionUser}
             isOwner={isOwner}
@@ -302,6 +313,7 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
           description="Discover listings across marketplace relays. Tag · location · price · NSFW filters." />}
       </div>
     </div>
+    </SessionCollectionsContext.Provider>
   )
 }
 
