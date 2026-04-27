@@ -95,6 +95,7 @@ export default function SellingTab({
                   listing={l}
                   sessionUser={sessionUser}
                   onClick={() => setOpenListing(l)}
+                  onEdit={onEdit}
                 />
               ))}
             </div>

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { nip19 } from 'nostr-tools'
 import { Z } from '../../../../lib/zIndex.js'
-import { copyToClipboard } from '../../../../lib/utils.js'
+import { copyToClipboard, titleToSlug } from '../../../../lib/utils.js'
 import {
   KIND_PRODUCT,
   buildProductCoord,
@@ -34,8 +34,14 @@ export default function ProductActionsMenu({
   sessionUser,
   triggerRef,
   onOpenSavePicker,
+  onEdit,
 }) {
   const sessionPubkey = sessionUser?.pubkey || null
+  // Show Edit only when the session user authored this listing — kind
+  // 30402 is replaceable per (kind, pubkey, dTag), so editing only makes
+  // sense for the original author. Mirrors the gate on the drawer's
+  // owner-action row.
+  const canEdit = !!onEdit && !!sessionPubkey && sessionPubkey === listing.event.pubkey
 
   const [menuPos, setMenuPos] = useState(null)
   const [copied,  setCopied]  = useState(null)  // 'naddr' | 'url' | null
@@ -99,6 +105,28 @@ export default function ProductActionsMenu({
     setTimeout(() => { setCopied(null); onClose?.() }, 1200)
   }
 
+  // Download the raw kind-30402 event JSON. Same shape the Sell
+  // composer's Multi-JSON Import accepts, so a downloaded listing
+  // round-trips back into a draft cleanly. Available to anyone — the
+  // event is already public on relays; this is a convenience download.
+  function handleExport() {
+    try {
+      const json = JSON.stringify(listing.event, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url  = URL.createObjectURL(blob)
+      const slug = titleToSlug(listing.decoded?.title || listing.decoded?.dTag || 'listing') || 'listing'
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${slug}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // Serialization should never fail on a fetched event, but swallow
+      // rather than blow up the menu on a freak input.
+    }
+    onClose?.()
+  }
+
   const menuContent = (
     <div
       data-product-actions-menu="true"
@@ -111,6 +139,17 @@ export default function ProductActionsMenu({
       onMouseDown={e => e.stopPropagation()}
       onClick={e => e.stopPropagation()}
     >
+      {/* Owner-only — load the listing into the Sell composer as a
+          fresh draft. Same handler the drawer's Edit button calls. */}
+      {canEdit && (
+        <button
+          onClick={() => { onEdit(listing); onClose?.() }}
+          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+        >
+          Edit listing…
+        </button>
+      )}
+
       {/* Save-to-collection picker — unified entry point. The
           watchlist is just one collection in the picker; users who
           want one-click "save to watchlist" use the WatchlistButton
@@ -118,7 +157,7 @@ export default function ProductActionsMenu({
       {canWatchlist && (
         <button
           onClick={() => { onOpenSavePicker?.(); onClose?.() }}
-          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+          className={`w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors ${canEdit ? 'border-t border-neutral-700' : ''}`}
         >
           Save to collection…
         </button>
@@ -167,6 +206,16 @@ export default function ProductActionsMenu({
           View on Shopstr ↗
         </a>
       )}
+
+      {/* Export — raw kind-30402 event JSON. Always available; no
+          session required. */}
+      <div className="border-t border-neutral-700" />
+      <button
+        onClick={handleExport}
+        className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+      >
+        Export JSON
+      </button>
     </div>
   )
 

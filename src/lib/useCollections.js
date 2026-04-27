@@ -345,7 +345,9 @@ export function useCollections(pubkey) {
     const ndk = getNDK()
     const activePubkey = ndk?.activeUser?.pubkey
     if (!activePubkey || activePubkey !== pubkey) {
-      return { ok: false, error: 'You can only delete your own collections.' }
+      const errMsg = 'You can only delete your own collections.'
+      setError(errMsg)
+      return { ok: false, error: errMsg }
     }
     setPending(true)
     setError(null)

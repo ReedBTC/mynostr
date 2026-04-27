@@ -36,6 +36,31 @@ import { encodeProduct, KIND_PRODUCT } from './gamma.js'
  * Throws on encode failure (missing required fields) or sign timeout, or
  * when an enabled relay override has no usable wss:// URLs.
  */
+// Monotonic-created_at guard. Two listings published back-to-back can
+// otherwise share a Unix-second timestamp, which makes the My Products
+// sort order non-deterministic at the tie. The Plebeian/Shopstr feeds
+// hit the same problem from the read side — they sort by created_at
+// and have no clean tiebreak. Stamping each successive publish at
+// max(now, lastUsed + 1) keeps the order strict at the cost of pushing
+// future-dated events at most a few seconds ahead of wallclock — well
+// under any relay's future-timestamp rejection threshold.
+//
+// Hard cap: don't push more than 60 seconds into the future even at
+// very high publish rates. Some strict relays reject events with
+// future-dated created_at; capping at +60s keeps us comfortably under
+// any realistic threshold while still preserving order at typical
+// batch sizes (12–30 listings publish in well under 60 wallclock
+// seconds even on fast signers).
+let _lastPublishedAt = 0
+const FUTURE_CAP_SECONDS = 60
+
+// Reset the monotonic counter — called from resetNDK on logout/account
+// switch so the next user's first publish doesn't inherit the prior
+// user's timestamp drift.
+export function resetPublishedAtCounter() {
+  _lastPublishedAt = 0
+}
+
 export async function publishProduct(form) {
   const ndk = getNDK()
   const { kind, content, tags } = encodeProduct(form)
@@ -43,10 +68,24 @@ export async function publishProduct(form) {
   // Stamp `client` so other clients can attribute. Mirrors publishArticle.
   const finalTags = tags.concat([['client', 'mynostr']])
 
+  const now = Math.floor(Date.now() / 1000)
+  let ts = Math.max(now, _lastPublishedAt + 1)
+  if (ts > now + FUTURE_CAP_SECONDS) {
+    // Counter has drifted past the safety cap — fall back to wall-
+    // clock now and accept a possible same-second tie. Better a tied
+    // ordering than a relay-side rejection for stale future-dating.
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn(`[publishProduct] monotonic counter capped (${ts - now}s ahead of now); using wallclock`)
+    }
+    ts = now
+  }
+  _lastPublishedAt = ts
+
   const event = new NDKEvent(ndk)
   event.kind = kind
   event.content = content
-  event.created_at = Math.floor(Date.now() / 1000)
+  event.created_at = ts
   event.tags = finalTags
 
   // Resolve relay set — prefer explicit override when supplied, else

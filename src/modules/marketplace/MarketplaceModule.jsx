@@ -23,6 +23,7 @@ import { useCollections } from '../../lib/useCollections.js'
 import { SessionCollectionsContext } from '../../lib/sessionCollectionsContext.jsx'
 import { eventToForm, formToEventTemplate, isFormMeaningful } from '../../lib/sellForm.js'
 import { titleToSlug } from '../../lib/utils.js'
+import { buildProductCoord } from '../../lib/gamma.js'
 import SellComposer from './components/sell/SellComposer.jsx'
 import SellDraftsTray, { fetchListingForLoader } from './components/sell/SellDraftsTray.jsx'
 import SellingTab from './components/selling/SellingTab.jsx'
@@ -110,6 +111,16 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
         if (!ev || typeof ev !== 'object') throw new Error('not a JSON object')
         const snapshot = eventToForm(ev)
         if (!snapshot) throw new Error('not a kind 30402 event')
+        // Strip the dTag — JSON import is "use this as a template for a
+        // new listing." dTag is *identity* (kind 30402 is replaceable per
+        // pubkey+dTag), not content. Carrying it forward through a
+        // template / duplicate-edit workflow causes every imported
+        // draft to publish to the same coordinate, overwriting each
+        // other. The "edit existing listing" path is the three-dot menu
+        // / load-from-Nostr action, both of which deliberately keep
+        // dTag — those are explicit "replace this on Nostr" intents.
+        snapshot.dTag = ''
+        snapshot.linkedListingTitle = ''
         drafts.createDraft({ snapshot })
         result.imported++
       } catch (e) {
@@ -164,6 +175,11 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
       const ev = JSON.parse(text)
       const snapshot = eventToForm(ev)
       if (!snapshot) return { ok: false, error: 'Not a kind 30402 listing event.' }
+      // Strip dTag — see handleImportDrafts above. JSON import is
+      // template-style "use this as a starting point," not "replace
+      // the original on Nostr." Edit listing / load-from-Nostr remain
+      // the dTag-preserving paths.
+      snapshot.dTag = ''
       drafts.replaceSnapshot(drafts.currentDraft.id, snapshot)
       return { ok: true }
     } catch (e) {
@@ -209,9 +225,20 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
     if (!isOwner || !listing?.event) return
     const snapshot = eventToForm(listing.event)
     if (!snapshot) return
-    drafts.createDraft({ snapshot })
+    // Pre-fill the publishCollections selection with whichever of the
+    // user's collections currently contain this listing — so the
+    // composer's Advanced "publish into collections" multi-select
+    // reflects current state and toggling-then-publishing produces the
+    // expected diff (add/remove against the kind-30405 a-tags).
+    const aTag = buildProductCoord(listing.event.pubkey, listing.decoded?.dTag)
+    const currentMemberships = aTag
+      ? sessionCollections.containingCollections(aTag)
+      : []
+    drafts.createDraft({
+      snapshot: { ...snapshot, publishCollections: currentMemberships },
+    })
     if (npub) navigate(`/${npub}/marketplace/sell`)
-  }, [isOwner, drafts, npub, navigate])
+  }, [isOwner, drafts, npub, navigate, sessionCollections])
 
   const productsLabel    = isOwner ? 'My Products'    : 'Products'
   const collectionsLabel = isOwner ? 'My Collections' : 'Collections'
@@ -272,6 +299,9 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
               onImportDrafts={handleImportDrafts}
               onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={drafts.publishAll}
+              onMoveDraft={drafts.moveDraft}
+              onFindDuplicateDTags={drafts.findDuplicateDTags}
+              onRegenerateDTags={drafts.regenerateDTags}
               isMobile={isMobile}
               isMobileOpen={draftsMobileOpen}
               onMobileClose={() => setDraftsMobileOpen(false)}

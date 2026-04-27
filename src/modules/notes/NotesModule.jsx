@@ -78,6 +78,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
     deleteDraft,
     deleteAllDrafts,
     clearDraft,
+    moveDraft,
     publishOne,
     publishAll,
   } = useNoteDrafts(isOwner ? sessionUser?.pubkey : null)
@@ -301,6 +302,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onImportDrafts={handleImportDrafts}
               onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={publishAll}
+              onMoveDraft={moveDraft}
             />
           )}
           {currentDraft && (
@@ -330,6 +332,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onImportDrafts={handleImportDrafts}
               onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={publishAll}
+              onMoveDraft={moveDraft}
             />
           )}
         </div>

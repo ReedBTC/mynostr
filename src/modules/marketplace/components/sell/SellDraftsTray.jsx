@@ -90,7 +90,7 @@ function previewPrice(snapshot) {
   return formatAmount(p.amount, p.currency || 'SATS')
 }
 
-function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
+function DraftRow({ draft, isCurrent, index, total, onSelect, onDelete, onMove }) {
   // Inline two-click confirm — same UX shape as Notes DraftRow. Auto-
   // resets after 4s so a stray click doesn't sit armed forever.
   const [pending, setPending] = useState(false)
@@ -136,6 +136,27 @@ function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
           : 'border border-transparent hover:bg-neutral-800/60'
       }`}
     >
+      {/* Reorder arrows — left edge of the row, far from the trash icon
+          to avoid mis-clicks. Stacked vertically with bigger hit
+          targets so they're easy to tap. Same hover-revealed visibility
+          as the trash on desktop; always tappable on mobile. */}
+      <div className="flex flex-col items-center justify-center shrink-0 md:opacity-0 md:group-hover:opacity-100 transition-opacity self-stretch">
+        <button
+          onClick={e => { e.stopPropagation(); onMove?.(-1) }}
+          disabled={index === 0}
+          title="Move up"
+          aria-label="Move up in publish queue"
+          className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-1.5 py-0.5 leading-none text-sm"
+        >▲</button>
+        <button
+          onClick={e => { e.stopPropagation(); onMove?.(1) }}
+          disabled={index === total - 1}
+          title="Move down"
+          aria-label="Move down in publish queue"
+          className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-1.5 py-0.5 leading-none text-sm"
+        >▼</button>
+      </div>
+
       {/* Thumbnail */}
       <div className="w-9 h-9 rounded bg-neutral-800 border border-neutral-700 flex-shrink-0 overflow-hidden flex items-center justify-center text-neutral-600 text-sm">
         {cover ? (
@@ -153,6 +174,7 @@ function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1">
           <StatusDot status={draft.status} />
+          <span className="text-[10px] text-neutral-500 tabular-nums shrink-0">{index + 1}.</span>
           <p className={`text-xs truncate flex-1 ${isCurrent ? 'text-neutral-100' : 'text-neutral-400'}`}>
             {previewTitle(draft.snapshot)}
           </p>
@@ -188,12 +210,16 @@ export default function SellDraftsTray({
   onImportDrafts,
   onExportAllDrafts,
   onPublishAll,
+  onMoveDraft,
+  onFindDuplicateDTags,
+  onRegenerateDTags,
   isMobileOpen = false,
   onMobileClose,
   isMobile = false,
 }) {
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false)
   const [confirmClearOpen,   setConfirmClearOpen]   = useState(false)
+  const [dupDTagInfo,        setDupDTagInfo]        = useState(null)  // { dups: [...] } | null
   const [importStatus, setImportStatus] = useState(null)
   const [exportStatus, setExportStatus] = useState(null)
   const [importing, setImporting] = useState(false)
@@ -207,12 +233,39 @@ export default function SellDraftsTray({
 
   function requestPublishAll() {
     if (publishable.length === 0 || anyPublishing) return
+    // Detect dup-dTag collisions BEFORE the confirm modal — kind 30402
+    // is replaceable per (kind, pubkey, dTag), so two drafts sharing a
+    // dTag would silently overwrite each other on publish. The recovery
+    // path is to regenerate dTags (strip them) so each gets a fresh one
+    // at publish; we offer that as a one-click fix from the dup modal.
+    const dups = onFindDuplicateDTags ? onFindDuplicateDTags() : []
+    if (dups.length > 0) {
+      setDupDTagInfo({ dups })
+      return
+    }
     setConfirmPublishOpen(true)
   }
   function doPublishAll() {
     setConfirmPublishOpen(false)
     onPublishAll()
     if (isMobile && onMobileClose) onMobileClose()
+  }
+  function regenerateAndPublish() {
+    if (!dupDTagInfo || !onRegenerateDTags) return
+    // Strip dTags from every draft involved in the collision so they
+    // all publish as fresh listings. Including the "first" draft of
+    // each group too — preserving identity for one of them is risky
+    // because we can't know which one the user actually intended to
+    // be the "real" edit of an existing listing.
+    const ids = []
+    for (const group of dupDTagInfo.dups) {
+      for (const d of group.drafts) ids.push(d.id)
+    }
+    onRegenerateDTags(ids)
+    setDupDTagInfo(null)
+    // Don't auto-publish — the user gets one more confirm step now
+    // that the dups are resolved.
+    setConfirmPublishOpen(true)
   }
   function requestClearAll() {
     if (!canClearAll || anyPublishing) return
@@ -262,16 +315,19 @@ export default function SellDraftsTray({
       </div>
 
       <div className="flex-1 overflow-y-auto px-1.5 py-1.5 space-y-0.5">
-        {drafts.map(d => (
+        {drafts.map((d, i) => (
           <DraftRow
             key={d.id}
             draft={d}
+            index={i}
+            total={drafts.length}
             isCurrent={d.id === currentDraftId}
             onSelect={() => {
               onSelectDraft(d.id)
               if (isMobile && onMobileClose) onMobileClose()
             }}
             onDelete={() => onDeleteDraft(d.id)}
+            onMove={(delta) => onMoveDraft?.(d.id, delta)}
           />
         ))}
       </div>
@@ -382,6 +438,13 @@ export default function SellDraftsTray({
             onConfirm={doClearAll}
           />
         )}
+        {dupDTagInfo && (
+          <DupDTagDialog
+            info={dupDTagInfo}
+            onCancel={() => setDupDTagInfo(null)}
+            onRegenerate={regenerateAndPublish}
+          />
+        )}
       </>
     )
   }
@@ -408,7 +471,79 @@ export default function SellDraftsTray({
           onConfirm={doClearAll}
         />
       )}
+      {dupDTagInfo && (
+        <DupDTagDialog
+          info={dupDTagInfo}
+          onCancel={() => setDupDTagInfo(null)}
+          onRegenerate={regenerateAndPublish}
+        />
+      )}
     </aside>
+  )
+}
+
+// Specialized confirm for the duplicate-dTag failure mode. Different
+// shape from ConfirmDialog because we want to enumerate the affected
+// drafts and explain why this is a problem before offering the fix.
+function DupDTagDialog({ info, onCancel, onRegenerate }) {
+  const totalDrafts = info.dups.reduce((n, g) => n + g.drafts.length, 0)
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+      onMouseDown={onCancel}
+    >
+      <div
+        className="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl w-full max-w-md p-4"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-medium text-neutral-100 mb-1.5">
+          Cannot publish — drafts share Nostr identity
+        </h3>
+        <p className="text-xs text-neutral-400 mb-3">
+          {totalDrafts} drafts share a <code className="text-neutral-300">d</code>-tag
+          with another draft. Kind 30402 is replaceable per
+          (kind, pubkey, dTag) — publishing them all would silently
+          overwrite each other on Nostr, leaving only the last one
+          to publish.
+        </p>
+        <div className="border border-neutral-800 rounded p-2 mb-3 max-h-44 overflow-y-auto space-y-2">
+          {info.dups.map((group, gi) => (
+            <div key={gi} className="text-xs space-y-1">
+              <p className="text-[10px] uppercase tracking-wide text-neutral-500">
+                Sharing dTag <code className="font-mono normal-case">{group.dTag.slice(0, 24)}{group.dTag.length > 24 ? '…' : ''}</code>
+              </p>
+              <ul className="space-y-0.5 pl-2">
+                {group.drafts.map(d => (
+                  <li key={d.id} className="text-neutral-300 truncate">
+                    • {d.title || 'Untitled'}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <p className="text-[11px] text-neutral-500 mb-4 leading-relaxed">
+          Common cause: importing the same JSON template multiple times
+          with the dTag preserved. Regenerate clears each affected
+          draft's dTag so they each publish as a distinct listing with
+          a fresh slug-style identity.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onRegenerate}
+            className="text-xs px-3 py-1.5 rounded text-white font-semibold bg-purple-600 hover:bg-purple-500 transition-colors"
+          >
+            Regenerate dTags & continue
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

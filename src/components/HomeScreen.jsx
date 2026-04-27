@@ -153,7 +153,7 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
         <footer className="border-t border-neutral-800 pt-6 text-[11px] text-neutral-600 space-y-2">
           <div>
             <a
-              href="https://github.com/Reeds-Agent-Team/mynostr"
+              href="https://github.com/ReedBTC/mynostr"
               target="_blank"
               rel="noopener noreferrer"
               className="hover:text-neutral-400 transition-colors"

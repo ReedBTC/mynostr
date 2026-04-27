@@ -109,9 +109,16 @@ export default function PhotosTab({ form, updateForm }) {
         <button
           onClick={() => pushImage(urlDraft.trim())}
           disabled={!urlDraft.trim() || atCap}
-          className="text-xs px-3 py-2 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors"
+          // When a URL is drafted, switch to a primary purple style so
+          // the user has a clear "now click here" call-to-action — pasting
+          // a URL alone is easy to mistake for "image added."
+          className={
+            urlDraft.trim() && !atCap
+              ? 'text-xs px-3 py-2 rounded border border-purple-500 bg-purple-600 text-white hover:bg-purple-500 hover:border-purple-400 transition-colors font-medium'
+              : 'text-xs px-3 py-2 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 disabled:opacity-40 transition-colors'
+          }
         >
-          Add URL
+          Add image
         </button>
         <button
           onClick={() => fileInputRef.current?.click()}

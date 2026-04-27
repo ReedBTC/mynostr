@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emptySellForm, formToEventTemplate } from '../../../../lib/sellForm.js'
-import { decodeProduct } from '../../../../lib/gamma.js'
+import { decodeProduct, buildProductCoord } from '../../../../lib/gamma.js'
+import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
 import ProductDrawer from '../selling/ProductDrawer.jsx'
 import ListingTab from './ListingTab.jsx'
 import PhotosTab from './PhotosTab.jsx'
 import ShippingTab from './ShippingTab.jsx'
 import AdvancedSection from './AdvancedSection.jsx'
+import LinkExistingListingModal from './LinkExistingListingModal.jsx'
 
 /**
  * SellComposer — kind 30402 listing publisher.
@@ -108,6 +110,16 @@ export default function SellComposer({
     }))
   }, [draft, onUpdateDraft])
 
+  const sessionCollectionsCtx = useSessionCollections()
+  // Collection-sync progress for the success panel. While `active` is
+  // true, the panel shows a "Syncing collections (M of N)…" indicator
+  // and disables the "New listing" dismiss button — without this, the
+  // user could ack the success state and trigger draft cleanup while
+  // background kind-30405 republishes are still firing signer prompts
+  // from an unmounted code path. NIP-46 bunker users especially want
+  // those prompts grouped with the publish flow, not after.
+  const [collectionSync, setCollectionSync] = useState({ active: false, completed: 0, total: 0 })
+
   const handlePublish = useCallback(async () => {
     if (!draft) return
     if (!form.title?.trim()) {
@@ -121,8 +133,52 @@ export default function SellComposer({
       return
     }
     setValidationError('')
-    await onPublish(draft.id)
-  }, [draft, form, onPublish])
+    const result = await onPublish(draft.id)
+    // Sync the listing's kind-30405 memberships against the user's
+    // selected collections. publishOne returns the resolved dTag (the
+    // form's dTag isn't visible in this closure since it was generated
+    // mid-publish). The success panel listens to `collectionSync` so
+    // the user sees a "Syncing collections (M of N)" indicator and
+    // can't dismiss until the work is done.
+    if (result?.ok && result.dTag && pubkey && sessionCollectionsCtx) {
+      const aTag = buildProductCoord(pubkey, result.dTag)
+      if (aTag) {
+        const desired = new Set(form.publishCollections || [])
+        const current = new Set(sessionCollectionsCtx.containingCollections(aTag))
+        const toAdd    = [...desired].filter(d => !current.has(d))
+        const toRemove = [...current].filter(d => !desired.has(d))
+        const total = toAdd.length + toRemove.length
+        if (total > 0) {
+          setCollectionSync({ active: true, completed: 0, total })
+          ;(async () => {
+            let done = 0
+            for (const dTag of toAdd) {
+              try {
+                // eslint-disable-next-line no-await-in-loop
+                await sessionCollectionsCtx.addToCollection(dTag, aTag)
+              } catch {
+                // Per-collection failures don't block the rest; the
+                // user can fix from the Collections tab if needed.
+              }
+              done++
+              setCollectionSync({ active: true, completed: done, total })
+            }
+            for (const dTag of toRemove) {
+              try {
+                // eslint-disable-next-line no-await-in-loop
+                await sessionCollectionsCtx.removeFromCollection(dTag, aTag)
+              } catch {
+                // Same — degraded but not broken.
+              }
+              done++
+              setCollectionSync({ active: true, completed: done, total })
+            }
+            setCollectionSync({ active: false, completed: total, total })
+          })()
+        }
+      }
+    }
+  }, [draft, form, onPublish, pubkey, sessionCollectionsCtx])
 
   // Build the synthetic { event, decoded } shape that ProductDrawer
   // expects from the current draft. Recomputed when `previewOpen`
@@ -320,10 +376,21 @@ export default function SellComposer({
           {published ? (
             <PublishedPanel
               result={draft.publishResult}
+              collectionSync={collectionSync}
               onAck={() => onDeleteDraft(draft.id)}
             />
           ) : (
             <>
+              {/* Publish-identity banner — makes the dTag state visible
+                  so users know whether this draft will create a new
+                  listing or replace an existing one on Nostr. The two
+                  states map directly to form.dTag: empty → new, set →
+                  replace. Unlink/Link actions flip between them. */}
+              <PublishIdentityBanner
+                form={form}
+                updateForm={updateForm}
+                sessionUser={sessionUser}
+              />
               {activeTab === 'listing' && (
                 <>
                   <ListingTab key={`${draft.id}-${draft.replaceVersion || 0}`} form={form} updateForm={updateForm} updatePrice={updatePrice} />
@@ -429,10 +496,11 @@ export default function SellComposer({
 // event id (Plebeian's URL fingerprint), shareable view links, and a
 // relay count. The "New listing" button calls onAck — wired by the
 // parent to deleteDraft, mirroring the Notes composer's pattern.
-function PublishedPanel({ result, onAck }) {
+function PublishedPanel({ result, collectionSync, onAck }) {
   const naddr   = result?.naddr || ''
   const eventId = result?.eventId || ''
   const relays  = result?.relays || []
+  const syncing = collectionSync?.active
 
   const [copied, setCopied] = useState(false)
   const copyTimerRef = useRef(null)
@@ -514,11 +582,40 @@ function PublishedPanel({ result, onAck }) {
         </p>
       )}
 
+      {/* Collection-sync indicator. Active while the post-publish
+          kind-30405 republishes are in flight (each one needs a
+          signer round-trip). Disables the dismiss button so the user
+          doesn't ack-and-navigate-away into background signer prompts. */}
+      {collectionSync && collectionSync.total > 0 && (
+        <div className="mt-3 flex items-center gap-2 text-[11px]">
+          {syncing ? (
+            <>
+              <span
+                className="inline-block w-3 h-3 rounded-full border-2 border-neutral-700 border-t-purple-500 animate-spin"
+                aria-hidden
+              />
+              <span className="text-neutral-400">
+                Syncing collections ({collectionSync.completed} of {collectionSync.total})…
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="inline-block w-3 h-3 rounded-full bg-green-500" aria-hidden />
+              <span className="text-neutral-400">
+                Collections synced ({collectionSync.total} updated).
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
       <button
         onClick={onAck}
-        className="mt-4 w-full py-2 bg-purple-600 hover:bg-purple-500 rounded text-sm text-white font-medium transition-colors"
+        disabled={syncing}
+        title={syncing ? 'Wait for collection sync to complete' : undefined}
+        className="mt-4 w-full py-2 bg-purple-600 hover:bg-purple-500 rounded text-sm text-white font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-purple-600"
       >
-        New listing
+        {syncing ? 'Syncing collections…' : 'New listing'}
       </button>
     </div>
   )
@@ -552,5 +649,120 @@ function PreviewEmptyState({ onClose }) {
         </button>
       </div>
     </div>
+  )
+}
+
+/**
+ * Renders the draft's publish-identity state. Two modes:
+ *   • dTag empty → "Will publish as new listing" (green dot). Offers
+ *     a "Link to existing…" button that opens the picker so the user
+ *     can convert this draft into a replace-existing flow.
+ *   • dTag set   → "Will replace existing listing" (blue dot). Shows
+ *     the dTag truncated and offers an "Unlink" button that strips
+ *     the dTag, converting the draft back to a new-listing flow.
+ *
+ * This is the explicit visibility surface for the dTag concept —
+ * before this banner, the dTag was an invisible piece of state that
+ * could silently cause publishes to overwrite each other. With it,
+ * users always know which mode they're in and can flip intent.
+ */
+function PublishIdentityBanner({ form, updateForm, sessionUser }) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const dTag = form.dTag || ''
+
+  function handleUnlink() {
+    updateForm({ dTag: '', linkedListingTitle: '' })
+  }
+
+  function handleLink({ dTag: pickedDTag, title: pickedTitle }) {
+    if (pickedDTag) {
+      updateForm({
+        dTag: pickedDTag,
+        // Stamp the linked listing's title at link-time. Independent of
+        // form.title so editing the draft's title doesn't relabel the
+        // banner — the user always sees which existing listing they're
+        // about to replace, regardless of what they're renaming it to.
+        linkedListingTitle: pickedTitle || '',
+      })
+    }
+    setPickerOpen(false)
+  }
+
+  if (dTag) {
+    const dTagDisplay = dTag.length > 32 ? dTag.slice(0, 32) + '…' : dTag
+    // Prefer the locked linked-listing title (stamped at link-time);
+    // fall back to form.title for legacy drafts that predate this
+    // field, then to "(untitled)" as a last resort.
+    const titleDisplay = form.linkedListingTitle?.trim()
+      || form.title?.trim()
+      || '(untitled)'
+    return (
+      <>
+        <div className="flex items-center gap-2 px-3 py-2 rounded border border-blue-900/50 bg-blue-950/25">
+          <span className="inline-block w-2 h-2 rounded-full bg-blue-400 flex-shrink-0" aria-hidden />
+          <div className="flex-1 min-w-0 text-xs">
+            <p className="text-neutral-200 truncate">
+              Will Replace Listing: <span className="font-medium">{titleDisplay}</span>
+            </p>
+            <p className="text-[10px] text-neutral-500 truncate font-mono mt-0.5">
+              d:{dTagDisplay}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button
+              onClick={() => setPickerOpen(true)}
+              title="Pick a different listing for this draft to replace"
+              className="text-[11px] px-2 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+            >
+              Change…
+            </button>
+            <button
+              onClick={handleUnlink}
+              title="Strip the dTag so this draft publishes as a new listing instead"
+              className="text-[11px] px-2 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+            >
+              Unlink
+            </button>
+          </div>
+        </div>
+        {pickerOpen && (
+          <LinkExistingListingModal
+            sessionUser={sessionUser}
+            currentDTag={dTag}
+            onSelect={handleLink}
+            onClose={() => setPickerOpen(false)}
+          />
+        )}
+      </>
+    )
+  }
+
+  return (
+    <>
+      <div className="flex items-center gap-2 px-3 py-2 rounded border border-green-900/40 bg-green-950/15">
+        <span className="inline-block w-2 h-2 rounded-full bg-green-400 flex-shrink-0" aria-hidden />
+        <div className="flex-1 min-w-0 text-xs">
+          <p className="text-neutral-200">Will publish as new listing</p>
+          <p className="text-[10px] text-neutral-500 mt-0.5">
+            A fresh Nostr identity will be generated on publish.
+          </p>
+        </div>
+        <button
+          onClick={() => setPickerOpen(true)}
+          title="Link this draft to an existing listing — publishing will replace that listing's content on Nostr"
+          className="text-[11px] px-2 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-100 hover:border-neutral-500 transition-colors flex-shrink-0"
+        >
+          Link to existing…
+        </button>
+      </div>
+      {pickerOpen && (
+        <LinkExistingListingModal
+          sessionUser={sessionUser}
+          currentDTag={dTag}
+          onSelect={handleLink}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
+    </>
   )
 }

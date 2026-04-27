@@ -217,6 +217,22 @@ export function useNoteDrafts(pubkey) {
     setCurrentId(fresh.id)
   }, [])
 
+  // Reorder a draft up/down in the queue. `delta` is -1 (up) or +1 (down).
+  // No-op when the move would land out of bounds. The publish queue follows
+  // array order, so this directly controls publication sequence.
+  const moveDraft = useCallback((id, delta) => {
+    setDrafts(prev => {
+      const idx = prev.findIndex(d => d.id === id)
+      if (idx < 0) return prev
+      const target = idx + delta
+      if (target < 0 || target >= prev.length) return prev
+      const next = prev.slice()
+      const [item] = next.splice(idx, 1)
+      next.splice(target, 0, item)
+      return next
+    })
+  }, [])
+
   // Remove all drafts whose last publish succeeded — cleanup after a batch.
   const clearPublished = useCallback(() => {
     setDrafts(prev => {
@@ -242,6 +258,7 @@ export function useNoteDrafts(pubkey) {
     deleteDraft,
     deleteAllDrafts,
     clearDraft,
+    moveDraft,
     publishOne,
     publishAll,
     cancelPublishAll,

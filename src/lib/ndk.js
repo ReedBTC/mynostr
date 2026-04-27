@@ -1,5 +1,6 @@
 import NDK, { NDKRelaySet } from '@nostr-dev-kit/ndk'
 import { withTimeout } from './utils.js'
+import { resetPublishedAtCounter } from './publishProduct.js'
 
 // Fallback relays used when user has no Kind 10002 relay list
 export const FALLBACK_RELAYS = [
@@ -135,13 +136,33 @@ export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = 
 // Resolve the signed-in user's NIP-65 write relays. Returns the URL list if
 // we can read a kind 10002, null otherwise — callers decide how to handle a
 // missing 10002 (fall back to pool, prompt the user, etc).
+//
+// Implementation note: we used to rely on `ndk.activeUser.relayList()`,
+// but that helper can return stale or empty results when the user's
+// 10002 has changed during the session — exactly when accurate write-
+// relay targeting matters most (a publish to the wrong relay set lands
+// on relays nobody queries; a delete to the wrong relay set never
+// reaches the relays serving the original event). A direct fetchEvent
+// against the kind-10002 filter is slower but always reflects the
+// current state of the network, which is what callers expect.
 export async function getOwnWriteRelays(ndk) {
+  const pubkey = ndk?.activeUser?.pubkey
+  if (!ndk || !pubkey) return null
   try {
-    const relayList = await ndk?.activeUser?.relayList()
-    const urls = relayList?.writeRelayUrls
-    if (Array.isArray(urls) && urls.length) return urls
-  } catch {}
-  return null
+    const ev = await withTimeout(
+      ndk.fetchEvent({ kinds: [10002], authors: [pubkey] }),
+      5000,
+      'fetch-10002-timeout',
+    )
+    if (!ev) return null
+    const urls = (ev.tags || [])
+      .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
+      .map(t => t[1])
+      .filter(u => typeof u === 'string' && /^wss:\/\//i.test(u))
+    return urls.length ? urls : null
+  } catch {
+    return null
+  }
 }
 
 // Publish an event only to the user's own NIP-65 write relays.
@@ -193,4 +214,7 @@ export function resetNDK() {
   // Drop any outbox warning left over from the previous session so a relog
   // (same or different account) starts clean.
   _lastOutboxWarning = null
+  // Reset the marketplace publish-timestamp monotonic counter so the next
+  // user's first publish doesn't inherit drift from the prior session.
+  resetPublishedAtCounter()
 }

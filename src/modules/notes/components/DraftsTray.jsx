@@ -71,7 +71,7 @@ function ConfirmDialog({ title, body, confirmLabel, confirmTone = 'purple', onCa
   )
 }
 
-function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
+function DraftRow({ draft, isCurrent, index, total, onSelect, onDelete, onMove }) {
   // Row swaps to an inline confirm panel on trash click — the visual change
   // is big enough that the "click again" requirement is obvious, and the
   // explicit Cancel button gives an easy out. Auto-resets after 4s.
@@ -116,6 +116,7 @@ function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
       }`}
     >
       <StatusDot status={draft.status} />
+      <span className="text-[10px] text-neutral-500 tabular-nums shrink-0 mt-px">{index + 1}.</span>
       <div className="flex-1 min-w-0">
         <p className={`text-xs truncate ${isCurrent ? 'text-neutral-100' : 'text-neutral-400'}`}>
           {previewText(draft.snapshot?.content)}
@@ -127,14 +128,33 @@ function DraftRow({ draft, isCurrent, onSelect, onDelete }) {
           <p className="text-[10px] text-green-500 mt-0.5">Published</p>
         )}
       </div>
-      <button
-        onClick={e => { e.stopPropagation(); setPending(true) }}
-        title="Delete draft"
-        aria-label="Delete draft"
-        className="shrink-0 text-neutral-500 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-opacity p-1 -m-1"
-      >
-        <TrashIcon />
-      </button>
+      {/* Reorder + delete. Arrows control publish queue position; same
+          visibility pattern as the trash button (hover-revealed on
+          desktop, always tappable on mobile). */}
+      <div className="flex items-center gap-0.5 shrink-0 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={e => { e.stopPropagation(); onMove?.(-1) }}
+          disabled={index === 0}
+          title="Move up"
+          aria-label="Move up in publish queue"
+          className="text-neutral-500 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none p-1 -m-1 leading-none text-xs"
+        >▲</button>
+        <button
+          onClick={e => { e.stopPropagation(); onMove?.(1) }}
+          disabled={index === total - 1}
+          title="Move down"
+          aria-label="Move down in publish queue"
+          className="text-neutral-500 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none p-1 -m-1 leading-none text-xs"
+        >▼</button>
+        <button
+          onClick={e => { e.stopPropagation(); setPending(true) }}
+          title="Delete draft"
+          aria-label="Delete draft"
+          className="text-neutral-500 hover:text-red-400 transition-colors p-1 -m-1"
+        >
+          <TrashIcon />
+        </button>
+      </div>
     </div>
   )
 }
@@ -149,6 +169,7 @@ export default function DraftsTray({
   onImportDrafts,
   onExportAllDrafts,
   onPublishAll,
+  onMoveDraft,
   isMobileOpen = false,
   onMobileClose,
   isMobile = false,
@@ -222,16 +243,19 @@ export default function DraftsTray({
       </div>
 
       <div className="flex-1 overflow-y-auto px-1.5 py-1.5 space-y-0.5">
-        {drafts.map(d => (
+        {drafts.map((d, i) => (
           <DraftRow
             key={d.id}
             draft={d}
+            index={i}
+            total={drafts.length}
             isCurrent={d.id === currentDraftId}
             onSelect={() => {
               onSelectDraft(d.id)
               if (isMobile && onMobileClose) onMobileClose()
             }}
             onDelete={() => onDeleteDraft(d.id)}
+            onMove={(delta) => onMoveDraft?.(d.id, delta)}
           />
         ))}
       </div>

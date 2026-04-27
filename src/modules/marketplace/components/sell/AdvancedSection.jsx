@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import RelayOverrideSection from '../../../notes/components/RelayOverrideSection.jsx'
 import MarketplaceRelaySuggestions from './MarketplaceRelaySuggestions.jsx'
+import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
+import { WATCHLIST_D_TAG } from '../../../../lib/gamma.js'
 
 /**
  * AdvancedSection — collapsible "extra knobs" for the Sell composer.
@@ -11,7 +13,6 @@ import MarketplaceRelaySuggestions from './MarketplaceRelaySuggestions.jsx'
  *
  * Field choices target the alpha use cases:
  *   • NSFW toggle — affects search filtering, simple boolean.
- *   • Stock count — for sellers with multiple of the same item.
  *   • Weight / dimensions — for shipping math, free-form text.
  *   • Location / geohash — for local-pickup discovery.
  *   • Additional tags — comma-separated, for free-form discovery.
@@ -33,21 +34,6 @@ export default function AdvancedSection({ form, updateForm, open, onToggle }) {
       </button>
       {open && (
         <div className="px-3 py-3 border-t border-neutral-800 space-y-4">
-
-          {/* Stock */}
-          <Field label="Stock" hint="How many of this item are available. Leave blank for unlimited.">
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={form.stock ?? ''}
-              onChange={(e) => {
-                const v = e.target.value
-                updateForm({ stock: v === '' ? null : Math.max(0, Math.floor(Number(v))) })
-              }}
-              className="w-32 px-2.5 py-1.5 text-sm rounded border border-neutral-800 bg-neutral-900 text-neutral-100 outline-none focus:border-purple-600 transition-colors"
-            />
-          </Field>
 
           {/* Weight + dim */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -113,6 +99,15 @@ export default function AdvancedSection({ form, updateForm, open, onToggle }) {
             onChange={(specs) => updateForm({ specs })}
           />
 
+          {/* Publish to collections — multi-select against the user's
+              own kind 30405 collections. After publish, the composer
+              syncs the selected set against the listing's current
+              memberships (adds/removes kind-30405 a-tags as needed). */}
+          <CollectionsPicker
+            selected={form.publishCollections || []}
+            onChange={(publishCollections) => updateForm({ publishCollections })}
+          />
+
           {/* Marketplace relay suggestions — popular marketplace relays
               with ✓/+ controls that add the relay to the user's own
               kind 10002 list (vs. supplementing per-publish). This way
@@ -152,6 +147,73 @@ function Field({ label, hint, children }) {
       <label className="block text-xs font-medium text-neutral-300 mb-1.5">{label}</label>
       {children}
       {hint && <p className="text-xs text-neutral-600 mt-1">{hint}</p>}
+    </div>
+  )
+}
+
+function CollectionsPicker({ selected, onChange }) {
+  const ctx = useSessionCollections()
+  const collections = ctx?.collections || []
+  // Pin watchlist first (matches the rest of the collection-picker UI),
+  // then user collections by created_at desc — same shape useCollections
+  // already returns, so re-sort is a no-op when ctx provides them.
+  const ordered = [...collections].sort((a, b) => {
+    if (a.decoded.dTag === WATCHLIST_D_TAG) return -1
+    if (b.decoded.dTag === WATCHLIST_D_TAG) return 1
+    return 0
+  })
+  const selectedSet = new Set(selected || [])
+
+  function toggle(dTag) {
+    const next = new Set(selectedSet)
+    if (next.has(dTag)) next.delete(dTag)
+    else next.add(dTag)
+    onChange([...next])
+  }
+
+  return (
+    <div>
+      <label className="block text-xs font-medium text-neutral-300 mb-1.5">
+        Publish to collections
+      </label>
+      <p className="text-xs text-neutral-600 mb-2">
+        After this listing publishes, add it to the selected collections
+        (and remove it from any unchecked ones it was previously in).
+      </p>
+
+      {ordered.length === 0 ? (
+        <p className="text-xs text-neutral-600 px-2 py-1.5 rounded border border-dashed border-neutral-800">
+          No collections yet. Create one in the Collections tab.
+        </p>
+      ) : (
+        <ul className="space-y-1 max-h-40 overflow-y-auto pr-1">
+          {ordered.map(c => {
+            const dTag = c.decoded.dTag
+            const isWatchlist = dTag === WATCHLIST_D_TAG
+            const checked = selectedSet.has(dTag)
+            return (
+              <li key={dTag}>
+                <label className="flex items-center gap-2 text-xs text-neutral-300 cursor-pointer hover:text-neutral-100 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(dTag)}
+                    className="accent-purple-600"
+                  />
+                  <span className="truncate">
+                    {c.decoded.title || (isWatchlist ? 'Watchlist' : 'Untitled')}
+                  </span>
+                  {isWatchlist && (
+                    <span className="text-[9px] uppercase tracking-wide text-amber-400/70">
+                      default
+                    </span>
+                  )}
+                </label>
+              </li>
+            )
+          })}
+        </ul>
+      )}
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { nip19 } from 'nostr-tools'
@@ -12,7 +13,8 @@ import {
   formatAmount,
 } from '../../../../lib/currency.js'
 import { deleteProduct } from '../../../../lib/deleteProduct.js'
-import { KIND_PRODUCT } from '../../../../lib/gamma.js'
+import { KIND_PRODUCT, buildProductCoord } from '../../../../lib/gamma.js'
+import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
 import WatchlistButton from '../watchlist/WatchlistButton.jsx'
 import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
 
@@ -218,6 +220,12 @@ function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, prev
     return () => clearTimeout(confirmTimerRef.current)
   }, [confirmingDelete])
 
+  const sessionCollectionsCtx = useSessionCollections()
+  // Phase + progress for the multi-step delete (scan → publish kind-5 →
+  // background collection cleanup). Drives the overlay below.
+  const [deletePhase, setDeletePhase]   = useState('idle') // 'idle' | 'scanning' | 'deleting' | 'done'
+  const [deleteStats, setDeleteStats]   = useState({ candidates: 0, targets: 0, foundOn: 0, acked: 0 })
+
   async function handleDeleteClick() {
     if (!confirmingDelete) {
       setConfirmingDelete(true)
@@ -238,17 +246,74 @@ function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, prev
     setConfirmingDelete(false)
     setDeleting(true)
     setDeleteError('')
+    setDeletePhase('scanning')
+    // Snapshot the listing's collection memberships BEFORE the kind-5
+    // fires — afterward, any of the user's collections that referenced
+    // this listing's coord are dangling. We republish each kind-30405
+    // with the dead `a` tag stripped so collection views stop trying
+    // to resolve a deleted product.
+    const aTag = buildProductCoord(listing.event.pubkey, listing.decoded.dTag)
+    const containingDTags = aTag && sessionCollectionsCtx
+      ? sessionCollectionsCtx.containingCollections(aTag)
+      : []
     try {
       await deleteProduct({
         pubkey: listing.event.pubkey,
         dTag:   listing.decoded.dTag,
+        onProgress: (p) => {
+          if (p.phase === 'scanning') {
+            setDeletePhase('scanning')
+            setDeleteStats(s => ({ ...s, candidates: p.candidates || 0 }))
+          } else if (p.phase === 'deleting') {
+            setDeletePhase('deleting')
+            setDeleteStats(s => ({ ...s, targets: p.targets || 0, foundOn: p.foundOn || 0 }))
+          } else if (p.phase === 'done') {
+            setDeletePhase('done')
+            setDeleteStats(s => ({
+              ...s,
+              targeted: p.targeted || 0,
+              acked:    p.acked || 0,
+              failures: p.failures || [],
+              foundOn:  p.foundOn || 0,
+              scanned:  p.scanned || 0,
+            }))
+          }
+        },
       })
-      onDelete?.(listing)
+      // Background collection cleanup — fire-and-forget. The deletion
+      // is the user-facing success signal; stripping dangling refs is
+      // post-hoc cleanup. Runs while the user reads the done modal and
+      // continues even if they dismiss before it finishes.
+      if (aTag && sessionCollectionsCtx && containingDTags.length > 0) {
+        ;(async () => {
+          for (const dTag of containingDTags) {
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              await sessionCollectionsCtx.removeFromCollection(dTag, aTag)
+            } catch {
+              // One failed cleanup shouldn't stop the rest. The next
+              // collection-view fetch will simply still see a stale
+              // ref until the user retries — degraded but not broken.
+            }
+          }
+        })()
+      }
+      // Modal stays in 'done' phase until the user clicks OK
+      // (dismissDoneModal). At that point we close the drawer.
     } catch (e) {
       setDeleteError(e?.message || 'Delete failed')
+      setDeletePhase('idle')
     } finally {
       setDeleting(false)
     }
+  }
+
+  // User-acknowledged dismiss of the done modal. Closes the drawer +
+  // removes from local state. Separate from the optimistic close so the
+  // user has a chance to read the relay-ack summary first.
+  function dismissDoneModal() {
+    setDeletePhase('idle')
+    onDelete?.(listing)
   }
 
   return (
@@ -290,6 +355,143 @@ function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, prev
       >
         ✕
       </button>
+
+      {/* Long-running delete overlay — portaled so it sits above the
+          drawer (and above the modal layer it lives in) regardless of
+          the Header's stacking context. Stays visible from scan start
+          through the done state, where the user must click OK to
+          dismiss. */}
+      {deletePhase !== 'idle' && createPortal(
+        <DeleteProgressOverlay
+          phase={deletePhase}
+          stats={deleteStats}
+          onDismiss={dismissDoneModal}
+        />,
+        document.body,
+      )}
+    </div>
+  )
+}
+
+function DeleteProgressOverlay({ phase, stats, onDismiss }) {
+  let title = ''
+  let detail = null
+  if (phase === 'scanning') {
+    title  = 'Scanning relays for this listing…'
+    detail = (
+      <p className="text-xs text-neutral-400">
+        Checking {stats.candidates || '…'} relays where the listing may live.
+      </p>
+    )
+  } else if (phase === 'deleting') {
+    title  = 'Sending deletion request…'
+    detail = (
+      <p className="text-xs text-neutral-400">
+        {stats.foundOn
+          ? `Found on ${stats.foundOn} relay${stats.foundOn === 1 ? '' : 's'}. Publishing kind-5 to ${stats.targets} target${stats.targets === 1 ? '' : 's'}.`
+          : `Publishing kind-5 to ${stats.targets} relay${stats.targets === 1 ? '' : 's'}.`}
+      </p>
+    )
+  } else if (phase === 'done') {
+    title = 'Deletion request sent.'
+    // Two numbers matter for the user: how many relays we *targeted*
+    // (which is your write list + curated set + scan positives), and
+    // how many *acknowledged* the request before the timeout. Slow
+    // relays often accept the event but don't ack within the window —
+    // they'll process it eventually but aren't counted in `acked`.
+    const failures = stats.failures || []
+    const failedFromOutbox = failures.filter(f => f.fromOutbox)
+    const failedFromCurated = failures.filter(f => !f.fromOutbox)
+    detail = (
+      <div className="text-xs text-neutral-400 space-y-2">
+        <p>
+          Targeted <span className="text-neutral-200">{stats.targeted}</span> relay
+          {stats.targeted === 1 ? '' : 's'} — your relay list plus a curated
+          marketplace set. <span className="text-neutral-200">{stats.acked}</span> acknowledged
+          the request.
+        </p>
+        {failures.length > 0 && (
+          <div className="border border-neutral-800 rounded p-2 space-y-1.5 max-h-44 overflow-y-auto">
+            <p className="text-[11px] text-neutral-500 font-medium">
+              {failures.length} relay{failures.length === 1 ? '' : 's'} did not acknowledge:
+            </p>
+            {failedFromOutbox.length > 0 && (
+              <FailureGroup
+                label="From your relay list"
+                items={failedFromOutbox}
+                hint="If a relay here consistently fails, consider removing it from your kind-10002 list — every replaceable event you publish (profile, listings, collections, deletes) has to fan out to it."
+              />
+            )}
+            {failedFromCurated.length > 0 && (
+              <FailureGroup
+                label="Curated marketplace relays"
+                items={failedFromCurated}
+                hint={null}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className={`fixed inset-0 ${Z.nestedConfirm} bg-black/70 flex items-center justify-center p-4`}>
+      <div className="max-w-md w-full bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl p-5 space-y-3">
+        <div className="flex items-center gap-2.5">
+          {phase !== 'done' && (
+            <span
+              className="inline-block w-3.5 h-3.5 rounded-full border-2 border-neutral-700 border-t-purple-500 animate-spin"
+              aria-hidden
+            />
+          )}
+          {phase === 'done' && (
+            <span className="inline-block w-3.5 h-3.5 rounded-full bg-green-500 flex-shrink-0" aria-hidden />
+          )}
+          <h3 className="text-sm font-medium text-neutral-100">{title}</h3>
+        </div>
+        {detail}
+        <div className="border-t border-neutral-800 pt-3">
+          <p className="text-[11px] text-neutral-500 leading-relaxed">
+            Mynostr requests deletion from your relay list and a curated
+            set of marketplace and general-purpose relays where this
+            listing may have been published. <span className="text-neutral-300">Nostr's
+            deletion mechanism is advisory</span> — relays may continue
+            serving the deleted event, and the listing may still appear
+            here on hard-refresh or in other clients for some time. This
+            is a current limitation of the protocol, not a bug.
+          </p>
+        </div>
+        {phase === 'done' && (
+          <div className="flex justify-end pt-1">
+            <button
+              onClick={onDismiss}
+              className="text-xs px-4 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white font-semibold transition-colors"
+            >
+              OK
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FailureGroup({ label, items, hint }) {
+  return (
+    <div className="space-y-1">
+      <p className="text-[10px] uppercase tracking-wide text-neutral-500">{label}</p>
+      <ul className="space-y-0.5">
+        {items.map((f) => (
+          <li key={f.url} className="text-[11px] text-neutral-300 flex items-start gap-2">
+            <span className="font-mono truncate flex-1 min-w-0" title={f.url}>{f.url}</span>
+            <span className="text-neutral-500 flex-shrink-0">{f.reason}</span>
+          </li>
+        ))}
+      </ul>
+      {hint && (
+        <p className="text-[10px] text-neutral-500 leading-relaxed pt-1">{hint}</p>
+      )}
     </div>
   )
 }

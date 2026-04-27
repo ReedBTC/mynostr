@@ -87,8 +87,21 @@ export default function ListingTab({ form, updateForm, updatePrice }) {
         </select>
       </Field>
 
-      {/* Visibility / status */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+      {/* Stock / visibility / status — all availability state */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
+        <Field label="Stock" hint="Leave blank for unlimited.">
+          <input
+            type="number"
+            min="0"
+            step="1"
+            value={form.stock ?? ''}
+            onChange={(e) => {
+              const v = e.target.value
+              updateForm({ stock: v === '' ? null : Math.max(0, Math.floor(Number(v))) })
+            }}
+            className="w-full px-3 py-2 text-sm rounded border border-neutral-800 bg-neutral-900 text-neutral-100 outline-none focus:border-purple-600 transition-colors"
+          />
+        </Field>
         <Field label="Visibility">
           <select
             value={form.visibility}

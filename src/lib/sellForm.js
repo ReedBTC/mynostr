@@ -44,6 +44,21 @@ export function emptySellForm() {
     // This is form-only state; the gamma encoder doesn't emit it on the
     // event itself — it's a publish-time directive.
     relayOverride: { enabled: false, relays: [] },
+    // Advanced "publish-into-collections" intent — array of d-tags of
+    // the user's own collections this listing should belong to after
+    // publish. The composer's post-publish sync compares this to the
+    // listing's current memberships (via SessionCollectionsContext) and
+    // adds/removes to match. UI-only state; not encoded on the kind 30402.
+    publishCollections: [],
+    // The title of the listing this draft is linked to (i.e., the
+    // listing on Nostr that publishing this draft would replace).
+    // Stamped at link-time (Edit listing / Load-from-Nostr / picker)
+    // and NOT updated when the user edits form.title. The composer's
+    // publish-identity banner displays this so the user sees which
+    // existing listing they're about to replace, even after they've
+    // changed the draft's working title. Empty when the draft will
+    // publish as a new listing. UI-only; not encoded on the event.
+    linkedListingTitle: '',
     _extraTags:  [],
   }
 }
@@ -163,11 +178,32 @@ export function eventToForm(event) {
   if (event && event._mynostr_form && typeof event._mynostr_form === 'object') {
     const decoded = decodeProduct(event)
     if (!decoded) return null
+    const sidecar = event._mynostr_form
+
+    // Sanitize relayOverride.relays before spreading — the sidecar is
+    // user-controlled (came from a JSON file the user opened) and a
+    // malicious crafted file could otherwise inject non-wss URLs (or
+    // worse, attacker-controlled wss endpoints) into the relay
+    // override. We reject anything that isn't `wss://` here. Note this
+    // doesn't fully prevent diversion to a malicious wss host — that
+    // would require either an allowlist (impractical) or forcing
+    // `enabled: false` on import (regresses the legitimate self-export
+    // round-trip). The wss-scheme filter at least blocks the simplest
+    // injection of `javascript:` / `http:` URLs.
+    let safeOverride = sidecar.relayOverride
+    if (safeOverride && Array.isArray(safeOverride.relays)) {
+      const safeRelays = safeOverride.relays.filter(
+        u => typeof u === 'string' && /^wss:\/\//i.test(u)
+      )
+      safeOverride = { ...safeOverride, relays: safeRelays }
+    }
+
     // Spread over emptySellForm() so missing keys in the sidecar (older
     // exports, partial JSON) get sensible defaults rather than undefined.
     return {
       ...emptySellForm(),
-      ...event._mynostr_form,
+      ...sidecar,
+      relayOverride: safeOverride || sidecar.relayOverride,
       // _extraTags are authoritative on the canonical event — pull them
       // from the gamma decode, not the sidecar (which may be stale).
       _extraTags: decoded._extraTags || [],
@@ -182,6 +218,12 @@ export function eventToForm(event) {
   // Direct fields the gamma decoder already extracted.
   form.dTag        = decoded.dTag
   form.title       = decoded.title
+  // Stamp the linked-listing title at decode-time so the composer's
+  // banner can show "Will Replace Listing: <original-title>" even after
+  // the user edits the draft's working title. Cross-client decode path
+  // — the sidecar fast path above carries linkedListingTitle through
+  // the round-trip directly when present.
+  form.linkedListingTitle = decoded.title
   form.summary     = decoded.summary
   form.content     = decoded.content
   form.location    = decoded.location

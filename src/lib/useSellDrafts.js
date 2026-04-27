@@ -190,6 +190,22 @@ export function useSellDrafts(pubkey) {
     })
   }, [])
 
+  // Reorder a draft up/down in the queue. `delta` is -1 (up) or +1 (down).
+  // No-op when the move would land out of bounds. The publish queue follows
+  // array order, so this directly controls publication sequence.
+  const moveDraft = useCallback((id, delta) => {
+    setDrafts(prev => {
+      const idx = prev.findIndex(d => d.id === id)
+      if (idx < 0) return prev
+      const target = idx + delta
+      if (target < 0 || target >= prev.length) return prev
+      const next = prev.slice()
+      const [item] = next.splice(idx, 1)
+      next.splice(target, 0, item)
+      return next
+    })
+  }, [])
+
   const publishOne = useCallback(async (id) => {
     const target = drafts.find(d => d.id === id)
     if (!target) return { ok: false, reason: 'not-found' }
@@ -211,15 +227,69 @@ export function useSellDrafts(pubkey) {
         publishResult: result,
         publishError: null,
       }))
-      return { ok: true, result }
+      // Surface the resolved dTag to callers (SellComposer's post-publish
+      // collection sync needs it to compute the product coordinate).
+      return { ok: true, result, dTag: gamma.dTag }
     } catch (e) {
       updateDraft(id, { status: 'failed', publishError: e?.message || 'Publish failed' })
       return { ok: false, error: e }
     }
   }, [drafts, updateDraft, updateDraftWith])
 
+  // Find drafts in the queue that share a dTag with another draft.
+  // Returns [{ dTag, drafts: [{id, title}] }] — empty array when none.
+  // Kind 30402 is replaceable per (kind, pubkey, dTag), so two drafts
+  // with the same dTag would overwrite each other on publish — almost
+  // never the user's intent (template-import workflow accidentally
+  // shares a dTag across drafts is the canonical failure mode).
+  const findDuplicateDTags = useCallback(() => {
+    const queue = drafts.filter(d =>
+      isFormMeaningful(d.snapshot) && d.snapshot.title?.trim() && d.status !== 'published'
+    )
+    const byTag = new Map()
+    for (const d of queue) {
+      const tag = d.snapshot?.dTag
+      if (!tag) continue
+      if (!byTag.has(tag)) byTag.set(tag, [])
+      byTag.get(tag).push({ id: d.id, title: d.snapshot.title || '' })
+    }
+    const dups = []
+    for (const [tag, ds] of byTag) {
+      if (ds.length > 1) dups.push({ dTag: tag, drafts: ds })
+    }
+    return dups
+  }, [drafts])
+
+  // Strip dTag (and the linked-listing title that pairs with it) from
+  // a set of drafts so they publish as fresh listings (formToGammaForm
+  // generates a new slug-style dTag when form.dTag is empty). Used by
+  // the dup-dTag recovery flow in the tray. Clearing linkedListingTitle
+  // alongside dTag keeps the form's "publish identity" state consistent
+  // — the banner reads dTag first, but a stale linkedListingTitle would
+  // be wrong if any future code path consulted it independently.
+  const regenerateDTags = useCallback((ids) => {
+    const idSet = new Set(ids)
+    setDrafts(prev => prev.map(d =>
+      idSet.has(d.id)
+        ? {
+            ...d,
+            snapshot: { ...d.snapshot, dTag: '', linkedListingTitle: '' },
+            updatedAt: Date.now(),
+          }
+        : d
+    ))
+  }, [])
+
   const publishAll = useCallback(async () => {
     publishAllCancelled.current = false
+    // Belt-and-suspenders dup check at the lib layer — the tray UI
+    // catches this earlier with a more helpful modal, but a non-UI
+    // caller (future scheduler, automation) shouldn't be able to
+    // trigger an overwrite cascade by accident.
+    const dups = findDuplicateDTags()
+    if (dups.length > 0) {
+      return { ok: false, reason: 'duplicate-dtags', dups, results: [] }
+    }
     const queue = drafts.filter(d =>
       isFormMeaningful(d.snapshot) && d.snapshot.title?.trim() && d.status !== 'published'
     )
@@ -230,8 +300,8 @@ export function useSellDrafts(pubkey) {
       const r = await publishOne(d.id)
       results.push({ id: d.id, ...r })
     }
-    return results
-  }, [drafts, publishOne])
+    return { ok: true, results }
+  }, [drafts, publishOne, findDuplicateDTags])
 
   const cancelPublishAll = useCallback(() => {
     publishAllCancelled.current = true
@@ -250,6 +320,9 @@ export function useSellDrafts(pubkey) {
     deleteAllDrafts,
     clearDraft,
     clearPublished,
+    moveDraft,
+    findDuplicateDTags,
+    regenerateDTags,
     publishOne,
     publishAll,
     cancelPublishAll,

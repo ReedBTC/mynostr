@@ -25,7 +25,7 @@ import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
  *   • visibility='pre-order' → "Pre-order" badge
  *   • otherwise (active + on-sale) → no badge
  */
-export default function ProductCard({ listing, sessionUser, onClick }) {
+export default function ProductCard({ listing, sessionUser, onClick, onEdit }) {
   const { decoded } = listing
   const cover = decoded.images?.[0]?.url
   const safeCover = cover && isSafeUrl(cover) ? cover : null
@@ -135,6 +135,7 @@ export default function ProductCard({ listing, sessionUser, onClick }) {
             sessionUser={sessionUser}
             triggerRef={menuTriggerRef}
             onOpenSavePicker={() => setPickerOpen(true)}
+            onEdit={onEdit}
           />
         )}
       </div>
