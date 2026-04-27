@@ -93,6 +93,7 @@ export default function SellingTab({
                 <ProductCard
                   key={l.event.id}
                   listing={l}
+                  sessionUser={sessionUser}
                   onClick={() => setOpenListing(l)}
                 />
               ))}

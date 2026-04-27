@@ -182,6 +182,7 @@ export default function WatchlistTab({ user, sessionUser, isOwner }) {
                 <ProductCard
                   key={l.event.id}
                   listing={l}
+                  sessionUser={sessionUser}
                   onClick={() => setOpenListing(l)}
                 />
               ))}

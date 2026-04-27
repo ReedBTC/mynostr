@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import {
   getCachedRates,
@@ -7,6 +7,7 @@ import {
   fiatToSats,
   formatAmount,
 } from '../../../../lib/currency.js'
+import ProductActionsMenu from './ProductActionsMenu.jsx'
 
 /**
  * ProductCard — feed entry for one listing.
@@ -23,7 +24,7 @@ import {
  *   • visibility='pre-order' → "Pre-order" badge
  *   • otherwise (active + on-sale) → no badge
  */
-export default function ProductCard({ listing, onClick }) {
+export default function ProductCard({ listing, sessionUser, onClick }) {
   const { decoded } = listing
   const cover = decoded.images?.[0]?.url
   const safeCover = cover && isSafeUrl(cover) ? cover : null
@@ -32,58 +33,100 @@ export default function ProductCard({ listing, onClick }) {
   const hidden     = decoded.visibility === 'hidden'
   const preorder   = decoded.visibility === 'pre-order'
 
+  // Menu trigger ref + open state. Card outer is a div (not a button)
+  // so the menu trigger can sit as a sibling — nesting buttons is
+  // invalid HTML and the article cards use this same split pattern.
+  const menuTriggerRef = useRef(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative flex flex-col text-left bg-neutral-900 border border-neutral-800 rounded overflow-hidden hover:border-neutral-600 transition-colors ${
+    <div
+      className={`group relative flex flex-col bg-neutral-900 border border-neutral-800 rounded overflow-hidden hover:border-neutral-600 transition-colors ${
         sold ? 'opacity-70' : ''
       }`}
     >
-      {/* Cover */}
-      <div className="aspect-square w-full bg-neutral-800 relative overflow-hidden">
-        {safeCover ? (
-          <img
-            src={safeCover}
-            alt=""
-            loading="lazy"
-            className={`w-full h-full object-cover transition-opacity ${sold ? 'grayscale' : ''}`}
-            onError={(e) => { e.currentTarget.style.opacity = '0.2' }}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-3xl text-neutral-700">
-            🛒
+      {/* Main click target — wraps cover + body. Menu button sits
+          outside this so click events on the menu don't bubble into
+          opening the drawer. */}
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex flex-col text-left w-full"
+      >
+        <div className="aspect-square w-full bg-neutral-800 relative overflow-hidden">
+          {safeCover ? (
+            <img
+              src={safeCover}
+              alt=""
+              loading="lazy"
+              className={`w-full h-full object-cover transition-opacity ${sold ? 'grayscale' : ''}`}
+              onError={(e) => { e.currentTarget.style.opacity = '0.2' }}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-3xl text-neutral-700">
+              🛒
+            </div>
+          )}
+
+          {/* Badges — top-left, stacked */}
+          <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
+            {sold && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-900/80 text-red-100 border border-red-700">
+                Sold
+              </span>
+            )}
+            {!sold && hidden && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-neutral-800/90 text-neutral-300 border border-neutral-600">
+                Hidden
+              </span>
+            )}
+            {!sold && !hidden && preorder && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/80 text-amber-100 border border-amber-700">
+                Pre-order
+              </span>
+            )}
           </div>
-        )}
-
-        {/* Badges — top-left, stacked */}
-        <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
-          {sold && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-900/80 text-red-100 border border-red-700">
-              Sold
-            </span>
-          )}
-          {!sold && hidden && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-neutral-800/90 text-neutral-300 border border-neutral-600">
-              Hidden
-            </span>
-          )}
-          {!sold && !hidden && preorder && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/80 text-amber-100 border border-amber-700">
-              Pre-order
-            </span>
-          )}
         </div>
-      </div>
 
-      {/* Body */}
-      <div className="flex-1 p-2.5 space-y-1">
-        <h3 className="text-sm font-medium text-neutral-100 line-clamp-2 leading-snug">
-          {decoded.title || 'Untitled listing'}
-        </h3>
-        <PriceLine price={decoded.price} />
+        {/* Body */}
+        <div className="flex-1 p-2.5 space-y-1">
+          <h3 className="text-sm font-medium text-neutral-100 line-clamp-2 leading-snug">
+            {decoded.title || 'Untitled listing'}
+          </h3>
+          <PriceLine price={decoded.price} />
+        </div>
+      </button>
+
+      {/* Three-dot menu trigger — absolutely positioned over the cover's
+          top-right. stopPropagation so click doesn't fall through to
+          the main button (which would open the drawer). */}
+      <div
+        ref={menuTriggerRef}
+        className="absolute top-1.5 right-1.5"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); setMenuOpen(o => !o) }}
+          title="Actions"
+          aria-label="Product actions"
+          className="p-1 rounded text-neutral-200 bg-neutral-900/70 hover:bg-neutral-800 hover:text-neutral-100 transition-colors backdrop-blur-sm border border-neutral-700/60"
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <circle cx="3"  cy="8" r="1.4" />
+            <circle cx="8"  cy="8" r="1.4" />
+            <circle cx="13" cy="8" r="1.4" />
+          </svg>
+        </button>
+        <ProductActionsMenu
+          open={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          listing={listing}
+          sessionUser={sessionUser}
+          triggerRef={menuTriggerRef}
+        />
       </div>
-    </button>
+    </div>
   )
 }
 
