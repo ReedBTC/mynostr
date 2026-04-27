@@ -24,6 +24,7 @@ import { titleToSlug } from '../../lib/utils.js'
 import SellComposer from './components/sell/SellComposer.jsx'
 import SellDraftsTray, { fetchListingForLoader } from './components/sell/SellDraftsTray.jsx'
 import SellingTab from './components/selling/SellingTab.jsx'
+import WatchlistTab from './components/watchlist/WatchlistTab.jsx'
 
 export default function MarketplaceModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
@@ -41,21 +42,25 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
   const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
 
   // ── Module tab derived from URL subtab ──────────────────────────────────
-  // Bare `/marketplace` lands on `selling` (the public-visible owner page),
-  // mirroring Notes' default of "My Notes". Owner-only URLs visited by a
-  // visitor fall through to the default; the bounce effect below corrects
-  // the URL so deep-linked /sell on someone else's page doesn't 404.
+  // Bare `/marketplace` lands on `products` (the public-visible owner
+  // page), mirroring Notes' default of "My Notes". Owner-only URLs
+  // visited by a visitor fall through to the default; the bounce
+  // effect below corrects the URL so deep-linked /sell on someone
+  // else's page doesn't 404.
+  //
+  // Old slugs `selling`/`watchlist` are kept as aliases so any external
+  // link from before the rename keeps working.
   const moduleTab = (() => {
     if (subtab === 'sell' && isOwner)   return 'sell'
     if (subtab === 'search' && isOwner) return 'search'
-    if (subtab === 'watchlist')         return 'watchlist'
-    if (subtab === 'selling')           return 'selling'
-    return 'selling'
+    if (subtab === 'collections' || subtab === 'watchlist') return 'collections'
+    if (subtab === 'products'    || subtab === 'selling')   return 'products'
+    return 'products'
   })()
 
   const setModuleTab = useCallback((id) => {
     if (!npub) return
-    const path = id === 'selling' ? `/${npub}/marketplace` : `/${npub}/marketplace/${id}`
+    const path = id === 'products' ? `/${npub}/marketplace` : `/${npub}/marketplace/${id}`
     navigate(path)
   }, [npub, navigate])
 
@@ -198,19 +203,19 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
     if (npub) navigate(`/${npub}/marketplace/sell`)
   }, [isOwner, drafts, npub, navigate])
 
-  const sellingLabel   = isOwner ? 'My Selling'   : 'Selling'
-  const watchlistLabel = isOwner ? 'My Watchlist' : 'Watchlist'
+  const productsLabel    = isOwner ? 'My Products'    : 'Products'
+  const collectionsLabel = isOwner ? 'My Collections' : 'Collections'
 
   const visibleTabs = isOwner
     ? [
-        { id: 'sell',      label: 'Sell' },
-        { id: 'selling',   label: sellingLabel },
-        { id: 'watchlist', label: watchlistLabel },
-        { id: 'search',    label: 'Search' },
+        { id: 'sell',        label: 'Sell' },
+        { id: 'products',    label: productsLabel },
+        { id: 'collections', label: collectionsLabel },
+        { id: 'search',      label: 'Search' },
       ]
     : [
-        { id: 'selling',   label: sellingLabel },
-        { id: 'watchlist', label: watchlistLabel },
+        { id: 'products',    label: productsLabel },
+        { id: 'collections', label: collectionsLabel },
       ]
 
   return (
@@ -278,7 +283,7 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
         )}
       </div>
       <div className={`flex-1 overflow-hidden ${moduleTab !== 'sell' ? 'flex flex-col' : 'hidden'}`}>
-        {moduleTab === 'selling' && (
+        {moduleTab === 'products' && (
           <SellingTab
             user={user}
             sessionUser={sessionUser}
@@ -286,8 +291,13 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
             onEdit={handleEditListing}
           />
         )}
-        {moduleTab === 'watchlist' && <PhasePlaceholder phase="3" name="My Watchlist"
-          description="Kind 30405 collection (d:watchlist) of products you're tracking. Add from any product card." />}
+        {moduleTab === 'collections' && (
+          <WatchlistTab
+            user={user}
+            sessionUser={sessionUser}
+            isOwner={isOwner}
+          />
+        )}
         {moduleTab === 'search'    && <PhasePlaceholder phase="4" name="Search"
           description="Discover listings across marketplace relays. Tag · location · price · NSFW filters." />}
       </div>

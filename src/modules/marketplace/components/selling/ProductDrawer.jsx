@@ -13,6 +13,7 @@ import {
 } from '../../../../lib/currency.js'
 import { deleteProduct } from '../../../../lib/deleteProduct.js'
 import { KIND_PRODUCT } from '../../../../lib/gamma.js'
+import WatchlistButton from '../watchlist/WatchlistButton.jsx'
 
 /**
  * ProductDrawer — full detail view for one listing, opened from a
@@ -189,6 +190,8 @@ export default function ProductDrawer({
                 plebeianUrl={plebeianUrl}
                 shopstrUrl={shopstrUrl}
                 isOwner={isOwner}
+                listing={listing}
+                sessionUser={sessionUser}
               />
             )}
           </div>
@@ -424,7 +427,7 @@ function Field({ label, value }) {
 
 // ─── External links + stubbed watchlist + zap ─────────────────────────────
 
-function ExternalLinks({ plebeianUrl, shopstrUrl, isOwner }) {
+function ExternalLinks({ plebeianUrl, shopstrUrl, isOwner, listing, sessionUser }) {
   return (
     <div className="border-t border-neutral-800 pt-4 space-y-3">
       <div>
@@ -455,17 +458,14 @@ function ExternalLinks({ plebeianUrl, shopstrUrl, isOwner }) {
         </div>
       </div>
 
-      {/* Visitor-only buttons. Stubbed — Phase 3 wires watchlist; zap
-          can hook into the existing ZapModal infra later. */}
-      {!isOwner && (
+      {/* Watchlist + zap row. Watchlist mutates the SESSION user's
+          watchlist (not the listing-author's), so the gate is on
+          having a signer — not on whether you're "the owner" of the
+          page. Lets you watchlist your own listings too, which is a
+          minor edge case but harmless. Zap is still Phase-deferred. */}
+      {sessionUser?.pubkey && (
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            disabled
-            title="Coming in Phase 3"
-            className="text-xs px-3 py-1.5 rounded border border-neutral-800 text-neutral-600 cursor-not-allowed"
-          >
-            ☆ Add to watchlist
-          </button>
+          <WatchlistButton listing={listing} sessionUser={sessionUser} />
           <button
             disabled
             title="Coming soon"
