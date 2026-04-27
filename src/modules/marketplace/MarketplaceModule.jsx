@@ -28,6 +28,7 @@ import SellComposer from './components/sell/SellComposer.jsx'
 import SellDraftsTray, { fetchListingForLoader } from './components/sell/SellDraftsTray.jsx'
 import SellingTab from './components/selling/SellingTab.jsx'
 import CollectionsTab from './components/collections/CollectionsTab.jsx'
+import SearchTab from './components/search/SearchTab.jsx'
 
 export default function MarketplaceModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
@@ -243,6 +244,11 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
   const productsLabel    = isOwner ? 'My Products'    : 'Products'
   const collectionsLabel = isOwner ? 'My Collections' : 'Collections'
 
+  // Search is global discovery — works for everyone, including
+  // logged-out viewers and non-owners viewing someone else's profile.
+  // Mutating actions inside the drawer (save-to-collection, watchlist,
+  // edit/delete) remain gated to logged-in / owner inside their own
+  // components, so opening Search up to all viewers is safe.
   const visibleTabs = isOwner
     ? [
         { id: 'sell',        label: 'Sell' },
@@ -253,22 +259,27 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
     : [
         { id: 'products',    label: productsLabel },
         { id: 'collections', label: collectionsLabel },
+        { id: 'search',      label: 'Search' },
       ]
 
   return (
     <SessionCollectionsContext.Provider value={sessionCollections}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
-      {/* ── Tab bar ── */}
+      {/* ── Tab bar ──
+          Inner container scrolls horizontally on narrow screens so the
+          four-tab strip (Sell · My Products · My Collections · Search)
+          doesn't clip on phones. -mx-4 px-4 lets the scroll area run
+          edge-to-edge while keeping the bar's outer padding aligned. */}
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-neutral-800 flex-shrink-0">
-        <div className="flex items-center gap-0 flex-shrink-0">
+        <div className="flex items-center gap-0 overflow-x-auto -mx-4 px-4 max-w-full">
           {visibleTabs.map(({ id, label }, i, arr) => {
             const isActive = moduleTab === id
             return (
               <button
                 key={id}
                 onClick={() => setModuleTab(id)}
-                className={`text-xs px-2.5 py-1 border transition-colors
+                className={`text-xs px-2.5 py-1 border transition-colors flex-shrink-0 whitespace-nowrap
                   ${i === 0 ? 'rounded-l' : ''} ${i === arr.length - 1 ? 'rounded-r' : ''}
                   ${isActive
                     ? 'bg-purple-600 border-purple-600 text-white'
@@ -339,8 +350,9 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
             isOwner={isOwner}
           />
         )}
-        {moduleTab === 'search'    && <PhasePlaceholder phase="4" name="Search"
-          description="Discover listings across marketplace relays. Tag · location · price · NSFW filters." />}
+        {moduleTab === 'search' && (
+          <SearchTab sessionUser={sessionUser} />
+        )}
       </div>
     </div>
     </SessionCollectionsContext.Provider>

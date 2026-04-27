@@ -140,7 +140,7 @@ export default function AddToCollectionModal({
           <button
             onClick={onClose}
             disabled={pending}
-            className="text-neutral-500 hover:text-neutral-200 transition-colors text-lg leading-none disabled:opacity-40"
+            className="text-neutral-500 hover:text-neutral-200 transition-colors text-xl leading-none disabled:opacity-40 p-1.5 -m-1.5"
             aria-label="Close"
           >✕</button>
         </div>

@@ -105,6 +105,24 @@ export default function ProductActionsMenu({
     setTimeout(() => { setCopied(null); onClose?.() }, 1200)
   }
 
+  // Web Share API — opens the native share sheet on platforms that
+  // support it (iOS Safari, Android Chrome, modern desktop). Lets
+  // users send a listing to iMessage, WhatsApp, etc. without the
+  // copy-then-paste two-step. Only renders the menu item when the
+  // browser supports navigator.share to avoid a dead button.
+  const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
+  async function handleShare() {
+    if (!naddr) return
+    const url = `https://njump.me/${naddr}`
+    const title = listing.decoded?.title || 'Marketplace listing'
+    try {
+      await navigator.share({ title, url })
+    } catch {
+      // User canceled or share failed — silent. Nothing to recover.
+    }
+    onClose?.()
+  }
+
   // Download the raw kind-30402 event JSON. Same shape the Sell
   // composer's Multi-JSON Import accepts, so a downloaded listing
   // round-trips back into a draft cleanly. Available to anyone — the
@@ -163,10 +181,27 @@ export default function ProductActionsMenu({
         </button>
       )}
 
+      {/* Native share — only when the browser supports it. Mobile-
+          first: iOS Safari + Android Chrome get an OS share sheet
+          (iMessage, WhatsApp, etc.); desktop browsers that support
+          navigator.share get the OS share dialog. Falls through to
+          copy-paste if the browser doesn't support the API. */}
+      {naddr && canNativeShare && (
+        <>
+          {(canEdit || canWatchlist) && <div className="border-t border-neutral-700" />}
+          <button
+            onClick={handleShare}
+            className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+          >
+            Share…
+          </button>
+        </>
+      )}
+
       {/* Copy naddr / URL */}
       {naddr && (
         <>
-          {canWatchlist && <div className="border-t border-neutral-700" />}
+          {(canWatchlist || canNativeShare) && <div className="border-t border-neutral-700" />}
           <button
             onClick={() => handleCopy('naddr')}
             className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"

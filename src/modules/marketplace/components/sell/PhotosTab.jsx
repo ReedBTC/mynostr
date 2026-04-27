@@ -95,8 +95,10 @@ export default function PhotosTab({ form, updateForm }) {
         First image is the cover. Up to {MAX_IMAGES} images per listing.
       </p>
 
-      {/* Add row */}
-      <div className="flex items-stretch gap-2">
+      {/* Add row. flex-wrap lets Add image / Upload drop below the URL
+          input on narrow phones instead of squeezing it. min-w on the
+          input keeps it usable when it does wrap. */}
+      <div className="flex items-stretch gap-2 flex-wrap">
         <input
           type="text"
           value={urlDraft}
@@ -104,7 +106,7 @@ export default function PhotosTab({ form, updateForm }) {
           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); pushImage(urlDraft.trim()) } }}
           placeholder="Paste image URL"
           disabled={atCap}
-          className="flex-1 px-3 py-2 text-sm rounded border border-neutral-800 bg-neutral-900 text-neutral-100 outline-none focus:border-purple-600 transition-colors disabled:opacity-40"
+          className="flex-1 min-w-[180px] px-3 py-2 text-sm rounded border border-neutral-800 bg-neutral-900 text-neutral-100 outline-none focus:border-purple-600 transition-colors disabled:opacity-40"
         />
         <button
           onClick={() => pushImage(urlDraft.trim())}
@@ -168,18 +170,18 @@ export default function PhotosTab({ form, updateForm }) {
                 <button
                   onClick={() => move(i, -1)}
                   disabled={i === 0}
-                  className="text-xs w-6 h-6 rounded border border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500 disabled:opacity-30 transition-colors"
+                  className="text-xs w-8 h-8 md:w-7 md:h-7 rounded border border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500 disabled:opacity-30 transition-colors"
                   title="Move up"
                 >↑</button>
                 <button
                   onClick={() => move(i, 1)}
                   disabled={i === images.length - 1}
-                  className="text-xs w-6 h-6 rounded border border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500 disabled:opacity-30 transition-colors"
+                  className="text-xs w-8 h-8 md:w-7 md:h-7 rounded border border-neutral-700 text-neutral-400 hover:text-white hover:border-neutral-500 disabled:opacity-30 transition-colors"
                   title="Move down"
                 >↓</button>
                 <button
                   onClick={() => removeAt(i)}
-                  className="text-xs w-6 h-6 rounded border border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-700 transition-colors"
+                  className="text-xs w-8 h-8 md:w-7 md:h-7 rounded border border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-700 transition-colors"
                   title="Remove"
                 >✕</button>
               </div>

@@ -80,7 +80,7 @@ export default function LinkExistingListingModal({ sessionUser, currentDTag = ''
           </div>
           <button
             onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-200 transition-colors text-lg leading-none"
+            className="text-neutral-500 hover:text-neutral-200 transition-colors text-xl leading-none p-1.5 -m-1.5"
             aria-label="Close"
           >✕</button>
         </div>

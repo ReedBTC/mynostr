@@ -293,8 +293,21 @@ export default function SellComposer({
             })}
           </div>
 
-          {/* Per-current-draft actions: import / naddr load / export */}
+          {/* Per-current-draft actions: import / naddr load / export.
+              On mobile, the Drafts chip lives here (top row, always
+              visible) instead of the footer — quicker access to the
+              tray without scrolling all the way down. Hidden on md+
+              since the desktop tray is permanently open on the left. */}
           <div className="flex items-center gap-1.5 flex-wrap">
+
+            {onOpenMobileDrafts && (
+              <button
+                onClick={onOpenMobileDrafts}
+                className="md:hidden text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+              >
+                Drafts ({draftsCount})
+              </button>
+            )}
 
             {/* Single JSON import — replaces current draft's snapshot.
                 Multi-file batch import lives in the drafts tray. */}
@@ -416,23 +429,20 @@ export default function SellComposer({
         </div>
       </div>
 
-      {/* Footer — bar matches body's content width. Hidden when the
-          draft is in the published-success state because the panel
-          above takes over the whole flow with its own "New listing"
-          ack button. On mobile, leftmost slot becomes a "Drafts (N)"
-          chip that opens the bottom sheet. */}
+      {/* Footer — persistent action bar at the bottom of the composer.
+          The flex layout above (h-full container, flex-1 overflow-auto
+          body, flex-shrink-0 footer) already keeps it pinned to the
+          viewport bottom regardless of body scroll. Bg + backdrop-blur
+          here just give it the visual character of an app-style action
+          bar so users immediately read it as "primary actions live
+          here." Hidden in the published-success state. */}
       {!published && (
-        <div className="flex-shrink-0 px-4 py-3">
-          <div className="max-w-2xl mx-auto flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-neutral-800">
+        <div className="flex-shrink-0 px-4 py-3 bg-neutral-950/90 backdrop-blur-sm border-t border-neutral-800">
+          <div className="max-w-2xl mx-auto flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-3 text-xs">
-              {onOpenMobileDrafts && (
-                <button
-                  onClick={onOpenMobileDrafts}
-                  className="md:hidden text-xs px-2 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
-                >
-                  Drafts ({draftsCount})
-                </button>
-              )}
+              {/* "Drafts (N)" chip moved to the top action row on
+                  mobile (P1) so it's always visible without scrolling
+                  to the footer. Footer just shows save status. */}
               {footerError && <span className="text-red-400">{footerError}</span>}
               {!footerError && (
                 <span className="text-neutral-600">Draft saved automatically</span>

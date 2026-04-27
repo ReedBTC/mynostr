@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import {
   getCachedRates,
@@ -25,7 +27,7 @@ import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
  *   • visibility='pre-order' → "Pre-order" badge
  *   • otherwise (active + on-sale) → no badge
  */
-export default function ProductCard({ listing, sessionUser, onClick, onEdit }) {
+export default function ProductCard({ listing, sessionUser, profile, onClick, onEdit, onAuthorClick }) {
   const { decoded } = listing
   const cover = decoded.images?.[0]?.url
   const safeCover = cover && isSafeUrl(cover) ? cover : null
@@ -33,6 +35,39 @@ export default function ProductCard({ listing, sessionUser, onClick, onEdit }) {
   const sold       = decoded.status === 'sold'
   const hidden     = decoded.visibility === 'hidden'
   const preorder   = decoded.visibility === 'pre-order'
+
+  const navigate = useNavigate()
+  const { npub: currentUrlNpub } = useParams()
+  // Author identity for the seller row. profile may be undefined
+  // briefly (batch fetch in flight); fallback shows the truncated
+  // pubkey so the row never looks empty.
+  const authorPubkey  = listing.event.pubkey
+  const authorName    = profile?.display_name?.trim() || profile?.name?.trim() || ''
+  const authorPicture = profile?.picture && isSafeUrl(profile.picture) ? profile.picture : null
+
+  function handleAuthorClick(e) {
+    e.stopPropagation()
+    if (onAuthorClick) {
+      onAuthorClick(authorPubkey, profile)
+      return
+    }
+    // Default: navigate to the logged-in user's marketplace search
+    // with this seller pinned. Lands the user on their own profile/
+    // marketplace context (where their own filters and saved state
+    // live) rather than dropping them into the seller's read-only
+    // profile page. Falls back to the current URL's npub for not-
+    // logged-in viewers so they at least stay on whatever profile
+    // they were browsing.
+    try {
+      const sellerNpub = nip19.npubEncode(authorPubkey)
+      const baseNpub = sessionUser?.pubkey
+        ? nip19.npubEncode(sessionUser.pubkey)
+        : (currentUrlNpub || sellerNpub)
+      navigate(`/${baseNpub}/marketplace/search?seller=${sellerNpub}`, { replace: true })
+    } catch {
+      // Bad pubkey shouldn't reach here from a fetched event; no-op.
+    }
+  }
 
   // Menu trigger ref + open state. Card outer is a div (not a button)
   // so the menu trigger can sit as a sibling — nesting buttons is
@@ -101,6 +136,33 @@ export default function ProductCard({ listing, sessionUser, onClick, onEdit }) {
         </div>
       </button>
 
+      {/* Seller row — sibling of the main button (avoids nested
+          buttons). Click filters search to this seller in SearchTab,
+          or navigates to their profile elsewhere (default). */}
+      <button
+        type="button"
+        onClick={handleAuthorClick}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 border-t border-neutral-800/80 hover:bg-neutral-800/60 transition-colors text-left"
+        title={onAuthorClick ? 'Filter by this seller' : 'View seller profile'}
+      >
+        <div className="w-5 h-5 rounded-full bg-neutral-800 border border-neutral-700 overflow-hidden flex-shrink-0 flex items-center justify-center text-[10px] text-neutral-600">
+          {authorPicture ? (
+            <img
+              src={authorPicture}
+              alt=""
+              className="w-full h-full object-cover"
+              referrerPolicy="no-referrer"
+              onError={e => { e.currentTarget.style.display = 'none' }}
+            />
+          ) : (
+            <span aria-hidden>👤</span>
+          )}
+        </div>
+        <span className="text-[11px] text-neutral-400 truncate flex-1 min-w-0">
+          {authorName || `${authorPubkey.slice(0, 8)}…`}
+        </span>
+      </button>
+
       {/* Three-dot menu trigger — absolutely positioned over the cover's
           top-right. stopPropagation so click doesn't fall through to
           the main button (which would open the drawer). */}
@@ -114,7 +176,10 @@ export default function ProductCard({ listing, sessionUser, onClick, onEdit }) {
           onClick={e => { e.stopPropagation(); setMenuOpen(o => !o) }}
           title="Actions"
           aria-label="Product actions"
-          className="p-1 rounded text-neutral-200 bg-neutral-900/70 hover:bg-neutral-800 hover:text-neutral-100 transition-colors backdrop-blur-sm border border-neutral-700/60"
+          // Larger tap target on mobile (~32×32) to clear Apple HIG's
+          // 44pt-ish floor; tighten back to p-1 on md+ so it doesn't
+          // dominate the card on desktop.
+          className="p-2 md:p-1 rounded text-neutral-200 bg-neutral-900/70 hover:bg-neutral-800 hover:text-neutral-100 transition-colors backdrop-blur-sm border border-neutral-700/60"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
             <circle cx="3"  cy="8" r="1.4" />

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -36,6 +37,7 @@ export default function ProductDrawer({
   listing,
   isOwner,
   sessionUser,
+  profile,           // optional kind-0 profile for the listing's author
   onClose,
   onEdit,            // (listing) — kicks "edit in composer" flow
   onDelete,          // (listing) — confirms removal locally after kind-5 publishes
@@ -166,6 +168,18 @@ export default function ProductDrawer({
                 <p className="text-sm text-neutral-400 mt-1.5">{decoded.summary}</p>
               )}
             </div>
+
+            {/* Seller block — pfp + name + "View profile" link.
+                Suppressed in preview (the synthetic listing has no
+                real author identity yet). */}
+            {!previewMode && (
+              <SellerBlock
+                pubkey={pubkey}
+                profile={profile}
+                sessionUser={sessionUser}
+                onClose={onClose}
+              />
+            )}
 
             <PriceBlock price={decoded.price} />
 
@@ -350,7 +364,7 @@ function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, prev
 
       <button
         onClick={onClose}
-        className={`${isOwner ? '' : 'ml-auto '}text-neutral-500 hover:text-neutral-200 transition-colors text-lg leading-none flex-shrink-0`}
+        className={`${isOwner ? '' : 'ml-auto '}text-neutral-500 hover:text-neutral-200 transition-colors text-xl leading-none flex-shrink-0 p-1.5 -m-1.5`}
         aria-label="Close"
       >
         ✕
@@ -492,6 +506,83 @@ function FailureGroup({ label, items, hint }) {
       {hint && (
         <p className="text-[10px] text-neutral-500 leading-relaxed pt-1">{hint}</p>
       )}
+    </div>
+  )
+}
+
+// ─── Seller block (pfp + name + view-profile link) ──────────────────────────
+
+function SellerBlock({ pubkey, profile, sessionUser, onClose }) {
+  const navigate = useNavigate()
+  // Current URL's npub — used as a fallback "context" for not-logged-
+  // in viewers. When the user IS logged in, both navigation paths
+  // below land on /{sessionNpub}/marketplace/search instead, so the
+  // user ends up on their own marketplace page with the seller filter
+  // applied (rather than getting dropped into a read-only view of
+  // someone else's profile).
+  const { npub: currentUrlNpub } = useParams()
+  const name    = profile?.display_name?.trim() || profile?.name?.trim() || ''
+  const picture = profile?.picture && isSafeUrl(profile.picture) ? profile.picture : null
+  const nip05   = profile?.nip05?.trim() || ''
+  const npubShort = (() => {
+    try { return nip19.npubEncode(pubkey).slice(0, 16) + '…' } catch { return pubkey.slice(0, 8) + '…' }
+  })()
+
+  // Both pfp and "View their listings" buttons share one destination:
+  // logged-in user's marketplace search with this seller pinned.
+  // Closes the drawer first so the user sees the destination feed,
+  // not the modal lingering on top of it.
+  function goToSellerListings() {
+    try {
+      const sellerNpub = nip19.npubEncode(pubkey)
+      const baseNpub = sessionUser?.pubkey
+        ? nip19.npubEncode(sessionUser.pubkey)
+        : (currentUrlNpub || sellerNpub)
+      onClose?.()
+      navigate(`/${baseNpub}/marketplace/search?seller=${sellerNpub}`, { replace: true })
+    } catch {
+      // Bad pubkey — no-op.
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-2.5 rounded border border-neutral-800 bg-neutral-900">
+      <button
+        type="button"
+        onClick={goToSellerListings}
+        className="flex items-center gap-3 flex-1 min-w-0 text-left group"
+        title="See this seller's other listings"
+      >
+        <div className="w-10 h-10 rounded-full bg-neutral-800 border border-neutral-700 overflow-hidden flex-shrink-0 flex items-center justify-center text-neutral-600">
+          {picture ? (
+            <img
+              src={picture}
+              alt=""
+              className="w-full h-full object-cover"
+              referrerPolicy="no-referrer"
+              onError={e => { e.currentTarget.style.display = 'none' }}
+            />
+          ) : (
+            <span aria-hidden>👤</span>
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-neutral-100 group-hover:text-white truncate">
+            {name || npubShort}
+          </p>
+          {nip05 && (
+            <p className="text-[11px] text-neutral-500 truncate">{nip05}</p>
+          )}
+        </div>
+      </button>
+      <button
+        type="button"
+        onClick={goToSellerListings}
+        title="See this seller's other listings"
+        className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 transition-colors flex-shrink-0"
+      >
+        View their listings
+      </button>
     </div>
   )
 }

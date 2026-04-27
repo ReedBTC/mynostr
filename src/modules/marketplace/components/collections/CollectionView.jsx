@@ -7,6 +7,7 @@ import {
   KIND_PRODUCT,
   WATCHLIST_D_TAG,
 } from '../../../../lib/gamma.js'
+import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
 import ProductCard from '../selling/ProductCard.jsx'
 import ProductDrawer from '../selling/ProductDrawer.jsx'
 import CollectionEditModal from './CollectionEditModal.jsx'
@@ -33,6 +34,11 @@ export default function CollectionView({
   const dTag = decoded.dTag
 
   const [resolved, setResolved] = useState([])
+  // Batch-fetch profiles for whoever's items end up in this collection
+  // (collections can mix authors — your watchlist of others' listings,
+  // a curated set, etc.). Hook accumulates across re-fetches so the
+  // map only grows.
+  const profileMap = useListingProfiles(resolved)
   const [unavailableCount, setUnavailableCount] = useState(0)
   const [resolving, setResolving] = useState(false)
   const [openListing, setOpenListing] = useState(null)
@@ -212,6 +218,7 @@ export default function CollectionView({
                   key={l.event.id}
                   listing={l}
                   sessionUser={sessionUser}
+                  profile={profileMap.get(l.event.pubkey)}
                   onClick={() => setOpenListing(l)}
                 />
               ))}
@@ -233,6 +240,7 @@ export default function CollectionView({
           listing={liveOpenListing}
           isOwner={false}
           sessionUser={sessionUser}
+          profile={profileMap.get(liveOpenListing.event.pubkey)}
           onClose={() => setOpenListing(null)}
         />
       )}

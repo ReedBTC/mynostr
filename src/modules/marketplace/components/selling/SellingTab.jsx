@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useSelling } from '../../../../lib/useSelling.js'
+import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
 import ProductCard from './ProductCard.jsx'
 import ProductDrawer from './ProductDrawer.jsx'
 
@@ -28,6 +29,11 @@ export default function SellingTab({
     if (isOwner) return listings
     return listings.filter(l => l.decoded.visibility !== 'hidden')
   }, [listings, isOwner])
+
+  // Batch-fetch the seller profile (just one author here, but reusing
+  // the shared hook keeps the rendering path identical to the search +
+  // collection feeds).
+  const profileMap = useListingProfiles(visible)
 
   const [openListing, setOpenListing] = useState(null)
   // Re-resolve the open listing from the live array so a re-fetch /
@@ -94,6 +100,7 @@ export default function SellingTab({
                   key={l.event.id}
                   listing={l}
                   sessionUser={sessionUser}
+                  profile={profileMap.get(l.event.pubkey)}
                   onClick={() => setOpenListing(l)}
                   onEdit={onEdit}
                 />
@@ -108,6 +115,7 @@ export default function SellingTab({
           listing={liveOpenListing}
           isOwner={isOwner}
           sessionUser={sessionUser}
+          profile={profileMap.get(liveOpenListing.event.pubkey)}
           onClose={() => setOpenListing(null)}
           onEdit={handleEdit}
           onDelete={handleDelete}

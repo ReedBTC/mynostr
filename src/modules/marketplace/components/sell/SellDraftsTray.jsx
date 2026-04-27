@@ -139,21 +139,23 @@ function DraftRow({ draft, isCurrent, index, total, onSelect, onDelete, onMove }
       {/* Reorder arrows — left edge of the row, far from the trash icon
           to avoid mis-clicks. Stacked vertically with bigger hit
           targets so they're easy to tap. Same hover-revealed visibility
-          as the trash on desktop; always tappable on mobile. */}
+          as the trash on desktop; always tappable on mobile. Tap
+          targets are ~32×24 on mobile, tightening to compact on md+ so
+          they don't dominate the desktop tray. */}
       <div className="flex flex-col items-center justify-center shrink-0 md:opacity-0 md:group-hover:opacity-100 transition-opacity self-stretch">
         <button
           onClick={e => { e.stopPropagation(); onMove?.(-1) }}
           disabled={index === 0}
           title="Move up"
           aria-label="Move up in publish queue"
-          className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-1.5 py-0.5 leading-none text-sm"
+          className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-2 py-1 md:px-1.5 md:py-0.5 leading-none text-sm"
         >▲</button>
         <button
           onClick={e => { e.stopPropagation(); onMove?.(1) }}
           disabled={index === total - 1}
           title="Move down"
           aria-label="Move down in publish queue"
-          className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-1.5 py-0.5 leading-none text-sm"
+          className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-2 py-1 md:px-1.5 md:py-0.5 leading-none text-sm"
         >▼</button>
       </div>
 
@@ -192,7 +194,10 @@ function DraftRow({ draft, isCurrent, index, total, onSelect, onDelete, onMove }
         onClick={e => { e.stopPropagation(); setPending(true) }}
         title="Delete draft"
         aria-label="Delete draft"
-        className="shrink-0 text-neutral-500 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-opacity p-1 -m-1"
+        // Larger tap target on mobile; tight on md+ to keep desktop
+        // density. -m-1 cancels the extra padding visually so the row
+        // doesn't grow vertically on either breakpoint.
+        className="shrink-0 text-neutral-500 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-opacity p-2 -m-1 md:p-1"
       >
         <TrashIcon />
       </button>
