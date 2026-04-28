@@ -543,32 +543,15 @@ hr { border: none; border-top: 1px solid #ccc; margin: 1.5em 0; }
   margin: 0.3em 0 0.1em;
   color: #444;
 }
-.article-title-page .article-qr .qr-lud16 {
-  font-family: monospace;
+.article-title-page .article-qr .qr-subcaption {
   font-size: 0.75em;
   color: #666;
-  word-break: break-all;
+  margin: 0.1em 1.5em 0;
+  line-height: 1.35;
 }`
 }
 
 // ─── Per-chapter title page + QR helpers ───────────────────────────────────
-
-// Convert a Nostr lud16 (e.g. "name@domain.tld") or lud06 (LNURL bech32)
-// into the bech32-friendly QR payload most wallets accept. lud16 →
-// "lightning:user@domain"; lud06 → already a bech32, keep as-is.
-function lud16ToQrPayload(lud16) {
-  if (!lud16) return ''
-  const trimmed = String(lud16).trim()
-  if (!trimmed) return ''
-  // LNURL strings start with "lnurl1" — already bech32-encoded, wallets
-  // recognise them directly.
-  if (/^lnurl1/i.test(trimmed)) return trimmed
-  // "user@domain" form — most wallets treat this as a Lightning Address.
-  // Prefix with "lightning:" to make the QR scan into a deep link in
-  // wallet apps that hook the URI scheme.
-  if (/.+@.+\..+/.test(trimmed)) return `lightning:${trimmed}`
-  return trimmed
-}
 
 // Render a QR for the given payload as a PNG Blob suitable for
 // embedding in the EPUB's OEBPS/qr/ folder. Uses the `qrcode` package's
@@ -615,7 +598,12 @@ async function fetchArticleCoverBlob(imageUrl) {
 
 // Build a chapter's title page XHTML. Embedded image / QR refs are
 // relative paths the OPF declares as manifest items.
-function articleTitlePageXhtml({ title, subtitle, author, npub, dateStr, coverHref, qrHref, lud16 }) {
+//
+// The QR is a "view on Nostr" link back to the article on Primal or
+// zap.cooking — gives offline readers a way to jump back online to
+// like, comment, zap, or bookmark. The image is wrapped in an <a> so
+// readers that honour anchors get a tappable target too.
+function articleTitlePageXhtml({ title, subtitle, author, npub, dateStr, coverHref, qrHref, viewUrl }) {
   const coverImg = coverHref
     ? `<img class="article-cover" src="${esc(coverHref)}" alt=""/>`
     : ''
@@ -636,11 +624,11 @@ function articleTitlePageXhtml({ title, subtitle, author, npub, dateStr, coverHr
   const metaP = metaParts.length
     ? `<p class="article-meta">${metaParts.join('<br/>')}</p>`
     : ''
-  const qrBlock = qrHref
+  const qrBlock = qrHref && viewUrl
     ? `<div class="article-qr">
-      <img src="${esc(qrHref)}" alt="Zap QR code"/>
-      <p class="qr-caption">Zap this author</p>
-      ${lud16 ? `<p class="qr-lud16">${esc(lud16)}</p>` : ''}
+      <a href="${esc(viewUrl)}"><img src="${esc(qrHref)}" alt="View this article on Nostr"/></a>
+      <p class="qr-caption">View on Nostr</p>
+      <p class="qr-subcaption">to like, comment, zap or bookmark this article to your collection.</p>
     </div>`
     : ''
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -840,7 +828,7 @@ function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified,
   //   • ch{N}-title.xhtml          — title page (always)
   //   • ch{N}.xhtml                — chapter content (always)
   //   • img/ch{N}.{ext}            — article cover image (optional)
-  //   • qr/ch{N}.png               — author zap QR (optional)
+  //   • qr/ch{N}.png               — view-on-Nostr QR (optional)
   //   • img/inline/ch{N}-K.{ext}   — embedded inline content images (0..N)
   // And two spine entries per chapter (title page → content) so
   // every reader paginates the title page distinctly.
@@ -919,10 +907,15 @@ function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified,
 }
 
 function chapterizedNcx({ bookId, title, chapters }) {
+  // TOC entries point at the chapter's title page (ch{N}-title.xhtml)
+  // rather than the content (ch{N}.xhtml). The title page carries the
+  // cover image, byline, zap QR and view-on-Nostr QR — landing there
+  // lets the reader scan a QR or zap before reading, and the natural
+  // page-turn drops them into the content. Same intent in chapterizedNav.
   const navPoints = chapters.map((ch, i) => `
     <navPoint id="np${i + 1}" playOrder="${i + 1}">
       <navLabel><text>${esc(ch.title || `Chapter ${i + 1}`)}</text></navLabel>
-      <content src="ch${i + 1}.xhtml"/>
+      <content src="ch${i + 1}-title.xhtml"/>
     </navPoint>`).join('')
 
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -1027,10 +1020,12 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
 // link to that chapter, so readers don't need to aim at just the
 // title text.
 function chapterizedNav({ title, chapters }) {
+  // Each row links to ch{N}-title.xhtml (the cover/title page) instead
+  // of ch{N}.xhtml (the article content). See chapterizedNcx for why.
   const items = chapters.map((ch, i) => {
     const titleEsc  = esc(ch.title || `Chapter ${i + 1}`)
     const authorPart = ch.author ? ` - ${esc(ch.author)}` : ''
-    return `\n      <li><a href="ch${i + 1}.xhtml">${i + 1}: ${titleEsc}${authorPart}</a></li>`
+    return `\n      <li><a href="ch${i + 1}-title.xhtml">${i + 1}: ${titleEsc}${authorPart}</a></li>`
   }).join('')
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -1105,10 +1100,6 @@ export async function exportChapterizedEpub(articles, options = {}) {
     metadata: a.metadata || {},
     pubkey:   a.pubkey || '',
     dTag:     a.dTag || '',
-    // lud16 for the per-chapter zap-QR. Callers should populate from
-    // the article author's kind 0 profile when available; absent
-    // value just means the QR is skipped for that chapter.
-    lud16:    a.lud16 || '',
   }))
 
   // Per-chapter assets (article cover fetch + QR PNG generation +
@@ -1120,14 +1111,20 @@ export async function exportChapterizedEpub(articles, options = {}) {
   const chapterAssets = await Promise.all(chapters.map(async (ch, i) => {
     const idx = i + 1
     const rawBodyHtml = mdToXhtml(ch.content)
+    // Source links: { naddr, viewUrl, isRecipe } — viewUrl points at the
+    // article's Primal or zap.cooking page. Null when we can't build a
+    // valid naddr (missing pubkey or d-tag), in which case the QR is
+    // silently skipped for that chapter.
+    const sourceLinks = buildChapterSourceLinks(ch)
     const [articleCoverBlob, qrBlob, inlineResult] = await Promise.all([
       fetchArticleCoverBlob(ch.metadata?.image),
-      generateQrPngBlob(lud16ToQrPayload(ch.lud16)),
+      generateQrPngBlob(sourceLinks?.viewUrl || ''),
       embedInlineImages(rawBodyHtml, idx),
     ])
     const out = {
       coverHref:      null,
       qrHref:         null,
+      viewUrl:        sourceLinks?.viewUrl || null,
       coverManifest:  null,
       qrManifest:     null,
       bodyHtml:       inlineResult.html,
@@ -1237,7 +1234,7 @@ export async function exportChapterizedEpub(articles, options = {}) {
       dateStr,
       coverHref: a.coverHref,
       qrHref:    a.qrHref,
-      lud16:     ch.lud16,
+      viewUrl:   a.viewUrl,
     }))
     zip.file(`OEBPS/ch${i + 1}.xhtml`, contentXhtml({
       title:    ch.title,

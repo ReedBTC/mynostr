@@ -74,11 +74,11 @@ export default function ExportCustomizationModal({
   // EPUB metadata — npub is dropped because EPUB's `<dc:creator>` has
   // no place to put a profile URL.
   const sessionDisplayName = sessionUser?.profile?.displayName || sessionUser?.profile?.name || ''
-  const [author, setAuthor] = useState({
-    name: sessionDisplayName,
-    npub: sessionUser?.npub || '',
-    picture: sessionUser?.profile?.image || sessionUser?.profile?.picture || '',
-  })
+  // Author defaults to blank — for curated collections the EPUB creator
+  // is rarely the curator (the chapters carry their own per-article
+  // bylines), and pre-filling the session name silently leaks it onto
+  // every export. Blank-by-default lets the user opt in by typing.
+  const [author, setAuthor] = useState({ name: '', npub: '', picture: '' })
   // "Various" — common case for curated collections where there's no
   // single author. When checked, the author field is greyed out and
   // the literal string "Various" is used as the EPUB creator. Reader
@@ -128,11 +128,7 @@ export default function ExportCustomizationModal({
     setIncludeToc(true)
     setIncludeCredits(true)
     setIncludeCuratedBy(true)
-    setAuthor({
-      name: sessionDisplayName,
-      npub: sessionUser?.npub || '',
-      picture: sessionUser?.profile?.image || sessionUser?.profile?.picture || '',
-    })
+    setAuthor({ name: '', npub: '', picture: '' })
     setAuthorVarious(false)
     setCurator({
       name: sessionDisplayName,
