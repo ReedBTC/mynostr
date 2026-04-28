@@ -20,6 +20,8 @@ import {
   publishDmRelayList,
   normalizeRelayUrl,
   suggestDmRelays,
+  isPaidRelay,
+  paidRelayInfoUrl,
 } from '../../lib/relayInfo.js'
 import DmRelayFAQ from './DmRelayFAQ.jsx'
 import InfoDot from './InfoDot.jsx'
@@ -411,10 +413,7 @@ function StatusDot({ info }) {
 }
 
 function PaidBadge({ info }) {
-  if (!info || info._error) return null
-  const lim = info.limitation || {}
-  const paid = Boolean(info.payments_url || lim.payment_required || (info.fees && Object.keys(info.fees).length))
-  if (!paid) return null
+  if (!isPaidRelay(info)) return null
   return (
     <span
       title="Paid relay — charges for write access."
@@ -422,6 +421,24 @@ function PaidBadge({ info }) {
     >
       P
     </span>
+  )
+}
+
+function JoinLink({ info, relayUrl }) {
+  if (!isPaidRelay(info)) return null
+  const href = paidRelayInfoUrl(info, relayUrl)
+  if (!href) return null
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      title="Open the relay's site to see pricing, sign up, or manage your subscription."
+      className="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-semibold leading-none bg-amber-950/40 text-amber-300 border border-amber-900/70 hover:bg-amber-900/50 hover:text-amber-200 hover:border-amber-700 transition-colors"
+    >
+      Join
+    </a>
   )
 }
 
@@ -470,6 +487,7 @@ function RelayList({ relays, infoByUrl, copier }) {
             </div>
             <div className="shrink-0 w-[72px] px-2 border-l border-neutral-900 flex items-center justify-end gap-1.5">
               <PaidBadge info={info} />
+              <JoinLink info={info} relayUrl={url} />
               {assessment.info && (
                 <InfoDot align="right">{assessment.info}</InfoDot>
               )}

@@ -13,7 +13,7 @@
  */
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, connectAndWait, signWithTimeout, FALLBACK_RELAYS, publishToOwnOutbox } from './ndk.js'
-import { createLRU } from './utils.js'
+import { createLRU, isSafeUrl } from './utils.js'
 
 const NIP11_CACHE   = createLRU(100)
 const NIP11_TTL_MS  = 60 * 60 * 1000
@@ -315,6 +315,43 @@ export function suggestDmRelays(writeList, infoByUrl) {
   const picked = candidates.slice(0, 3).map(c => c.url)
   if (picked.length) return picked
   return FALLBACK.slice(0, 3)
+}
+
+/**
+ * Whether a NIP-11 doc indicates a paid relay. Three signals, any one wins:
+ *   - explicit payments_url
+ *   - limitation.payment_required flag
+ *   - non-empty fees object (admission/publication/subscription tiers)
+ */
+export function isPaidRelay(info) {
+  if (!info || info._error) return false
+  const lim = info.limitation || {}
+  return Boolean(info.payments_url || lim.payment_required || (info.fees && Object.keys(info.fees).length))
+}
+
+/**
+ * Best-effort user-facing URL for a paid relay — where the user can find
+ * pricing, sign up, or check on a subscription. Paid relays are a real pain
+ * point: most users hit them, can't tell what they're paying for, and bounce.
+ *
+ * Order of preference:
+ *   1. payments_url     — NIP-11's explicit "where to pay" link
+ *   2. posting_policy   — sometimes the only URL declared (terms/pricing page)
+ *   3. relay HTTPS origin — most relays serve a landing page at their root
+ *
+ * Returns null only when nothing safe is available.
+ */
+export function paidRelayInfoUrl(info, relayUrl) {
+  if (info && !info._error) {
+    if (isSafeUrl(info.payments_url))   return info.payments_url
+    if (isSafeUrl(info.posting_policy)) return info.posting_policy
+  }
+  try {
+    const u = new URL(relayUrl)
+    if (u.protocol === 'wss:') return `https://${u.host}/`
+    if (u.protocol === 'ws:')  return `http://${u.host}/`
+  } catch {}
+  return null
 }
 
 // NIP-65: each "r" tag is ["r", "<wss url>"] or ["r", "<wss url>", "read"|"write"].

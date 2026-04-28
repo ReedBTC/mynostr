@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { SUPPLEMENTAL_PUBLISH_RELAYS } from '../../../../lib/marketplaceRelays.js'
+import { fetchNip11, isPaidRelay, paidRelayInfoUrl } from '../../../../lib/relayInfo.js'
 import { useRelayCopier, CopyButton } from '../../../profile/useRelayCopier.jsx'
 
 /**
@@ -15,14 +17,32 @@ import { useRelayCopier, CopyButton } from '../../../profile/useRelayCopier.jsx'
  * propagate correctly, so listings remain unpublishable from any client
  * that respects NIP-09.
  *
- * Paid relays render an additional "Sign up ↗" link plus a "Paid" pill
- * — without payment, writes silently fail, and surfacing the signup
+ * Paid relays render an additional "Sign up / pay ↗" link plus a "Paid"
+ * pill. The hardcoded `signupUrl` (when present) wins as the operator-
+ * vetted landing page; otherwise we read NIP-11 live and fall back to
+ * payments_url, posting_policy, or the relay's HTTPS origin. Paid relays
+ * silently drop writes from non-paying users, and surfacing the signup
  * URL inline saves users from a confusing dead-end.
  */
 export default function MarketplaceRelaySuggestions() {
   // allowOwn:true — composer is owner-only, so the user IS viewing
   // their own page; the default copier mode would gate canCopy off.
   const copier = useRelayCopier({ kind: 'main', allowOwn: true })
+
+  // Fetch NIP-11 for each suggested relay so we can detect paid status
+  // dynamically — operators add or drop fees without us knowing, and the
+  // hardcoded `paid` field on entries goes stale fast.
+  const [infoByUrl, setInfoByUrl] = useState({})
+  useEffect(() => {
+    let cancelled = false
+    for (const { url } of SUPPLEMENTAL_PUBLISH_RELAYS) {
+      fetchNip11(url).then(info => {
+        if (cancelled) return
+        setInfoByUrl(prev => ({ ...prev, [url]: info }))
+      })
+    }
+    return () => { cancelled = true }
+  }, [])
 
   return (
     <div className="mt-3 pt-3 border-t border-neutral-800">
@@ -38,39 +58,47 @@ export default function MarketplaceRelaySuggestions() {
       </div>
 
       <ul className="space-y-1.5">
-        {SUPPLEMENTAL_PUBLISH_RELAYS.map(({ url, label, hint, paid, signupUrl }) => (
-          <li
-            key={url}
-            className="flex items-start gap-2 px-2 py-1.5 rounded border border-neutral-800"
-          >
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-xs text-neutral-200">{label}</span>
-                {paid && (
-                  <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800/60">
-                    Paid
-                  </span>
+        {SUPPLEMENTAL_PUBLISH_RELAYS.map(({ url, label, hint, paid: paidHint, signupUrl }) => {
+          const info = infoByUrl[url]
+          // NIP-11 is authoritative once it lands; the hardcoded `paid`
+          // hint is a pre-fetch guess so the Paid pill isn't a flicker.
+          const paid = isPaidRelay(info) || (!info && Boolean(paidHint))
+          const href = paid ? (signupUrl || paidRelayInfoUrl(info, url)) : null
+          return (
+            <li
+              key={url}
+              className="flex items-start gap-2 px-2 py-1.5 rounded border border-neutral-800"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs text-neutral-200">{label}</span>
+                  {paid && (
+                    <span className="text-[9px] uppercase tracking-wider px-1 py-0.5 rounded bg-amber-900/40 text-amber-300 border border-amber-800/60">
+                      Paid
+                    </span>
+                  )}
+                </div>
+                <div className="text-[10px] text-neutral-500">{hint}</div>
+                <div className="text-[10px] text-neutral-600 font-mono truncate">{url}</div>
+                {paid && href && (
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open the relay's site to see what you get, sign up, or check on a subscription."
+                    className="text-[10px] text-purple-400 hover:text-purple-300 underline mt-0.5 inline-block"
+                  >
+                    Sign up / pay ↗
+                  </a>
                 )}
               </div>
-              <div className="text-[10px] text-neutral-500">{hint}</div>
-              <div className="text-[10px] text-neutral-600 font-mono truncate">{url}</div>
-              {paid && signupUrl && (
-                <a
-                  href={signupUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[10px] text-purple-400 hover:text-purple-300 underline mt-0.5 inline-block"
-                >
-                  Sign up / pay ↗
-                </a>
-              )}
-            </div>
 
-            <div className="flex-shrink-0 pt-0.5">
-              <CopyButton url={url} read={true} write={true} {...copier} />
-            </div>
-          </li>
-        ))}
+              <div className="flex-shrink-0 pt-0.5">
+                <CopyButton url={url} read={true} write={true} {...copier} />
+              </div>
+            </li>
+          )
+        })}
       </ul>
 
       {copier.modalElement}

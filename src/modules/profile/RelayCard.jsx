@@ -26,6 +26,8 @@ import {
   fetchUserRelayList,
   publishRelayList,
   normalizeRelayUrl,
+  isPaidRelay,
+  paidRelayInfoUrl,
 } from '../../lib/relayInfo.js'
 import RelayFAQ from './RelayFAQ.jsx'
 import { useRelayCopier, CopyButton } from './useRelayCopier.jsx'
@@ -461,12 +463,6 @@ function StatusDot({ info }) {
   )
 }
 
-function isPaidRelay(info) {
-  if (!info || info._error) return false
-  const lim = info.limitation || {}
-  return Boolean(info.payments_url || lim.payment_required || (info.fees && Object.keys(info.fees).length))
-}
-
 function PaidBadge({ info }) {
   if (!isPaidRelay(info)) return null
   return (
@@ -476,6 +472,27 @@ function PaidBadge({ info }) {
     >
       P
     </span>
+  )
+}
+
+// Small "Join" pill rendered next to PaidBadge — links out to where the
+// user can see what they get, sign up, or check on a subscription. Sized
+// to match the W/R/P pills so the row stays one tidy line of badges.
+function JoinLink({ info, relayUrl }) {
+  if (!isPaidRelay(info)) return null
+  const href = paidRelayInfoUrl(info, relayUrl)
+  if (!href) return null
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      title="Open the relay's site to see pricing, sign up, or manage your subscription."
+      className="inline-flex items-center px-1 py-0.5 rounded text-[9px] font-semibold leading-none bg-amber-950/40 text-amber-300 border border-amber-900/70 hover:bg-amber-900/50 hover:text-amber-200 hover:border-amber-700 transition-colors"
+    >
+      Join
+    </a>
   )
 }
 
@@ -534,6 +551,7 @@ function DesktopTable({ relays, infoByUrl, copier }) {
                   <StatusDot info={info} />
                   <RWBadge read={r.read} write={r.write} />
                   <PaidBadge info={info} />
+                  <JoinLink info={info} relayUrl={r.url} />
                 </span>
               </td>
               {FEATURES.map(f => (
@@ -576,6 +594,7 @@ function MobileList({ relays, infoByUrl, copier }) {
               </div>
               <div className="shrink-0 flex items-center gap-1.5">
                 <PaidBadge info={info} />
+                <JoinLink info={info} relayUrl={r.url} />
                 <StatusDot info={info} />
                 <RWBadge read={r.read} write={r.write} />
               </div>
