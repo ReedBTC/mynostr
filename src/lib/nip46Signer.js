@@ -188,6 +188,17 @@ export function restoreFromSession({ ndk, clientSecret, bunkerPointer, userPubke
 // (older spec, still widely emitted) — both of which would be silently
 // ignored. nostr-login solves this the same way we do (see reference
 // implementation /tmp/nl-nip46.ts `parseNostrConnectReply` and `listen`).
+// Diagnostic-log helper. Info-level and prefixed so the default
+// console isn't bloated, but visible when users paste DevTools output
+// while reporting "stuck on mobile login" issues — lets us see exactly
+// which step of the nostrconnect handshake is failing.
+function nip46Log(...args) {
+  try {
+    // eslint-disable-next-line no-console
+    console.info('[mynostr-nip46]', ...args)
+  } catch {}
+}
+
 export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecretKey, onAuthUrl, signal, resubscribeBus, timeoutMs = 300000 }) {
   const uri = new URL(connectionUri)
   const relays = uri.searchParams.getAll('relay')
@@ -195,6 +206,7 @@ export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecr
   if (!relays.length) throw new Error('nostrconnect URI missing relay.')
   if (!secret) throw new Error('nostrconnect URI missing secret.')
   const clientPubkey = getPublicKey(clientSecretKey)
+  nip46Log('handshake start; relays:', relays.length, 'clientPubkey:', clientPubkey.slice(0, 8) + '…')
 
   // Wait for the bunker's first valid reply. It comes as a kind 24133 event
   // addressed to #p=clientPubkey. Bunkers use any of three patterns:
@@ -246,18 +258,28 @@ export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecr
 
     function onevent(event) {
       if (settled) return
+      nip46Log('event received from', event.pubkey.slice(0, 8) + '…')
       const plaintext = decryptNip46Content(clientSecretKey, event.pubkey, event.content)
-      if (!plaintext) return
+      if (!plaintext) {
+        nip46Log('decrypt failed for', event.pubkey.slice(0, 8) + '…')
+        return
+      }
       let parsed
-      try { parsed = JSON.parse(plaintext) } catch { return }
+      try { parsed = JSON.parse(plaintext) } catch {
+        nip46Log('parse failed for', event.pubkey.slice(0, 8) + '…')
+        return
+      }
       const { method, params, result, error } = parsed
+      nip46Log('parsed response:', { method, hasResult: result != null, hasError: error != null })
 
       if (result === 'auth_url') {
+        nip46Log('auth_url challenge; opening for user approval')
         try { onAuthUrl?.(error) } catch {}
         return
       }
 
       if (result === secret || result === 'ack') {
+        nip46Log('handshake matched via', result === 'ack' ? 'ack' : 'secret-echo', 'from', event.pubkey.slice(0, 8) + '…')
         settled = true
         clearTimeout(timer)
         if (signal) signal.removeEventListener('abort', onAbort)
@@ -269,6 +291,7 @@ export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecr
 
       if (method === 'connect' && Array.isArray(params)) {
         if (params.includes(secret)) {
+          nip46Log('handshake matched via connect-method from', event.pubkey.slice(0, 8) + '…')
           settled = true
           clearTimeout(timer)
           if (signal) signal.removeEventListener('abort', onAbort)
@@ -330,11 +353,20 @@ export async function connectViaNostrConnectUri({ ndk, connectionUri, clientSecr
   // get_public_key RPC compounded with `authors`-filtered subscription
   // latency has been making login feel stuck. The original relays work fine.
 
+  // 30s ceiling on get_public_key. After the connect handshake completes,
+  // BunkerSigner opens a fresh pool to send get_public_key — on mobile
+  // this can be slow because (a) new WebSockets handshake from scratch
+  // and (b) Amber may prompt a *second* time for the read-pubkey
+  // permission scope, which means another tab switch + user gesture
+  // before the response is published. 15s was tight; 30s clears the
+  // realistic worst case without slowing happy paths.
+  nip46Log('calling get_public_key on bunker')
   const userPubkey = await withTimeout(
     bs.getPublicKey(),
-    15000,
+    30000,
     'Bunker did not return the user pubkey.'
   )
+  nip46Log('got user pubkey:', userPubkey.slice(0, 8) + '…')
 
   return new Nip46BunkerSigner({
     ndk,

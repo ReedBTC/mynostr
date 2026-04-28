@@ -75,6 +75,16 @@ function clearPendingNip46() {
 export default function LoginScreen({ onLogin, embedded = false }) {
   const isMobile = useIsMobile()
   const [nsecValue, setNsecValue] = useState('')
+  // Sub-state under the primary action button so users see *what's
+  // happening* during a multi-second flow. Especially important on
+  // mobile / Firefox Android where the extension's approval popup
+  // is hidden under the menu — without this the user thinks the app
+  // is stuck and bails before approving.
+  const [loadingStep, setLoadingStep] = useState('')
+  // Tracks whether we've already auto-retried after a Firefox-style
+  // 'message channel closed' error. The second time it fails we surface
+  // the helpful error instead of looping forever.
+  const firefoxRetryRef = useRef(false)
   const [bunkerValue, setBunkerValue] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -169,6 +179,13 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       // Stage 2 — arm the stuck-prompt timer. Clear any prior timer so
       // multiple bg/fg cycles don't pile up.
       if (qrStuckTimerRef.current) clearTimeout(qrStuckTimerRef.current)
+      // 5s on mobile, 10s desktop. When the user comes back from the
+      // signer app and the handshake didn't land, it's almost always
+      // because the OS killed the WebSocket while they were tabbed
+      // away. Faster prompt on mobile = faster path to "fresh URI,
+      // try again" recovery. Desktop has no tab-kill issue, so
+      // longer is fine.
+      const stuckPromptMs = isMobile ? 5000 : 10000
       qrStuckTimerRef.current = setTimeout(() => {
         qrStuckTimerRef.current = null
         // Only prompt if we're STILL waiting — handshake may have
@@ -176,7 +193,7 @@ export default function LoginScreen({ onLogin, embedded = false }) {
         if (qrSignerRef.current && qrWaiting) {
           setQrStuckPrompt(true)
         }
-      }, 10000)
+      }, stuckPromptMs)
     }
     document.addEventListener('visibilitychange', onVis)
     return () => {
@@ -203,17 +220,22 @@ export default function LoginScreen({ onLogin, embedded = false }) {
     // fails, the QR is still ready for the user to scan without
     // refreshing the page.
     setLoading(true)
-    // Some extensions inject window.nostr asynchronously — poll briefly, but
-    // allow a competing login flow to abort via extPollTokenRef.
+    setLoadingStep('Looking for your extension…')
+    // Some extensions inject window.nostr asynchronously — poll briefly,
+    // but allow a competing login flow to abort via extPollTokenRef.
+    // 3000ms ceiling: Firefox Android with nos2x-fox can take 2–3s to
+    // inject window.nostr on slow devices; the old 1500ms gave a
+    // misleading "no extension detected" before the extension had a
+    // chance to load.
     const token = { aborted: false }
     extPollTokenRef.current = token
     if (!window.nostr) {
       const start = Date.now()
-      while (!window.nostr && !token.aborted && Date.now() - start < 1500) {
+      while (!window.nostr && !token.aborted && Date.now() - start < 3000) {
         await new Promise(r => setTimeout(r, 100))
       }
     }
-    if (token.aborted) { setLoading(false); return }
+    if (token.aborted) { setLoading(false); setLoadingStep(''); return }
     if (!window.nostr) {
       // Only suggest localhost when on a non-secure origin — on HTTPS that hint is nonsense.
       const insecureOrigin = typeof window !== 'undefined'
@@ -226,6 +248,7 @@ export default function LoginScreen({ onLogin, embedded = false }) {
         : ''
       setError(base + originHint)
       setLoading(false)
+      setLoadingStep('')
       return
     }
     try {
@@ -233,28 +256,75 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       const signer = new NDKNip07Signer()
       const ndk = getNDK()
       ndk.signer = signer
-      await withTimeout(signer.blockUntilReady(), 15000, '__timeout__')
+      // 60s ceiling: mobile users have to fumble through menus to find
+      // the extension's approval popup; desktop users have to click
+      // through the popup. Long ceiling only fires on actual failure.
+      setLoadingStep('Approve in your extension…')
+      await withTimeout(signer.blockUntilReady(), 60000, '__timeout__')
+      setLoadingStep('Connecting to relays…')
       await connectAndWait(ndk)
       const pubkey = await signer.user()
       await ensureUserWriteRelays(ndk, pubkey.pubkey)
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
       saveSession(buildExtensionRecord(pubkey.pubkey))
+      // Reset Firefox-retry flag on success so a later sign-out + sign-
+      // back-in doesn't pre-cancel a real retry.
+      firefoxRetryRef.current = false
       onLogin(user)
     } catch (err) {
-      if (err.message === '__timeout__') {
+      // Firefox Android (and sometimes desktop Firefox) surfaces an
+      // opaque error string when the extension opens an approval popup
+      // but the user hasn't found + tapped it before the message
+      // channel dies. The actual fix is one round of "tap Allow → try
+      // again" — auto-retry once after 5s so by the time the retry
+      // fires, the user has approved the origin and login completes
+      // silently. Falls through to the helpful error if the second
+      // attempt also fails.
+      const errMsg = err?.message || ''
+      const isFirefoxChannelClosed = /went out of scope|Receiving end does not exist|message channel closed/i.test(errMsg)
+      if (isFirefoxChannelClosed && !firefoxRetryRef.current) {
+        firefoxRetryRef.current = true
+        setError('Tap "Allow" in your extension popup — we\'ll retry automatically.')
+        setLoadingStep('Waiting 5s, then retrying…')
+        setTimeout(() => {
+          // If the user navigated away, abort. Otherwise retry.
+          if (extPollTokenRef.current?.aborted) {
+            firefoxRetryRef.current = false
+            return
+          }
+          setError('')
+          loginWithExtension()
+        }, 5000)
+        // Don't clear loading — the retry will own the UI state.
+        return
+      }
+      if (errMsg === '__timeout__') {
         setError('Extension did not respond in time. If you are using keys.band, open the extension and approve this site first, then try again.')
+      } else if (isFirefoxChannelClosed) {
+        // Second-attempt fallthrough: give the user explicit instructions.
+        setError('Firefox extension popup needs your approval. Open the extension (puzzle-piece icon → your extension), tap Allow for this site, then click Sign in again.')
+        firefoxRetryRef.current = false
       } else {
-        setError('Extension login failed: ' + (err.message || 'unknown error'))
+        setError('Extension login failed: ' + (errMsg || 'unknown error'))
       }
     } finally {
-      setLoading(false)
+      // Don't clear if we scheduled a retry — the retry owns these flags.
+      if (!firefoxRetryRef.current) {
+        setLoading(false)
+        setLoadingStep('')
+      }
     }
   }
 
   async function loginWithKey() {
     setError('')
     cancelActiveQrFlow()
-    const val = nsecValue.trim()
+    // Lowercase before decode — bech32 (nsec/npub) is strictly lowercase
+    // by spec, and nip19.decode rejects mixed case. iOS may capitalize
+    // the leading 'N' on first paste; copy/paste from a screenshot OCR
+    // can introduce caps too. Hex pubkeys are also lowercase. So
+    // lowercasing here is safe across every input type we accept.
+    const val = nsecValue.trim().toLowerCase()
     if (!val) {
       setError('Please enter your nsec or npub key.')
       return
@@ -333,13 +403,17 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       await connectAndWait(ndk)
 
       // Different signers publish the connect response to different relays:
-      // Primal → relay.primal.net, nsec.app → relay.nsec.app, Amber is varied.
-      // Advertise all three in the URI and subscribe to all three so whichever
-      // relay the signer picks, we'll see the response event.
+      // Primal → relay.primal.net, nsec.app → relay.nsec.app, Amber is
+      // varied. Advertise all five in the URI and subscribe to all five so
+      // whichever relay the signer picks, we'll see the response event.
+      // nos.lol and relay.nostr.band added to cover Amber configurations
+      // that publish to general-purpose relays not in the original three.
       const NC_RELAYS = [
         'wss://relay.nsec.app',
         'wss://relay.primal.net',
         'wss://relay.damus.io',
+        'wss://nos.lol',
+        'wss://relay.nostr.band',
       ]
 
       // Reuse the saved secret + URI if we published one recently — on mobile,
@@ -569,6 +643,15 @@ export default function LoginScreen({ onLogin, embedded = false }) {
           placeholder="nsec1... or npub1..."
           autoComplete="off"
           spellCheck={false}
+          // iOS Safari capitalizes the first letter of any text input by
+          // default — that turns "nsec1..." into "Nsec1..." and bech32
+          // (mixed-case) gets rejected by nip19.decode. autoCapitalize +
+          // autoCorrect off also block iOS's "did you mean Nsec?"
+          // suggestion banner. inputMode="text" keeps the keyboard
+          // standard (not the URL or email keyboard).
+          inputMode="text"
+          autoCapitalize="none"
+          autoCorrect="off"
           className="w-full px-4 py-3 rounded-lg bg-neutral-900 border border-neutral-700 text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-purple-600 font-mono text-sm"
           aria-label="Nostr key input"
         />
@@ -604,6 +687,17 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       >
         {loading ? 'Connecting...' : 'Login with Extension'}
       </button>
+      {/* Per-stage loading indicator. Tells the user *what's happening*
+          during a multi-second flow (extension poll → approve → connect).
+          Especially important on Firefox Android where the extension's
+          approval popup is hidden under the menu — without this the user
+          thinks the app is stuck and bails before approving. */}
+      {loading && loadingStep && (
+        <div className="flex items-center justify-center gap-2 text-xs text-amber-400">
+          <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+          {loadingStep}
+        </div>
+      )}
       {!hasExtension && !isMobile && (
         <p className="text-xs text-neutral-500 text-center">
           Works with Alby, nos2x, Nostore, keys.band, and other NIP-07 extensions.
@@ -640,18 +734,36 @@ export default function LoginScreen({ onLogin, embedded = false }) {
           {/* Single tile — taps open the pre-generated nostrconnect:// URI
               via the system handler. Android routes to whichever signer
               claimed the scheme (Amber, Primal, etc); iOS routes to the
-              user's installed signer. */}
-          <button
-            onClick={openInSignerApp}
-            disabled={loading || !qrUri}
-            className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
-          >
-            {qrWaiting && !qrUri ? (
-              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            ) : (
-              'Open in Signer App'
-            )}
-          </button>
+              user's installed signer.
+              Critical: this MUST be an <a href={qrUri}> rather than a
+              button calling window.location.href = qrUri. iOS Safari
+              and Firefox Android only honor non-https scheme navigations
+              when they originate from a real anchor click (real user
+              gesture). A button + JS-driven location change is silently
+              no-op'd on those platforms. We render a visually-identical
+              disabled button as a placeholder while the URI is being
+              generated. */}
+          {qrUri ? (
+            <a
+              href={qrUri}
+              className={`w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 text-white font-medium transition-colors flex items-center justify-center gap-2 ${loading ? 'pointer-events-none opacity-40' : ''}`}
+              aria-disabled={loading || undefined}
+            >
+              Open in Signer App
+            </a>
+          ) : (
+            <button
+              type="button"
+              disabled
+              className="w-full py-3 px-4 rounded-lg bg-purple-700 opacity-40 cursor-not-allowed text-white font-medium transition-colors flex items-center justify-center gap-2"
+            >
+              {qrWaiting ? (
+                <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                'Open in Signer App'
+              )}
+            </button>
+          )}
           {qrUri && (
             <button
               onClick={copyQrUri}
