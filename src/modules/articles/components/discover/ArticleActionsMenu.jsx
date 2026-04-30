@@ -135,7 +135,12 @@ export default function ArticleActionsMenu({
   async function handleCopy(kind) {
     const naddr = getNaddr()
     if (!naddr) return
-    const text = kind === 'url' ? `https://njump.me/${naddr}` : naddr
+    // mynostr's bech32 resolver redirects /<naddr> to the canonical
+    // /<authorNpub>/articles/<naddr> page. Switching from njump.me to
+    // our own origin so shares land readers on mynostr (where they
+    // can view, bookmark, zap, etc. natively).
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const text = kind === 'url' ? `${origin}/${naddr}` : naddr
     const ok = await copyToClipboard(text)
     if (!ok) return
     setCopied(kind)

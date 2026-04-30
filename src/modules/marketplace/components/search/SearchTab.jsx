@@ -233,6 +233,80 @@ export default function SearchTab({ sessionUser }) {
     return listings.find(l => l.event.id === openListing.event.id) || openListing
   }, [openListing, listings])
 
+  // ── URL sync for the drawer (?listing=<naddr>) ──────────────────────
+  // Sits alongside the existing ?seller= param. setSearchParams uses a
+  // function so the seller param is preserved through drawer toggles.
+  // Cold mount with ?listing= auto-opens when a match is in the feed;
+  // misses (deep-link to a listing not yet fetched) are no-op rather
+  // than blocking on a fresh fetch — the bech32 resolver covers cold
+  // share-link routing.
+  const listingParam = searchParams.get('listing') || ''
+  // Inline notice surfaced when ?listing param doesn't match any
+  // listing in the loaded feed — see SellingTab for the rationale.
+  const [listingMissNotice, setListingMissNotice] = useState(false)
+  const triedListingParamRef = useRef('')
+  useEffect(() => {
+    if (!listingParam) {
+      setListingMissNotice(false)
+      triedListingParamRef.current = ''
+      return
+    }
+    if (openListing) return
+    if (listings.length === 0) return
+    if (triedListingParamRef.current === listingParam) return
+    triedListingParamRef.current = listingParam
+
+    let coord = null
+    try {
+      const decoded = nip19.decode(listingParam)
+      if (decoded.type === 'naddr') coord = decoded.data
+    } catch {}
+    if (!coord) { setListingMissNotice(true); return }
+    const match = listings.find(l =>
+      l.event.pubkey === coord.pubkey && l.decoded.dTag === coord.identifier
+    )
+    if (match) {
+      setOpenListing(match)
+      setListingMissNotice(false)
+    } else {
+      setListingMissNotice(true)
+    }
+  }, [listingParam, listings, openListing])
+
+  function openDrawer(listing) {
+    setOpenListing(listing)
+    try {
+      const naddr = nip19.naddrEncode({
+        kind:       30402,
+        pubkey:     listing.event.pubkey,
+        identifier: listing.decoded.dTag,
+      })
+      setSearchParams(prev => {
+        const next = new URLSearchParams(prev)
+        next.set('listing', naddr)
+        return next
+      }, { replace: true })
+    } catch {}
+  }
+  function closeDrawer() {
+    setOpenListing(null)
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('listing')
+      return next
+    }, { replace: true })
+  }
+
+  // Clear stale state if the open listing drifts out of the loaded
+  // feed (search filter change, refresh, etc.). See SellingTab for
+  // the rationale and shape.
+  useEffect(() => {
+    if (openListing && !liveOpenListing && listings.length > 0) {
+      closeDrawer()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openListing, liveOpenListing, listings.length])
+
   // Infinite scroll via IntersectionObserver on a sentinel below the grid.
   // Triggers loadMore as the user nears the bottom of the visible content.
   const sentinelRef = useRef(null)
@@ -407,6 +481,30 @@ export default function SearchTab({ sessionUser }) {
             <p className="text-xs text-red-400 mb-3">{error}</p>
           )}
 
+          {listingMissNotice && (
+            <div className="mb-3 px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-center justify-between gap-2">
+              <span>
+                That shared listing isn't in the current search results —
+                try refining filters or check the seller's marketplace tab.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setListingMissNotice(false)
+                  setSearchParams(prev => {
+                    const next = new URLSearchParams(prev)
+                    next.delete('listing')
+                    return next
+                  }, { replace: true })
+                }}
+                className="flex-shrink-0 text-amber-300 hover:text-amber-100 px-1.5 py-0.5 rounded border border-amber-900/60 hover:border-amber-800 transition-colors"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {!loading && listings.length === 0 && !error && (
             <EmptyState hasFilter={hasAnyFilter} onClear={clearFilters} />
           )}
@@ -420,7 +518,7 @@ export default function SearchTab({ sessionUser }) {
                     listing={l}
                     sessionUser={sessionUser}
                     profile={profileMap.get(l.event.pubkey)}
-                    onClick={() => setOpenListing(l)}
+                    onClick={() => openDrawer(l)}
                   />
                 ))}
               </div>
@@ -451,7 +549,7 @@ export default function SearchTab({ sessionUser }) {
           isOwner={liveOpenListing.event.pubkey === sessionPubkey}
           sessionUser={sessionUser}
           profile={profileMap.get(liveOpenListing.event.pubkey)}
-          onClose={() => setOpenListing(null)}
+          onClose={closeDrawer}
         />
       )}
     </div>

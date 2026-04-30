@@ -22,6 +22,7 @@ import DraftsTray from './components/DraftsTray.jsx'
 import MyNotesTab from './components/feed/MyNotesTab.jsx'
 import BookmarksTab from './components/feed/BookmarksTab.jsx'
 import SearchTab from './components/feed/SearchTab.jsx'
+import NoteDetailView from './components/feed/NoteDetailView.jsx'
 import { NoteBookmarksProvider } from './noteBookmarksContext.jsx'
 import { UserReactionsProvider } from './userReactionsContext.jsx'
 import { NotesNavigationProvider } from './notesNavigationContext.jsx'
@@ -38,6 +39,12 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   const isMobile = useIsMobile()
   const npub = user?.npub
 
+  // Detail-page detection — subtab starting with `nevent1` (or `note1`)
+  // is a single-note URL. Renders NoteDetailView outside the tab strip,
+  // matching how EventsModule handles `naddr1…`.
+  const isNoteDetail = typeof subtab === 'string' &&
+    (subtab.startsWith('nevent1') || subtab.startsWith('note1'))
+
   // Derive current tab from URL subtab. The `comments` subtab is special —
   // it lands on the MyNotes tab with the Comments pill pre-selected rather
   // than being its own tab. Unknown / owner-only subtabs visited by a
@@ -45,6 +52,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   // Bare `/notes` always means the My Notes feed — Write has its own URL
   // so "My Notes" is reachable via the tab button and shareable links.
   const moduleTab = (() => {
+    if (isNoteDetail) return null
     if (subtab === 'comments') return 'notes'
     if (subtab === 'bookmarks') return 'bookmarks'
     if (subtab === 'search' && isOwner) return 'search'
@@ -248,6 +256,21 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   const handleSnapshotChange = useCallback((id, patch) => {
     updateDraftWith(id, (d) => ({ ...d, ...patch }))
   }, [updateDraftWith])
+
+  // Single-note URL: bypass the tab strip entirely and render the
+  // dedicated detail view. Wrapped in the bookmark + reactions providers
+  // so the embedded NoteCard / thread cards still get those contexts.
+  if (isNoteDetail) {
+    return (
+      <NoteBookmarksProvider user={sessionUser}>
+      <UserReactionsProvider user={sessionUser}>
+      <NotesNavigationProvider openAuthorInSearch={isOwner ? openAuthorInSearch : null}>
+        <NoteDetailView nevent={subtab} viewerNpub={npub} />
+      </NotesNavigationProvider>
+      </UserReactionsProvider>
+      </NoteBookmarksProvider>
+    )
+  }
 
   return (
     <NoteBookmarksProvider user={sessionUser}>

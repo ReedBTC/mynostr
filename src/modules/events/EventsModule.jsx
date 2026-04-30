@@ -16,12 +16,29 @@
  *   `naddr1…`    → EventDetail
  *   `cal-<dTag>` → CalendarDetailView
  * Other subtabs flow into the standard tab strip.
+ *
+ * New Event tab structure (desktop): drafts tray on the left, composer
+ * on the right. Mobile: composer fills the panel; a "Drafts (N)" chip
+ * in the composer top action row opens the tray as a bottom sheet.
+ * The tab is always mounted (hidden via CSS) so the drafts tray's
+ * autosaved state survives a detour through other tabs.
  */
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
+import { useIsMobile } from '../../hooks/useIsMobile.js'
+import { useEventDrafts } from '../../lib/useEventDrafts.js'
+import {
+  emptyEventForm,
+  eventToForm,
+  fetchEventForLoader,
+  formToEventTemplate,
+  isEventFormMeaningful,
+} from '../../lib/eventForm.js'
+import { titleToSlug } from '../../lib/utils.js'
 import ErrorBoundary from '../../components/ErrorBoundary.jsx'
 import EventComposer from './components/EventComposer.jsx'
+import EventDraftsTray from './components/EventDraftsTray.jsx'
 import EventDetail from './components/EventDetail.jsx'
 import EventsDiscover from './components/EventsDiscover.jsx'
 import MyCreated from './components/MyCreated.jsx'
@@ -35,9 +52,6 @@ const TAB_DEFS_VISITOR = [
   { id: 'calendars', label: 'Calendars' },
   { id: 'discover',  label: 'Discover' },
 ]
-// Owner tab order matches the other modules' "write/sell tab first,
-// then the public-visible feeds, then discover/search." Labels are
-// the user-facing rename: My Events / RSVPs / My Calendars / Discover.
 const TAB_DEFS_OWNER = [
   { id: 'write',     label: 'New Event' },
   { id: 'created',   label: 'My Events' },
@@ -49,7 +63,16 @@ const TAB_DEFS_OWNER = [
 export default function EventsModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
   const navigate = useNavigate()
+  const isMobile = useIsMobile()
   const npub = user?.npub
+  const ownerPubkey = isOwner ? sessionUser?.pubkey : null
+
+  // Multi-draft store. Hook is a no-op (returns one empty draft seed)
+  // when ownerPubkey is null. Called unconditionally for hook-rule
+  // compliance even though visitors don't see the New Event tab.
+  const drafts = useEventDrafts(ownerPubkey)
+
+  const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
 
   // Detail-page detection — both naddr1… (single event) and cal-…
   // (single calendar list) render via dedicated detail components,
@@ -84,10 +107,136 @@ export default function EventsModule({ user, sessionUser, subtab }) {
 
   const tabs = isOwner ? TAB_DEFS_OWNER : TAB_DEFS_VISITOR
 
-  // Per-surface ErrorBoundary wrappers. A render error in one tab or
-  // detail page paints a styled fallback inside its own wrapper rather
-  // than blanking the whole module, and the user can still navigate
-  // via the tab strip / Back button to recover.
+  // ── Drafts → composer wiring ────────────────────────────────────────
+  // Most handlers are thin pass-throughs; import / export / load-from-
+  // Nostr live here because they touch the file system and NDK.
+
+  const handleImportDrafts = useCallback(async (files) => {
+    // Capture whether the first draft was empty before this run so we
+    // can drop it after importing — saves users from N+1 drafts when
+    // they import into a fresh tray with the seeded blank.
+    const seedDraft = drafts.drafts[0]
+    const seedWasEmpty = seedDraft && !isEventFormMeaningful(seedDraft.snapshot)
+
+    const result = { imported: 0, errors: [] }
+    for (const f of files) {
+      const name = f.name || 'file'
+      // 1 MB cap matches the Notes / marketplace import path.
+      if (f.size > 1_000_000) {
+        result.errors.push(`${name}: over 1 MB`)
+        continue
+      }
+      try {
+        const text = await f.text()
+        const ev = JSON.parse(text)
+        if (!ev || typeof ev !== 'object') throw new Error('not a JSON object')
+        const snapshot = eventToForm(ev)
+        if (!snapshot) throw new Error('not a kind 31922/31923 event')
+        // Strip dTag — JSON import is "use this as a template for a
+        // new event." Carrying the dTag forward through a template /
+        // duplicate-edit workflow causes every imported draft to publish
+        // to the same coordinate, overwriting each other. Edit-existing
+        // is the explicit Load-from-Nostr / picker path, which preserves
+        // the dTag deliberately.
+        snapshot.dTag = ''
+        snapshot.linkedEventTitle = ''
+        drafts.createDraft({ snapshot })
+        result.imported++
+      } catch (e) {
+        result.errors.push(`${name}: ${e?.message || 'invalid JSON'}`)
+      }
+    }
+
+    if (result.imported > 0 && seedWasEmpty) {
+      drafts.deleteDraft(seedDraft.id)
+    }
+    return result
+  }, [drafts])
+
+  const handleExportAllDrafts = useCallback(() => {
+    const eligible = drafts.drafts.filter(d => d.snapshot?.title?.trim())
+    const result = { exported: 0, skipped: drafts.drafts.length - eligible.length }
+    eligible.forEach((d, idx) => {
+      try {
+        const ev = formToEventTemplate(d.snapshot, { pubkey: ownerPubkey || '' })
+        const blob = new Blob([JSON.stringify(ev, null, 2)], { type: 'application/json' })
+        const url  = URL.createObjectURL(blob)
+        const slug = titleToSlug(d.snapshot.title) || `event-${idx + 1}`
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${slug}.json`
+        // Stagger so the browser's "allow multiple downloads" prompt
+        // fires once instead of per-file.
+        setTimeout(() => { a.click(); URL.revokeObjectURL(url) }, idx * 150)
+        result.exported++
+      } catch {
+        // Skip individual encode failures rather than aborting the batch.
+        // formToEventTemplate throws on missing required fields (no
+        // start date, etc.) — the user gets a "skipped" count instead
+        // of a hard error.
+      }
+    })
+    return result
+  }, [drafts.drafts, ownerPubkey])
+
+  // ── Per-current-draft actions ──────────────────────────────────────
+  // Single import / naddr load both REPLACE the current draft's
+  // snapshot — same semantics the marketplace composer uses. The
+  // draft id is preserved; only the snapshot swaps.
+
+  const handleSingleImport = useCallback(async (file) => {
+    if (!drafts.currentDraft) return { ok: false, error: 'No draft selected.' }
+    if (!file.name.endsWith('.json') && file.type !== 'application/json') {
+      return { ok: false, error: 'Please pick a .json file.' }
+    }
+    if (file.size > 1_000_000) {
+      return { ok: false, error: 'File too large — 1 MB max.' }
+    }
+    try {
+      const text = await file.text()
+      const ev = JSON.parse(text)
+      const snapshot = eventToForm(ev)
+      if (!snapshot) return { ok: false, error: 'Not a kind 31922/31923 event.' }
+      // Strip dTag — see handleImportDrafts above for why.
+      snapshot.dTag = ''
+      snapshot.linkedEventTitle = ''
+      drafts.replaceSnapshot(drafts.currentDraft.id, snapshot)
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: `Invalid JSON: ${e?.message || 'parse failed'}` }
+    }
+  }, [drafts])
+
+  const handleSingleExport = useCallback(() => {
+    const d = drafts.currentDraft
+    if (!d?.snapshot?.title?.trim()) return
+    try {
+      const ev   = formToEventTemplate(d.snapshot, { pubkey: ownerPubkey || '' })
+      const blob = new Blob([JSON.stringify(ev, null, 2)], { type: 'application/json' })
+      const url  = URL.createObjectURL(blob)
+      const slug = titleToSlug(d.snapshot.title) || 'event'
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${slug}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      // formToEventTemplate can throw on a half-empty form (e.g. no
+      // start date). Swallow rather than blow up the editor on a freak
+      // input — Export is disabled in the UI when title/start are missing.
+    }
+  }, [drafts.currentDraft, ownerPubkey])
+
+  const handleLoadFromNostr = useCallback(async (input) => {
+    if (!drafts.currentDraft) return { ok: false, error: 'No draft selected.' }
+    const r = await fetchEventForLoader(input)
+    if (!r.ok) return r
+    drafts.replaceSnapshot(drafts.currentDraft.id, r.snapshot)
+    return { ok: true }
+  }, [drafts])
+
+  // ── Render ──────────────────────────────────────────────────────────
+
   if (isEventDetail) {
     return (
       <div className="flex-1 min-h-0 overflow-y-auto">
@@ -116,12 +265,51 @@ export default function EventsModule({ user, sessionUser, subtab }) {
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <TabStrip tabs={tabs} active={moduleTab} onChange={setModuleTab} />
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        {moduleTab === 'write' && (
+
+      {/* New Event tab is always mounted (hidden via CSS) so the drafts
+          tray's autosaved state survives a detour through other tabs.
+          Mirrors the marketplace Sell tab pattern. */}
+      <div className={`flex-1 min-h-0 overflow-hidden ${moduleTab === 'write' && isOwner ? 'flex flex-row' : 'hidden'}`}>
+        {isOwner && (
           <ErrorBoundary label="EventComposer">
-            <EventComposer sessionUser={sessionUser} ownerNpub={npub} />
+            <EventDraftsTray
+              drafts={drafts.drafts}
+              currentDraftId={drafts.currentDraftId}
+              onSelectDraft={drafts.setCurrentDraftId}
+              onCreateDraft={() => drafts.createDraft()}
+              onDeleteDraft={drafts.deleteDraft}
+              onDeleteAllDrafts={drafts.deleteAllDrafts}
+              onImportDrafts={handleImportDrafts}
+              onExportAllDrafts={handleExportAllDrafts}
+              onPublishAll={drafts.publishAll}
+              onMoveDraft={drafts.moveDraft}
+              onFindDuplicateDTags={drafts.findDuplicateDTags}
+              onRegenerateDTags={drafts.regenerateDTags}
+              isMobile={isMobile}
+              isMobileOpen={draftsMobileOpen}
+              onMobileClose={() => setDraftsMobileOpen(false)}
+            />
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <EventComposer
+                sessionUser={sessionUser}
+                draft={drafts.currentDraft}
+                onUpdateDraft={drafts.updateDraftWith}
+                onDeleteDraft={drafts.deleteDraft}
+                onPublish={drafts.publishOne}
+                onSingleImport={handleSingleImport}
+                onSingleExport={handleSingleExport}
+                onLoadFromNostr={handleLoadFromNostr}
+                onOpenMobileDrafts={isMobile ? () => setDraftsMobileOpen(true) : null}
+                draftsCount={drafts.drafts.length}
+              />
+            </div>
           </ErrorBoundary>
         )}
+      </div>
+
+      {/* Other tabs render in a separate wrapper that's hidden when
+          New Event is active — keeps each tab's state isolated. */}
+      <div className={`flex-1 min-h-0 overflow-y-auto ${moduleTab !== 'write' ? 'flex flex-col' : 'hidden'}`}>
         {moduleTab === 'created' && (
           <ErrorBoundary label="MyCreated">
             <MyCreated viewedUser={user} sessionUser={sessionUser} />

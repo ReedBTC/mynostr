@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 // Trust note: events returned by Primal are rendered without local signature
@@ -182,6 +183,9 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
     // which is both unbounded growth and a behavioral leak on shared devices.
     if (!readOnly) saveLastArticleId(pubkey, feedMode, article?.id || null)
   }
+  // URL sync for the reader pane lives further down — it depends on
+  // `searchParams` from useSearchParams() which is declared below the
+  // content-filter section. Look for "URL sync for the open article".
 
   // ── Author-feed state (shared by 'search' and 'mine' modes) ──────────────────
   // Only 'search' mode persists — 'mine' always pins the viewed user and is
@@ -224,6 +228,47 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
     setSearchCheckedIds(new Set())
     setSelectedRaw(null)
   }
+
+  // ── URL sync for the open article ──────────────────────────────────
+  // When `selected` changes, push (or strip) ?article=<naddr> on the
+  // URL so the address bar matches what the user is reading. Lets
+  // copy-from-URL-bar produce a useful share link without requiring
+  // the three-dot menu. The reader's open/close paths are scattered —
+  // some go through setSelected, some hit setSelectedRaw(null) — so
+  // we sync via an effect on `selected` rather than wrapping every
+  // call site.
+  //
+  // Cold-mount guard: on first render `selected` is null. Without the
+  // guard, the effect would unconditionally strip any pre-existing
+  // ?article= param from the URL — defeating the entire deep-link
+  // share story. The ref skips the FIRST run; subsequent runs (real
+  // open/close transitions) sync as expected.
+  //
+  // Has to live AFTER the useSearchParams() call above; placing it
+  // earlier crashes with "Cannot access 'searchParams' before
+  // initialization" at render time.
+  const urlSyncReady = useRef(false)
+  useEffect(() => {
+    if (!urlSyncReady.current) {
+      urlSyncReady.current = true
+      return
+    }
+    let naddr = ''
+    if (selected?.pubkey) {
+      const dTag = selected.tags?.find(t => t[0] === 'd')?.[1] || ''
+      if (dTag) {
+        try {
+          naddr = nip19.naddrEncode({ kind: 30023, pubkey: selected.pubkey, identifier: dTag })
+        } catch {}
+      }
+    }
+    const cur = searchParams.get('article') || ''
+    if (cur === naddr) return  // no-op when URL already matches
+    const next = new URLSearchParams(searchParams)
+    if (naddr) next.set('article', naddr)
+    else next.delete('article')
+    setSearchParams(next, { replace: true })
+  }, [selected, searchParams, setSearchParams])
 
   // Read-only fetch of the *searched* author's reading lists. Hook handles
   // null pubkey by returning empty lists, so we gate the pubkey to only

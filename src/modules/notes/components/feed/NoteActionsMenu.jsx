@@ -3,7 +3,9 @@
  *
  * Sections:
  *   - Copy nevent
- *   - Copy URL (njump.me/nevent)
+ *   - Copy URL (mynostr.app/{nevent} — bech32 resolver redirects to
+ *     /<authorNpub>/notes/<nevent> where NoteDetailView renders the
+ *     specific note + thread)
  *   - Export JSON  — downloads the raw kind 1 event as a .json file,
  *     same shape NoteComposer accepts for JSON upload.
  *
@@ -77,7 +79,14 @@ export default function NoteActionsMenu({ open, onClose, note, triggerRef }) {
 
   async function handleCopy(kind) {
     if (!nevent) return
-    const text = kind === 'url' ? `https://njump.me/${nevent}` : nevent
+    // mynostr's bech32 resolver decodes /<nevent> and (when the
+    // nevent carries an author hint) redirects to
+    // /<authorNpub>/notes/<nevent> — NoteDetailView fetches the event
+    // by id and renders the focus card + thread context. Cold-link
+    // recipients land directly on the specific note rather than the
+    // author's feed.
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const text = kind === 'url' ? `${origin}/${nevent}` : nevent
     const ok = await copyToClipboard(text)
     if (!ok) return
     setCopied(kind)

@@ -8,6 +8,7 @@ import {
   useParams,
   useNavigate,
 } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import AppShell from './components/AppShell.jsx'
 import HomeScreen from './components/HomeScreen.jsx'
 import { LoginModalProvider } from './components/LoginModalContext.jsx'
@@ -141,9 +142,14 @@ export default function App() {
             path="/"
             element={<RootRoute sessionUser={sessionUser} onLogout={handleLogout} />}
           />
+          {/* Single-segment paths are decoded as bech32 (npub, nprofile,
+              naddr, nevent, note) and redirected to the canonical long
+              URL. mynostr.app/<naddr> → /<authorNpub>/events/<naddr>,
+              etc. Anything that isn't a recognized bech32 falls through
+              to NotFound. */}
           <Route
-            path="/:npub"
-            element={<NpubRootRoute />}
+            path="/:identifier"
+            element={<BechResolver />}
           />
           {/* Legacy /longform → /articles. Covers both /:npub/longform and
               /:npub/longform/<subtab> so old bookmarked URLs keep working. */}
@@ -226,13 +232,119 @@ function HomeRoute({ sessionUser, onLogout }) {
   )
 }
 
-// /:npub resolves to the user's landing page. Until the Profile module exists,
-// we redirect to the default module. When Profile ships, this route will
-// render ProfileModule directly.
-function NpubRootRoute() {
-  const { npub } = useParams()
-  if (!decodeNpubParam(npub)) return <InvalidNpubScreen />
-  return <Navigate to={`/${npub}/${DEFAULT_MODULE}`} replace />
+/**
+ * Single-segment URL resolver. Decodes any nip19 bech32 (npub,
+ * nprofile, naddr, nevent, note) and redirects to the canonical
+ * long URL on this app. Replaces the older /:npub-only route by
+ * generalizing — npub is now one of the cases.
+ *
+ * Routing logic by type:
+ *   npub        → /<npub>/notes
+ *   nprofile    → /<npub>/notes (relay hints stripped)
+ *   naddr       → branched on kind:
+ *                   30023        → /<authorNpub>/articles/<naddr>
+ *                   31922/31923  → /<authorNpub>/events/<naddr>
+ *                   31924        → /<authorNpub>/events/cal-<dTag>
+ *                   30402        → /<authorNpub>/marketplace
+ *                                  (listings have no detail URL yet —
+ *                                   land on the seller's tab)
+ *                   other        → /<authorNpub>/notes (best-effort)
+ *   nevent      → /<authorNpub>/notes when an author hint is present;
+ *                  otherwise NotFound (we'd need to fetch to know who
+ *                  wrote it, and the resolver shouldn't do network I/O)
+ *   note        → home (raw event id with no author hint — nothing
+ *                  useful to do without a fetch)
+ *
+ * Anything that doesn't decode falls through to NotFoundRoute. The
+ * "looks like bech32" pre-check rejects unrelated single-segment
+ * paths (a future /about would just need a name that doesn't start
+ * with one of the bech32 prefixes — or a more specific route added
+ * before this one).
+ */
+function BechResolver() {
+  const { identifier } = useParams()
+  if (!identifier) return <NotFoundRoute />
+
+  const lower = identifier.toLowerCase()
+  const looksLikeBech32 = /^(npub|nprofile|naddr|nevent|note)1/.test(lower)
+  if (!looksLikeBech32) return <NotFoundRoute />
+
+  let decoded
+  try { decoded = nip19.decode(identifier) } catch {}
+  if (!decoded) return <InvalidNpubScreen />
+
+  // npub → user's notes feed (existing default-module behavior)
+  if (decoded.type === 'npub') {
+    return <Navigate to={`/${identifier}/${DEFAULT_MODULE}`} replace />
+  }
+
+  // nprofile → drop relay hints, route by pubkey
+  if (decoded.type === 'nprofile') {
+    let npub = ''
+    try { npub = nip19.npubEncode(decoded.data.pubkey) } catch {}
+    if (!npub) return <InvalidNpubScreen />
+    return <Navigate to={`/${npub}/${DEFAULT_MODULE}`} replace />
+  }
+
+  if (decoded.type === 'naddr') {
+    const { kind, pubkey, identifier: dTag } = decoded.data
+    let authorNpub = ''
+    try { authorNpub = nip19.npubEncode(pubkey) } catch {}
+    if (!authorNpub) return <InvalidNpubScreen />
+
+    if (kind === 30023) {
+      // Articles' DiscoverView reads ?article=<naddr> on cold mount
+      // (with the cold-mount guard preventing the strip) so the
+      // recipient lands on the author's articles feed AND, once we
+      // wire the seed-from-URL path, the specific article opens
+      // automatically. For now the URL is preserved; clicking the
+      // matching article in the feed opens the reader.
+      return <Navigate to={`/${authorNpub}/articles?article=${identifier}`} replace />
+    }
+    if (kind === 31922 || kind === 31923) {
+      return <Navigate to={`/${authorNpub}/events/${identifier}`} replace />
+    }
+    if (kind === 31924) {
+      return <Navigate to={`/${authorNpub}/events/cal-${encodeURIComponent(dTag)}`} replace />
+    }
+    if (kind === 30402) {
+      // Marketplace listings live in a drawer, not a detail URL.
+      // SellingTab reads ?listing=<naddr> on cold mount and auto-opens
+      // the drawer if the listing is in the visible feed.
+      return <Navigate to={`/${authorNpub}/marketplace?listing=${identifier}`} replace />
+    }
+    // Unknown kind — best-effort: send to the author's notes feed so
+    // the visitor lands on a real surface they can explore from.
+    return <Navigate to={`/${authorNpub}/${DEFAULT_MODULE}`} replace />
+  }
+
+  if (decoded.type === 'nevent') {
+    // nevent → /<authorNpub>/notes/<nevent>. Notes don't have a real
+    // address (they're not replaceable), so the URL carries the full
+    // bech32 verbatim and NotesModule's NoteDetailView decodes it on
+    // mount to fetch the event by id. The author hint in the nevent
+    // is what lets us put the right npub in the URL; without one,
+    // fall back to the home page since we don't know which user's
+    // page to land on.
+    if (decoded.data.author) {
+      let npub = ''
+      try { npub = nip19.npubEncode(decoded.data.author) } catch {}
+      if (npub) return <Navigate to={`/${npub}/notes/${identifier}`} replace />
+    }
+    return <NotFoundRoute />
+  }
+
+  if (decoded.type === 'note') {
+    // Raw event id (no author hint). NoteDetailView can still resolve
+    // by id alone — but we need an npub to put in the URL since the
+    // route shape is /<npub>/notes/<id>. Without an author, we'd have
+    // to fetch the event first to find its pubkey, which is the kind
+    // of network I/O a router resolver shouldn't do synchronously.
+    // Land on the homepage; the user can paste the note id into search.
+    return <Navigate to="/" replace />
+  }
+
+  return <NotFoundRoute />
 }
 
 function ModuleRoute({ sessionUser, onLogout }) {

@@ -20,9 +20,8 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { nip19 } from 'nostr-tools'
 import { Z } from '../../../lib/zIndex.js'
-import { copyToClipboard, titleToSlug, safeNpubEncode } from '../../../lib/utils.js'
+import { copyToClipboard, titleToSlug } from '../../../lib/utils.js'
 import { formToEventTemplate, eventToForm } from '../../../lib/eventForm.js'
 import { deleteCalendarEvent } from '../../../lib/eventPublish.js'
 import { downloadEventIcs } from '../../../lib/ics.js'
@@ -108,9 +107,12 @@ export default function EventActionsMenu({
   const menuVisible = open && (!triggerRef || menuPos)
 
   const naddr = parsed?.naddr || ''
-  const authorNpub = safeNpubEncode(nip19, parsed?.pubkey, 'EventActionsMenu')
-  const shareUrl = (typeof window !== 'undefined' && authorNpub && naddr)
-    ? `${window.location.origin}/${authorNpub}/events/${naddr}`
+  // Short-form share URL — the bech32 resolver at /:identifier decodes
+  // the naddr and redirects to the canonical /<authorNpub>/events/<naddr>
+  // page. Cleaner to paste in tweets/DMs than the long form, and the
+  // recipient lands on the same place either way.
+  const shareUrl = (typeof window !== 'undefined' && naddr)
+    ? `${window.location.origin}/${naddr}`
     : ''
 
   async function handleCopy(kind) {

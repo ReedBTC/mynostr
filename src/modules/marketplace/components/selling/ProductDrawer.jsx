@@ -16,8 +16,9 @@ import {
 import { deleteProduct } from '../../../../lib/deleteProduct.js'
 import { KIND_PRODUCT, buildProductCoord } from '../../../../lib/gamma.js'
 import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
-import WatchlistButton from '../watchlist/WatchlistButton.jsx'
 import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
+import ProductActionsMenu from './ProductActionsMenu.jsx'
+import ZapModal from '../../../../components/ZapModal.jsx'
 
 /**
  * ProductDrawer — full detail view for one listing, opened from a
@@ -46,6 +47,20 @@ export default function ProductDrawer({
   const { event, decoded } = listing
   const pubkey = event.pubkey
   const dTag   = decoded.dTag
+
+  // Save-to-collection picker is hoisted here from ProductDrawerActions
+  // so both the bottom-row entry point AND the three-dot menu can open
+  // the same modal. Zap modal opens from either entry point too.
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [zapOpen,    setZapOpen]    = useState(false)
+
+  const sellerLud16 = profile?.lud16 || ''
+  const sellerName  = profile?.display_name || profile?.displayName || profile?.name || ''
+  const isAuthor    = !!sessionUser?.pubkey && sessionUser.pubkey === pubkey
+  // Zap is hidden in preview (event id isn't real yet), when the seller
+  // has no lightning address, or when the viewer IS the seller (you
+  // can't zap yourself).
+  const canZap = !previewMode && !!sellerLud16 && !isAuthor
 
   // Active hero image index — multi-image listings get a thumbnail
   // strip below the hero that swaps which image is shown big.
@@ -115,10 +130,11 @@ export default function ProductDrawer({
           isOwner={isOwner && !previewMode}
           listing={listing}
           sessionUser={sessionUser}
+          previewMode={previewMode}
           onClose={onClose}
           onEdit={onEdit}
           onDelete={onDelete}
-          previewMode={previewMode}
+          onOpenSavePicker={() => setPickerOpen(true)}
         />
 
         {/* Body — scrollable */}
@@ -199,20 +215,52 @@ export default function ProductDrawer({
             {/* Structured fields — only shown when present */}
             <StructuredFields decoded={decoded} dateStr={dateStr} />
 
-            {/* External viewers + watchlist + zap stubs — suppressed in
-                preview because the listing isn't published yet (no
-                event id for the Plebeian URL, no naddr that resolves). */}
+            {/* External viewers + zap. Suppressed in preview because
+                the listing isn't published yet (no event id for the
+                Plebeian URL, no naddr that resolves). Watchlist +
+                Save-to-collection moved to the three-dot menu in the
+                header — the bottom row keeps just the primary "tip
+                the host" CTA. */}
             {!previewMode && (
               <ExternalLinks
                 plebeianUrl={plebeianUrl}
                 shopstrUrl={shopstrUrl}
-                isOwner={isOwner}
-                listing={listing}
-                sessionUser={sessionUser}
+                canZap={canZap}
+                onZapClick={() => setZapOpen(true)}
               />
             )}
           </div>
         </div>
+
+        {/* Modals are portaled to <body> so they escape the drawer's
+            overflow-hidden + stacking context. Without the portal the
+            ZapModal at z-50 lives inside the panel's z-[51] stacking
+            context, where the panel's child renderings cover it
+            instead of the modal covering them. createPortal jumps it
+            up to the document body, free of any ancestor's stacking
+            quirks. */}
+        {pickerOpen && !previewMode && createPortal(
+          <AddToCollectionModal
+            listing={listing}
+            sessionUser={sessionUser}
+            onClose={() => setPickerOpen(false)}
+          />,
+          document.body,
+        )}
+
+        {zapOpen && canZap && createPortal(
+          <ZapModal
+            lud16={sellerLud16}
+            recipientPubkey={pubkey}
+            recipientName={sellerName}
+            targetEvent={event.id ? { id: event.id } : null}
+            aTag={buildProductCoord(pubkey, dTag)}
+            targetKind={String(KIND_PRODUCT)}
+            user={sessionUser}
+            onClose={() => setZapOpen(false)}
+          />,
+          document.body,
+        )}
       </div>
     </div>
   )
@@ -220,11 +268,20 @@ export default function ProductDrawer({
 
 // ─── Header (close + owner actions) ────────────────────────────────────────
 
-function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, previewMode = false }) {
+function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, previewMode = false, onOpenSavePicker }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleting, setDeleting]                 = useState(false)
   const [deleteError, setDeleteError]           = useState('')
   const confirmTimerRef = useRef(null)
+
+  // Three-dot menu — same component the cards use, so the listing's
+  // detail view exposes the same action surface as the feed (Edit,
+  // Save to collection, Share, Copy naddr/URL, External views, Export).
+  // Suppressed in preview mode since the synthetic listing has no real
+  // event id / naddr.
+  const menuTriggerRef = useRef(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const showMenu = !previewMode
 
   // Auto-reset the delete-confirm after 4s of inactivity, same UX
   // shape as the Sell composer's discard button.
@@ -339,16 +396,12 @@ function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, prev
         </span>
       )}
 
-      {/* Owner actions */}
+      {/* Owner actions — Delete kept inline (heavier, two-step
+          confirm needs the visible affordance). Edit consolidated into
+          the three-dot menu's "Edit listing…" item so users have one
+          obvious entry point per action. */}
       {isOwner && (
         <div className="flex items-center gap-1.5 ml-auto mr-2">
-          <button
-            onClick={() => onEdit?.(listing)}
-            disabled={deleting}
-            className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 transition-colors disabled:opacity-40"
-          >
-            Edit
-          </button>
           <button
             onClick={handleDeleteClick}
             disabled={deleting}
@@ -362,9 +415,40 @@ function Header({ isOwner, listing, sessionUser, onClose, onEdit, onDelete, prev
         </div>
       )}
 
+      {/* Three-dot menu — sits between owner-actions and the close
+          button. For non-owners it picks up the auto-margin so it
+          flush-rights along with close. */}
+      {showMenu && (
+        <div className={`${isOwner ? '' : 'ml-auto '}flex-shrink-0`}>
+          <button
+            ref={menuTriggerRef}
+            type="button"
+            onClick={() => setMenuOpen(o => !o)}
+            aria-expanded={menuOpen}
+            aria-label="More actions"
+            className="inline-flex items-center justify-center w-7 h-7 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+              <circle cx="3"  cy="8" r="1.4" fill="currentColor" />
+              <circle cx="8"  cy="8" r="1.4" fill="currentColor" />
+              <circle cx="13" cy="8" r="1.4" fill="currentColor" />
+            </svg>
+          </button>
+          <ProductActionsMenu
+            open={menuOpen}
+            onClose={() => setMenuOpen(false)}
+            listing={listing}
+            sessionUser={sessionUser}
+            triggerRef={menuTriggerRef}
+            onOpenSavePicker={onOpenSavePicker}
+            onEdit={onEdit}
+          />
+        </div>
+      )}
+
       <button
         onClick={onClose}
-        className={`${isOwner ? '' : 'ml-auto '}text-neutral-500 hover:text-neutral-200 transition-colors text-xl leading-none flex-shrink-0 p-1.5 -m-1.5`}
+        className={`${isOwner || showMenu ? '' : 'ml-auto '}text-neutral-500 hover:text-neutral-200 transition-colors text-xl leading-none flex-shrink-0 p-1.5 -m-1.5`}
         aria-label="Close"
       >
         ✕
@@ -719,9 +803,9 @@ function Field({ label, value }) {
   )
 }
 
-// ─── External links + stubbed watchlist + zap ─────────────────────────────
+// ─── External links + zap ─────────────────────────────────────────────────
 
-function ExternalLinks({ plebeianUrl, shopstrUrl, isOwner, listing, sessionUser }) {
+function ExternalLinks({ plebeianUrl, shopstrUrl, canZap, onZapClick }) {
   return (
     <div className="border-t border-neutral-800 pt-4 space-y-3">
       <div>
@@ -752,42 +836,23 @@ function ExternalLinks({ plebeianUrl, shopstrUrl, isOwner, listing, sessionUser 
         </div>
       </div>
 
-      {/* Watchlist quick toggle + Save-to-collection picker + zap.
-          Quick toggle is the one-click case (the watchlist is one
-          collection among many). The picker lets users add to any
-          named collection. Both mutate the SESSION user's
-          collections. Zap is Phase-deferred. */}
-      {sessionUser?.pubkey && (
-        <ProductDrawerActions listing={listing} sessionUser={sessionUser} />
-      )}
-    </div>
-  )
-}
-
-function ProductDrawerActions({ listing, sessionUser }) {
-  const [pickerOpen, setPickerOpen] = useState(false)
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <WatchlistButton listing={listing} sessionUser={sessionUser} />
-      <button
-        onClick={() => setPickerOpen(true)}
-        className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 transition-colors"
-      >
-        Save to collection…
-      </button>
-      <button
-        disabled
-        title="Coming soon"
-        className="text-xs px-3 py-1.5 rounded border border-neutral-800 text-neutral-600 cursor-not-allowed"
-      >
-        ⚡ Zap author
-      </button>
-      {pickerOpen && (
-        <AddToCollectionModal
-          listing={listing}
-          sessionUser={sessionUser}
-          onClose={() => setPickerOpen(false)}
-        />
+      {/* Zap author — primary "tip the host" CTA. Hidden when the
+          seller has no lud16 or when the viewer IS the seller (you
+          can't zap yourself). Save-to-collection / Watchlist live in
+          the header three-dot menu now; this row keeps just the
+          lightning action. */}
+      {canZap && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={onZapClick}
+            title="Zap the seller"
+            className="text-xs px-3 py-1.5 rounded-md border border-amber-700/60 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40 hover:text-amber-100 focus:outline-none focus:ring-1 focus:ring-amber-500 transition-colors inline-flex items-center gap-1.5"
+          >
+            <span aria-hidden>⚡</span>
+            <span>Zap author</span>
+          </button>
+        </div>
       )}
     </div>
   )

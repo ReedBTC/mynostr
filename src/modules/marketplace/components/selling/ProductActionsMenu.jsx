@@ -15,7 +15,8 @@ import {
  *   • Add to / Remove from watchlist (toggle — only visible when the
  *     session user has a signer)
  *   • Copy naddr
- *   • Copy URL (njump.me/{naddr})
+ *   • Copy URL (mynostr.app/{naddr} — our bech32 resolver decodes
+ *     and redirects to the canonical seller's marketplace tab)
  *   • View on Plebeian Market — uses raw event.id, opens new tab
  *   • View on Shopstr        — uses naddr, opens new tab
  *
@@ -98,7 +99,14 @@ export default function ProductActionsMenu({
 
   async function handleCopy(kind) {
     if (!naddr) return
-    const text = kind === 'url' ? `https://njump.me/${naddr}` : naddr
+    // mynostr's bech32 resolver maps /<naddr> for kind 30402 to the
+    // seller's marketplace tab (listings have no detail URL — drawer
+    // flow). Still better than njump for our own users; cold readers
+    // who want the exact listing UI can paste the same naddr into
+    // search. Switch over keeps share links consistent with events
+    // and articles.
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const text = kind === 'url' ? `${origin}/${naddr}` : naddr
     const ok = await copyToClipboard(text)
     if (!ok) return
     setCopied(kind)
@@ -113,7 +121,8 @@ export default function ProductActionsMenu({
   const canNativeShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function'
   async function handleShare() {
     if (!naddr) return
-    const url = `https://njump.me/${naddr}`
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const url = `${origin}/${naddr}`
     const title = listing.decoded?.title || 'Marketplace listing'
     try {
       await navigator.share({ title, url })

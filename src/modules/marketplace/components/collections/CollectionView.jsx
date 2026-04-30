@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { withTimeout, isSafeUrl } from '../../../../lib/utils.js'
 import {
@@ -98,6 +100,76 @@ export default function CollectionView({
     if (!openListing) return null
     return resolved.find(l => l.decoded.dTag === openListing.decoded.dTag) || null
   }, [openListing, resolved])
+
+  // ── URL sync for the drawer (?listing=<naddr>) ──────────────────────
+  // Same pattern as SellingTab / SearchTab. URL bar matches the open
+  // listing so copy-from-URL-bar yields a useful share link. Cold-mount
+  // auto-opens when the URL param matches a resolved listing.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const listingParam = searchParams.get('listing') || ''
+  const [listingMissNotice, setListingMissNotice] = useState(false)
+  const triedListingParamRef = useRef('')
+  useEffect(() => {
+    if (!listingParam) {
+      setListingMissNotice(false)
+      triedListingParamRef.current = ''
+      return
+    }
+    if (openListing) return
+    if (resolved.length === 0) return
+    if (triedListingParamRef.current === listingParam) return
+    triedListingParamRef.current = listingParam
+
+    let coord = null
+    try {
+      const decoded = nip19.decode(listingParam)
+      if (decoded.type === 'naddr') coord = decoded.data
+    } catch {}
+    if (!coord) { setListingMissNotice(true); return }
+    const match = resolved.find(l =>
+      l.event.pubkey === coord.pubkey && l.decoded.dTag === coord.identifier
+    )
+    if (match) {
+      setOpenListing(match)
+      setListingMissNotice(false)
+    } else {
+      setListingMissNotice(true)
+    }
+  }, [listingParam, resolved, openListing])
+
+  function openDrawer(listing) {
+    setOpenListing(listing)
+    try {
+      const naddr = nip19.naddrEncode({
+        kind:       KIND_PRODUCT,
+        pubkey:     listing.event.pubkey,
+        identifier: listing.decoded.dTag,
+      })
+      setSearchParams(prev => {
+        const next = new URLSearchParams(prev)
+        next.set('listing', naddr)
+        return next
+      }, { replace: true })
+    } catch {}
+  }
+  function closeDrawer() {
+    setOpenListing(null)
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('listing')
+      return next
+    }, { replace: true })
+  }
+
+  // Clear stale state if the open listing drifts out of the resolved
+  // set (collection edit removed it, collection refresh, etc.). See
+  // SellingTab for rationale.
+  useEffect(() => {
+    if (openListing && !liveOpenListing && resolved.length > 0) {
+      closeDrawer()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openListing, liveOpenListing, resolved.length])
 
   // ── Edit ───────────────────────────────────────────────────────────
   async function handleSaveMeta(patch) {
@@ -199,6 +271,30 @@ export default function CollectionView({
 
       <div className="flex-1 overflow-auto">
         <div className="max-w-5xl mx-auto px-4 pb-6">
+          {listingMissNotice && (
+            <div className="mb-3 px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-center justify-between gap-2">
+              <span>
+                That shared listing isn't in this collection — the link may
+                point to a listing in a different collection or one that's
+                since been removed.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setListingMissNotice(false)
+                  setSearchParams(prev => {
+                    const next = new URLSearchParams(prev)
+                    next.delete('listing')
+                    return next
+                  }, { replace: true })
+                }}
+                className="flex-shrink-0 text-amber-300 hover:text-amber-100 px-1.5 py-0.5 rounded border border-amber-900/60 hover:border-amber-800 transition-colors"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           {!totalLoading && resolved.length === 0 && (
             <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
               <span className="text-4xl mb-3" aria-hidden>{isWatchlist ? '☆' : '📦'}</span>
@@ -219,7 +315,7 @@ export default function CollectionView({
                   listing={l}
                   sessionUser={sessionUser}
                   profile={profileMap.get(l.event.pubkey)}
-                  onClick={() => setOpenListing(l)}
+                  onClick={() => openDrawer(l)}
                 />
               ))}
             </div>
@@ -241,7 +337,7 @@ export default function CollectionView({
           isOwner={false}
           sessionUser={sessionUser}
           profile={profileMap.get(liveOpenListing.event.pubkey)}
-          onClose={() => setOpenListing(null)}
+          onClose={closeDrawer}
         />
       )}
 
