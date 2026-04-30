@@ -165,6 +165,35 @@ export async function getOwnWriteRelays(ndk) {
   }
 }
 
+/**
+ * Read another user's NIP-65 read relays — the relays they listen on
+ * for incoming events. Used by publish paths that want to ensure the
+ * recipient actually sees what we send (RSVPs being the canonical
+ * case: the event host needs to know who's coming).
+ *
+ * Returns array of wss:// URLs, or null if the user has no kind 10002.
+ * Unmarked `r` tags count as read+write; explicit `'read'` marker is
+ * also read.
+ */
+export async function getUserReadRelays(ndk, pubkey) {
+  if (!ndk || !pubkey) return null
+  try {
+    const ev = await withTimeout(
+      ndk.fetchEvent({ kinds: [10002], authors: [pubkey] }),
+      4000,
+      'fetch-10002-timeout',
+    )
+    if (!ev) return null
+    const urls = (ev.tags || [])
+      .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'read'))
+      .map(t => t[1])
+      .filter(u => typeof u === 'string' && /^wss:\/\//i.test(u))
+    return urls.length ? urls : null
+  } catch {
+    return null
+  }
+}
+
 // Publish an event only to the user's own NIP-65 write relays.
 //
 // This is the outbox-model publish path. Use it for events the user will want

@@ -127,6 +127,28 @@ export function withTimeout(promise, ms, label = 'timeout') {
   })
 }
 
+/**
+ * nip19.npubEncode wrapper that returns '' on failure rather than
+ * throwing. Logs to console.warn in dev builds so the failure isn't
+ * a black box during debugging — production stays silent so a bad
+ * upstream pubkey doesn't spam the user's console.
+ *
+ * Pass nip19 in lazily (callers already import it) to avoid pulling
+ * nostr-tools into utils.
+ */
+export function safeNpubEncode(nip19, pubkey, where = '') {
+  if (!pubkey) return ''
+  try {
+    return nip19.npubEncode(pubkey)
+  } catch (e) {
+    if (import.meta.env?.DEV) {
+      // eslint-disable-next-line no-console
+      console.warn('[safeNpubEncode] failed', { where, pubkey, error: e?.message })
+    }
+    return ''
+  }
+}
+
 // Copy text to the clipboard. Tries the async Clipboard API first, then
 // falls back to document.execCommand('copy') for insecure contexts (iframes,
 // http://, older browsers). Returns true on success.

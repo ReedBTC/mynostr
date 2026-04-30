@@ -31,4 +31,16 @@
   ::-webkit-scrollbar-thumb:hover {
     @apply bg-neutral-500;
   }
+
+  /* We use type="search" for fields that LastPass / 1Password / Bitwarden
+     would otherwise hijack via label heuristics ("Title", "Location",
+     etc.). Password managers skip search inputs, but browsers add a
+     clear-X button by default — hide it so the field looks identical
+     to a regular text input. */
+  input[type="search"]::-webkit-search-cancel-button,
+  input[type="search"]::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+    display: none;
+  }
 }

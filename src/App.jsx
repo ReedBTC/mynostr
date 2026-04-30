@@ -35,7 +35,7 @@ export const MODULES = [
   { id: 'profile',     label: 'Profile',     icon: '👤', status: 'live', description: 'Kind 0 profile' },
   { id: 'notes',       label: 'Notes',       icon: '📝', status: 'live', description: 'Kind 1 short notes' },
   { id: 'articles',    label: 'Articles',    icon: '✍️', status: 'live', description: 'Kind 30023 articles' },
-  { id: 'events',      label: 'Events',      icon: '📅', status: 'soon', description: 'Kind 31923 events' },
+  { id: 'events',      label: 'Events',      icon: '📅', status: 'live', description: 'NIP-52 calendar events' },
   { id: 'marketplace', label: 'Marketplace', icon: '🛒', status: 'live', description: 'Kind 30402 listings' },
 ]
 
@@ -59,6 +59,7 @@ const DEFAULT_MODULE = 'notes'
 const MODULE_WRITE_SUBTAB = {
   notes:       'write',
   articles:    'write',
+  events:      'write',
   marketplace: 'sell',
 }
 const MODULES_WITH_WRITE = new Set(Object.keys(MODULE_WRITE_SUBTAB))

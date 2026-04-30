@@ -665,7 +665,7 @@ function PreviewEmptyState({ onClose }) {
 /**
  * Renders the draft's publish-identity state. Two modes:
  *   • dTag empty → "Will publish as new listing" (green dot). Offers
- *     a "Link to existing…" button that opens the picker so the user
+ *     a "Replace Existing" button that opens the picker so the user
  *     can convert this draft into a replace-existing flow.
  *   • dTag set   → "Will replace existing listing" (blue dot). Shows
  *     the dTag truncated and offers an "Unlink" button that strips
@@ -754,7 +754,7 @@ function PublishIdentityBanner({ form, updateForm, sessionUser }) {
         <div className="flex-1 min-w-0 text-xs">
           <p className="text-neutral-200">Will publish as new listing</p>
           <p className="text-[10px] text-neutral-500 mt-0.5">
-            A fresh Nostr identity will be generated on publish.
+            A new item will be generated on publish
           </p>
         </div>
         <button
@@ -762,7 +762,7 @@ function PublishIdentityBanner({ form, updateForm, sessionUser }) {
           title="Link this draft to an existing listing — publishing will replace that listing's content on Nostr"
           className="text-[11px] px-2 py-1 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-100 hover:border-neutral-500 transition-colors flex-shrink-0"
         >
-          Link to existing…
+          Replace Existing
         </button>
       </div>
       {pickerOpen && (
