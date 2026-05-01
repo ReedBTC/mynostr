@@ -28,6 +28,7 @@ import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { FALLBACK_RELAYS, getNDK, signWithTimeout } from './ndk.js'
 import { withTimeout } from './utils.js'
+import { fetchLnurlMeta as _fetchLnurlMeta, fetchLnurlInvoice as _fetchLnurlInvoice } from './lnurl.js'
 
 // ─── Project owner constants ────────────────────────────────────────────────
 // TODO: replace with your actual npub (find it in your Nostr client or at njump.me).
@@ -37,8 +38,11 @@ export const PROJECT_OWNER_NPUB = 'npub1mp9png4wg4jhvy6qtf3wp0m3fey2qn5z5sq4rlak
 // Hard fallback if kind 0 fetch fails
 export const FALLBACK_LUD16 = 'mynostrapp@getalby.com'
 
-// Validate that a lud16 looks like a valid lightning address
-const LUD16_RE = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+$/
+// LNURL helpers re-exported so existing `from boostagram` imports keep
+// working — actual implementations live in lib/lnurl.js (single source
+// of truth shared with zap and split-zap flows).
+export const fetchLnurlMeta    = _fetchLnurlMeta
+export const fetchLnurlInvoice = _fetchLnurlInvoice
 
 // Relays used for kind 0 lookups and kind 30078 publishing
 const BOOSTAGRAM_RELAYS = [
@@ -140,55 +144,6 @@ export async function resolveRecipientLud16(ownerNpub) {
   const profile = await fetchKind0(pubkeyHex)
   if (!profile?.lud16) throw new Error('No lightning address in this profile')
   return profile.lud16
-}
-
-// ─── LNURL-pay helpers ───────────────────────────────────────────────────────
-//
-// Both helpers wrap fetch in a 10s timeout so the modal can't hang
-// indefinitely on a slow / unreachable LNURL server. They also validate
-// response shape — a misbehaving server returning {} or an array would
-// otherwise leak undefined values into downstream code paths.
-const LNURL_FETCH_TIMEOUT_MS = 10_000
-
-export async function fetchLnurlMeta(lud16) {
-  if (!LUD16_RE.test(lud16)) throw new Error('Invalid lightning address format')
-  const [name, domain] = lud16.split('@')
-  const res = await withTimeout(
-    fetch(`https://${domain}/.well-known/lnurlp/${name}`),
-    LNURL_FETCH_TIMEOUT_MS,
-    'lnurl-meta-timeout',
-  )
-  if (!res.ok) throw new Error(`Failed to reach lightning address (${res.status})`)
-  const data = await res.json()
-  if (!data || typeof data !== 'object') throw new Error('LNURL metadata response was not an object')
-  if (typeof data.callback !== 'string' || !data.callback.startsWith('https://')) {
-    throw new Error('LNURL metadata missing valid https callback URL')
-  }
-  if (typeof data.minSendable !== 'number' || typeof data.maxSendable !== 'number') {
-    throw new Error('LNURL metadata missing min/maxSendable')
-  }
-  return data
-}
-
-// Returns { pr: bolt11String, verify: verifyUrlOrNull }
-export async function fetchLnurlInvoice(callbackUrl, amountMsats, comment) {
-  if (!callbackUrl.startsWith('https://')) throw new Error('LNURL callback must use HTTPS')
-  const url = new URL(callbackUrl)
-  url.searchParams.set('amount', String(amountMsats))
-  if (comment) url.searchParams.set('comment', comment)
-  const res = await withTimeout(
-    fetch(url.toString()),
-    LNURL_FETCH_TIMEOUT_MS,
-    'lnurl-invoice-timeout',
-  )
-  if (!res.ok) throw new Error(`Invoice request failed (${res.status})`)
-  const data = await res.json()
-  if (!data || typeof data !== 'object') throw new Error('Invoice response was not an object')
-  if (data.status === 'ERROR') throw new Error(data.reason || 'Unknown error from server')
-  if (typeof data.pr !== 'string' || !data.pr.toLowerCase().startsWith('lnbc')) {
-    throw new Error('Invoice response missing valid bolt11 (pr field)')
-  }
-  return { pr: data.pr, verify: typeof data.verify === 'string' ? data.verify : null }
 }
 
 // ─── Kind 30078 donation boostagram ─────────────────────────────────────────

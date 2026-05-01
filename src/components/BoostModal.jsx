@@ -13,6 +13,8 @@ import {
   pollVerify,
 } from '../lib/boostagram.js'
 import { isSafeUrl } from '../lib/utils.js'
+import * as nwc from '../lib/nwc.js'
+import { useWalletStatus } from '../lib/useWalletStatus.js'
 
 const POLL_INTERVAL_MS = 2500
 const PRESETS = [21, 210, 2100, 21000]
@@ -50,6 +52,18 @@ export default function BoostModal({ user, onClose, readOnly }) {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
   const [paid, setPaid] = useState(false)
+
+  // ── NWC auto-pay state ──
+  // When the user has a connected NWC wallet, the form is hidden the
+  // moment they click Boost — `nwcSending` covers the whole pipeline
+  // (fetch invoice → sign + publish 30078 → payInvoice) so a single
+  // steady "Sending boost…" view replaces the form's transient loading
+  // hints. On preimage we flip to the success view; on failure we
+  // reveal the QR fallback so the LNURL invoice + 30078 we already
+  // published aren't wasted.
+  const walletStatus = useWalletStatus()
+  const [nwcSending, setNwcSending] = useState(false)
+  const [nwcNotice, setNwcNotice] = useState('')
 
   // Share-to-feed (optional kind 1 note) — only available when the donor
   // has a real Nostr signer (not anonymous, not read-only). Auto-clears
@@ -170,8 +184,19 @@ export default function BoostModal({ user, onClose, readOnly }) {
     const maxLen = lnurlMeta.commentAllowed || 0
     const trimmedComment = maxLen > 0 ? comment.slice(0, maxLen) : comment
 
-    setLoading(true)
-    setLoadingStep('Fetching invoice…')
+    // Pin the auto-pay branch up-front so all downstream UI decisions are
+    // consistent. With NWC connected, flip to the unified "Sending…" view
+    // BEFORE any async work — otherwise the form's stage labels ('Fetching
+    // invoice…', 'Approve in your signer app…') flash for ~100–500ms each
+    // on a fast NIP-07 signer, which reads as choppy.
+    const nwcConnected = nwc.isReady()
+    if (nwcConnected) {
+      setNwcSending(true)
+    } else {
+      setLoading(true)
+      setLoadingStep('Fetching invoice…')
+    }
+
     try {
       // 1. Fetch invoice
       const { pr, verify } = await fetchLnurlInvoice(lnurlMeta.callback, sats * 1000, trimmedComment)
@@ -188,18 +213,18 @@ export default function BoostModal({ user, onClose, readOnly }) {
 
       // 3. Sign + publish kind 30078. Anonymous → single-use burner key
       //    (zeroed immediately after); attributed → donor's real signer
-      //    (NIP-07 / bunker via NDK). Either way, publishes synchronously
-      //    so the recipient's bot can correlate the moment the bolt11
-      //    settles.
-      //
-      //    The signer round-trip in attributed mode can take 20s if the
-      //    user's signer is in another window/app (Primal app, Alby
-      //    popup, bunker). Surface a clear "approve" hint so the user
-      //    knows to look for the prompt rather than thinking the modal
-      //    is stuck.
-      setLoadingStep(anonymous
-        ? 'Publishing receipt…'
-        : 'Approve in your signer app…')
+      //    (NIP-07 / bunker via NDK). The signer round-trip in attributed
+      //    mode can take 20s if the user's signer is in another window/app
+      //    (Primal app, Alby popup, bunker). On the non-NWC path we
+      //    surface "Approve in your signer app…" so the user knows to look
+      //    for the prompt; on the NWC path the unified "Sending…" view
+      //    stays steady — most users are on fast NIP-07 extensions and the
+      //    flicker isn't worth it.
+      if (!nwcConnected) {
+        setLoadingStep(anonymous
+          ? 'Publishing receipt…'
+          : 'Approve in your signer app…')
+      }
       const burner = anonymous ? generateBurnerKeypair() : null
       try {
         const { eventId: eid, published } = await publishDonationBoostagram({
@@ -218,17 +243,40 @@ export default function BoostModal({ user, onClose, readOnly }) {
 
         setInvoice(pr)
         setEventId(eid)
-        setVerifyUrl(verify)
         // Surface the publish result — if no relay accepted the kind
         // 30078, the LN payment will still go through but the bot
         // watching the metadata stream won't find anything to enrich
         // it with. User should know.
         setMetaPublished(!!published)
+
+        // 4. Pay. NWC auto-pays in foreground; non-NWC arms verify polling
+        //    so the modal can detect an external wallet's settlement.
+        if (nwcConnected) {
+          const t0 = Date.now()
+          console.info('[mynostr-nwc] boost payInvoice: sending request')
+          try {
+            await nwc.payInvoice(pr)
+            console.info(`[mynostr-nwc] boost payInvoice: settled in ${Date.now() - t0}ms`)
+            setPaid(true)
+          } catch (e) {
+            const msg = String(e?.message || e)
+            console.warn(`[mynostr-nwc] boost payInvoice failed after ${Date.now() - t0}ms:`, msg)
+            const friendly = /reply.?timeout|publish.?timeout|timeout/i.test(msg)
+              ? 'Your wallet didn\'t acknowledge the payment within 25 seconds. The payment may have actually gone through — check your wallet before retrying.'
+              : (msg && msg.length < 200 ? msg : 'Wallet payment failed.')
+            setNwcNotice(`${friendly} You can pay this invoice manually below.`)
+            setVerifyUrl(verify)
+            setNwcSending(false)
+          }
+        } else {
+          setVerifyUrl(verify)
+        }
       } finally {
         if (burner?.sk) burner.sk.fill(0)
       }
     } catch (e) {
       setError(e.message)
+      if (nwcConnected) setNwcSending(false)
     } finally {
       setLoading(false)
       setLoadingStep('')
@@ -266,6 +314,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
     setMetaPublished(true)
     setPaid(false)
     setError('')
+    setNwcNotice('')
     // Clear share-flow state too so a previous attempt's status doesn't
     // bleed into the next boost.
     setShareAttempted(false)
@@ -291,8 +340,10 @@ export default function BoostModal({ user, onClose, readOnly }) {
               <p className="text-xs text-red-400 bg-red-950/40 border border-red-900 rounded px-3 py-2">{initError}</p>
             )}
 
-            {/* ── Form ── */}
-            {!invoice && (
+            {/* ── Form ── hidden once an NWC send is in flight, so the
+                form's transient stage labels can't flicker into view on
+                fast signers. */}
+            {!invoice && !nwcSending && (
               <>
                 <p className="text-xs text-neutral-500">
                   Support MyNostr with a lightning payment.{' '}
@@ -405,6 +456,18 @@ export default function BoostModal({ user, onClose, readOnly }) {
                   </p>
                 )}
 
+                {/* NWC connected hint — sets the user's expectation that
+                    the boost will pay automatically without an external
+                    wallet handoff. Mirrors the zap surface's hint. */}
+                {walletStatus?.connected && !loading && (
+                  <p className="text-[11px] text-neutral-500 flex items-center gap-1.5">
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
+                    <span className="truncate">
+                      Pays via your connected wallet{walletStatus.alias ? ` · ${walletStatus.alias}` : ''}
+                    </span>
+                  </p>
+                )}
+
                 <button
                   onClick={handleGenerate}
                   disabled={loading || !!initError || !lnurlMeta}
@@ -415,9 +478,36 @@ export default function BoostModal({ user, onClose, readOnly }) {
               </>
             )}
 
+            {/* ── NWC sending ── one steady view from click to preimage,
+                replaces the form's stage labels so a fast signer doesn't
+                flash through them. Stays mounted across the LNURL fetch
+                + 30078 sign/publish + payInvoice round-trip; flips to the
+                success view on preimage, or unmounts (revealing the QR
+                view below) if NWC fails and we fall back to manual. */}
+            {nwcSending && !paid && (
+              <div className="flex flex-col items-center gap-4 py-6 text-center">
+                <div className="w-14 h-14 rounded-full bg-amber-950/40 border-2 border-amber-600/60 flex items-center justify-center">
+                  <span className="text-2xl animate-pulse">⚡</span>
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-amber-300">
+                    Sending boost…
+                  </p>
+                  <p className="text-xs text-neutral-500 mt-1">
+                    {parseInt(amount, 10).toLocaleString()} sats to MyNostr
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* ── QR / waiting ── */}
-            {invoice && !paid && (
+            {invoice && !paid && !nwcSending && (
               <>
+                {nwcNotice && (
+                  <p className="text-xs text-amber-300 bg-amber-900/20 border border-amber-900/40 rounded px-3 py-2">
+                    {nwcNotice}
+                  </p>
+                )}
                 <div className="flex justify-center py-2">
                   <div className="bg-white p-3 rounded-lg">
                     <QRCodeSVG value={`lightning:${invoice.toUpperCase()}`} size={200} />

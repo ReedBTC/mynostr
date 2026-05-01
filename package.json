@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@getalby/sdk": "^7.0.0",
     "@nostr-dev-kit/ndk": "~2.18.1",
     "@tanstack/react-virtual": "^3",
     "@uiw/react-md-editor": "^4",

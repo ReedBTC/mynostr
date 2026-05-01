@@ -20,6 +20,9 @@ import {
 } from './lib/ownerContext.jsx'
 import { connectAndWait, getNDK, resetNDK } from './lib/ndk.js'
 import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
+import * as nwc from './lib/nwc.js'
+import { loadMyZaps, resetMyZaps } from './lib/myZapStore.js'
+import { loadMyLikes, resetMyLikes } from './lib/myReactionStore.js'
 
 // Lazy-load each module so only the active tab's code is fetched
 const ProfileModule     = lazy(() => import('./modules/profile/ProfileModule.jsx'))
@@ -92,6 +95,34 @@ export default function App() {
     return () => { cancelled = true }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Pre-warm NWC after the session is hydrated so the wallet status dot is
+  // correct on cold load instead of only after the first zap attempt. Safe
+  // for read-only sessions — ensureReady() bails out without a signer.
+  // Failures are logged; the UI surfaces them on the next user-initiated
+  // action rather than nagging at idle.
+  useEffect(() => {
+    if (!sessionUser?.pubkey || sessionUser.readOnly) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        await nwc.ensureReady(sessionUser)
+      } catch (e) {
+        if (!cancelled) console.warn('[mynostr-nwc] ensureReady failed at app boot', e?.message || e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [sessionUser?.pubkey, sessionUser?.readOnly])
+
+  // Load the user's outgoing zap history so zap buttons across feeds /
+  // articles / marketplace / events render with the "already zapped"
+  // styling. Read-only sessions count too — npub-only browsing still
+  // wants to see what the user has zapped from other clients.
+  useEffect(() => {
+    if (!sessionUser?.pubkey) return
+    loadMyZaps(sessionUser.pubkey)
+    loadMyLikes(sessionUser.pubkey)
+  }, [sessionUser?.pubkey])
+
   function handleLogout() {
     // Centralized logout — called from every surface (sidebar, mobile
     // drawer, homepage). Tears down NDK signer state first so no
@@ -105,6 +136,12 @@ export default function App() {
     //       (mynostr_last_author_*, mynostr_last_article_*,
     //        mynostr_reading_lists:*) — these reveal what pages the session
     //       visited and are cleared regardless of which pubkey is embedded.
+    // Drop the in-memory NWC client but keep the encrypted blob — re-login
+    // as the same npub will unlock it again. resetNDK() detaches the signer
+    // so the client wouldn't be usable past this point regardless.
+    nwc.lockOnLogout()
+    resetMyZaps()
+    resetMyLikes()
     resetNDK()
     const pk = sessionUser?.pubkey
     try {

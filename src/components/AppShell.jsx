@@ -10,6 +10,9 @@ import BoostModal from './BoostModal.jsx'
 import HelpModal from '../modules/articles/components/HelpModal.jsx'
 import MobileNavDrawer from './MobileNavDrawer.jsx'
 import ShareButton from './ShareButton.jsx'
+import WalletConnectModal from './WalletConnectModal.jsx'
+import { useWalletStatus } from '../lib/useWalletStatus.js'
+import * as nwc from '../lib/nwc.js'
 
 /**
  * AppShell — persistent layout wrapping every module.
@@ -31,6 +34,11 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
   const [boostOpen, setBoostOpen]   = useState(false)
   const [helpOpen,  setHelpOpen]    = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [walletOpen, setWalletOpen] = useState(false)
+  const walletStatus = useWalletStatus()
+  // Hide the wallet row entirely for logged-out and read-only sessions —
+  // NWC encryption needs a signer, and a connect attempt would just error.
+  const canUseWallet = !!sessionUser && !sessionUser.readOnly
   const profile = user?.profile
   const activeMod = MODULES.find(m => m.id === activeModule)
   // Write + Search surfaces aren't publicly shareable — Write has no URL
@@ -154,9 +162,17 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           })()}
 
           {/* Session controls — below the divider, cleanly separated from
-              navigation. Viewer badge + Login/Logout only; the profile
-              identity row moved above the line for better grouping. */}
-          <div className="shrink-0 border-t border-neutral-800 px-3 py-3">
+              navigation. Wallet row (if applicable) + viewer badge +
+              Login/Logout. Wallet row is hidden for read-only and
+              logged-out sessions since NWC needs a signer. */}
+          <div className="shrink-0 border-t border-neutral-800 px-3 py-3 space-y-2">
+            {canUseWallet && (
+              <SidebarWalletRow
+                status={walletStatus}
+                onConnect={() => setWalletOpen(true)}
+                onDisconnect={() => nwc.disconnect()}
+              />
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               {viewerBadgeText && (
                 <span className="text-[11px] text-amber-500 border border-amber-900 rounded px-2 py-0.5">
@@ -256,14 +272,61 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           onLogout={onLogout}
           onLogin={handleLoginClick}
           showHelp={activeModule === 'articles'}
+          walletStatus={walletStatus}
+          canUseWallet={canUseWallet}
+          onConnectWallet={() => setWalletOpen(true)}
+          onDisconnectWallet={() => nwc.disconnect()}
         />
       )}
 
       {/* BoostModal uses `user` for the "boost as" identity — that's the session
           user, not whoever's page we're on. */}
-      {boostOpen && <BoostModal user={sessionUser} onClose={() => setBoostOpen(false)} readOnly={!isOwner} />}
-      {helpOpen  && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {boostOpen  && <BoostModal user={sessionUser} onClose={() => setBoostOpen(false)} readOnly={!isOwner} />}
+      {helpOpen   && <HelpModal onClose={() => setHelpOpen(false)} />}
+      {walletOpen && (
+        <WalletConnectModal
+          user={sessionUser}
+          onClose={() => setWalletOpen(false)}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Compact wallet row for the desktop sidebar foot. Two states:
+ *   - connected: green dot + alias (or "Connected"), small Disconnect link
+ *   - not connected: full-width "Connect Wallet" button (purple, matches login)
+ */
+function SidebarWalletRow({ status, onConnect, onDisconnect }) {
+  if (status?.connected) {
+    return (
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="inline-flex items-center gap-1.5 min-w-0 flex-1 text-neutral-300">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
+          <span className="truncate">{status.alias || 'Wallet connected'}</span>
+        </span>
+        <button
+          type="button"
+          onClick={onDisconnect}
+          className="text-neutral-600 hover:text-red-300 transition-colors shrink-0"
+          aria-label="Disconnect wallet"
+        >
+          Disconnect
+        </button>
+      </div>
+    )
+  }
+  return (
+    <button
+      type="button"
+      onClick={onConnect}
+      className="w-full text-xs text-purple-300 hover:text-purple-200 transition-colors px-2 py-1.5 rounded border border-purple-900 hover:border-purple-700 inline-flex items-center justify-center gap-1.5"
+      aria-label="Connect Lightning Wallet"
+    >
+      <span aria-hidden="true">⚡</span>
+      <span>Connect Wallet</span>
+    </button>
   )
 }
 

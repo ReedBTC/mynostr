@@ -25,17 +25,19 @@ import { Z } from '../../../../lib/zIndex.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useOwnerContext } from '../../../../lib/ownerContext.jsx'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
-import { useUserReactionsContext } from '../../userReactionsContext.jsx'
 import ZapModal from '../../../../components/ZapModal.jsx'
 import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 import BookmarkPickerSheet from './BookmarkPickerSheet.jsx'
+import { useMyZapped, useMyZapPending } from '../../../../lib/useMyZapped.js'
+import { useMyLiked } from '../../../../lib/useMyLiked.js'
+import { publishLike } from '../../../../lib/publishLike.js'
+import { extractZapSplits } from '../../../../lib/zapSplits.js'
 
 export default function NoteActionBar({ note, profile }) {
   const isMobile = useIsMobile()
   const navigate = useNavigate()
   const { sessionUser } = useOwnerContext()
   const { categories, createCategory, addNote, removeNote, canEdit } = useNoteBookmarksContext()
-  const { likedIds, markLiked, unmarkLiked } = useUserReactionsContext()
 
   const canPublish = !!sessionUser?.pubkey && !sessionUser?.readOnly
 
@@ -56,17 +58,26 @@ export default function NoteActionBar({ note, profile }) {
     })
   }
 
-  // ── Like ──
-  // Derived from the shared reactions set so card unmount/remount (scroll
-  // away → back) and full reloads don't lose the "Liked" state.
+  // Lowercased note id — used by the bookmark-membership check below
+  // (categories store ids lowercased) and previously by the reactions
+  // context. Kept here even after the migration to the shared reaction
+  // store because the bookmark code still consumes it.
   const noteIdLower = note?.id?.toLowerCase()
-  const liked = !!noteIdLower && likedIds.has(noteIdLower)
+
+  // ── Like ──
+  // Derived from the shared reactions store so card unmount/remount (scroll
+  // away → back) and full reloads don't lose the "Liked" state. Source of
+  // truth is kind 7 events on relays — fetched once on session login,
+  // refreshed in localStorage for instant cold-load styling.
+  const liked = useMyLiked({ eventId: note?.id })
   const [liking, setLiking] = useState(false)
 
   // ── Zap ──
   const [zapOpen, setZapOpen] = useState(false)
   const [zapLud16, setZapLud16] = useState(profile?.lud16 || null)
   const [zapFetching, setZapFetching] = useState(false)
+  const zapped     = useMyZapped({ eventId: note?.id })
+  const zapPending = useMyZapPending({ eventId: note?.id })
 
   // ── Repost ──
   const [repostOpen, setRepostOpen] = useState(false)
@@ -160,36 +171,9 @@ export default function NoteActionBar({ note, profile }) {
     if (!canPublish || liking || liked) return
     if (!note?.id || !/^[0-9a-f]{64}$/i.test(note.id)) return
     if (!note?.pubkey || !/^[0-9a-f]{64}$/i.test(note.pubkey)) return
-    // Optimistic: mark liked in the shared set right away so the heart
-    // flips immediately and any other card showing this note stays in
-    // sync. Revert if signing/publishing fails OR if publish returned
-    // without any relay acknowledging the event — a silent zero-ack is
-    // indistinguishable from failure from the user's perspective and
-    // would leave the heart lit for a like that never reached anyone.
     setLiking(true)
-    markLiked(note.id)
-    try {
-      const ndk = getNDK()
-      const ev = new NDKEvent(ndk)
-      ev.kind = 7
-      ev.content = '+'
-      ev.tags = [
-        ['e', note.id],
-        ['p', note.pubkey],
-        ['k', '1'],
-      ]
-      await signWithTimeout(ev)
-      const publishedTo = await ev.publish()
-      if (!publishedTo || publishedTo.size === 0) {
-        if (import.meta.env.DEV) console.warn('Like reached no relays')
-        unmarkLiked(note.id)
-      }
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn('Like failed:', err)
-      unmarkLiked(note.id)
-    } finally {
-      if (mountedRef.current) setLiking(false)
-    }
+    await publishLike({ eventId: note.id, eventPubkey: note.pubkey, kind: 1 })
+    if (mountedRef.current) setLiking(false)
   }
 
   async function handleRepost() {
@@ -292,6 +276,7 @@ export default function NoteActionBar({ note, profile }) {
           targetEvent={note}
           targetKind="1"
           user={sessionUser}
+          zapSplits={extractZapSplits(note?.tags)}
           onClose={() => setZapOpen(false)}
         />
       )}
@@ -315,10 +300,14 @@ export default function NoteActionBar({ note, profile }) {
         <button
           onClick={handleZapClick}
           disabled={zapFetching}
-          title={`Zap ${authorName || 'author'}`}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-amber-800 hover:text-amber-400 disabled:opacity-40 transition-colors"
+          title={zapped ? `You zapped this note · zap again` : `Zap ${authorName || 'author'}`}
+          className={`flex items-center gap-1 text-xs px-2 py-1 rounded border disabled:opacity-40 transition-colors ${
+            zapped
+              ? 'border-amber-700 bg-amber-950/30 text-amber-300 hover:bg-amber-900/40'
+              : 'border-neutral-800 text-neutral-500 hover:border-amber-800 hover:text-amber-400'
+          } ${zapPending ? 'animate-pulse' : ''}`}
         >
-          ⚡ {zapFetching ? 'Finding…' : 'Zap'}
+          ⚡ {zapFetching ? 'Finding…' : zapped ? 'Zapped' : 'Zap'}
         </button>
 
         {/* Comment — navigates to the Write module with this note prefilled

@@ -24,7 +24,6 @@ import BookmarksTab from './components/feed/BookmarksTab.jsx'
 import SearchTab from './components/feed/SearchTab.jsx'
 import NoteDetailView from './components/feed/NoteDetailView.jsx'
 import { NoteBookmarksProvider } from './noteBookmarksContext.jsx'
-import { UserReactionsProvider } from './userReactionsContext.jsx'
 import { NotesNavigationProvider } from './notesNavigationContext.jsx'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import { useNoteDrafts } from '../../lib/useNoteDrafts.js'
@@ -258,23 +257,21 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   }, [updateDraftWith])
 
   // Single-note URL: bypass the tab strip entirely and render the
-  // dedicated detail view. Wrapped in the bookmark + reactions providers
-  // so the embedded NoteCard / thread cards still get those contexts.
+  // dedicated detail view. Wrapped in the bookmark provider so embedded
+  // NoteCards / thread cards get bookmark context. Like state is sourced
+  // from the cross-module reaction store (no provider needed).
   if (isNoteDetail) {
     return (
       <NoteBookmarksProvider user={sessionUser}>
-      <UserReactionsProvider user={sessionUser}>
       <NotesNavigationProvider openAuthorInSearch={isOwner ? openAuthorInSearch : null}>
         <NoteDetailView nevent={subtab} viewerNpub={npub} />
       </NotesNavigationProvider>
-      </UserReactionsProvider>
       </NoteBookmarksProvider>
     )
   }
 
   return (
     <NoteBookmarksProvider user={sessionUser}>
-    <UserReactionsProvider user={sessionUser}>
     <NotesNavigationProvider openAuthorInSearch={isOwner ? openAuthorInSearch : null}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
@@ -383,7 +380,6 @@ export default function NotesModule({ user, sessionUser, subtab }) {
       )}
     </div>
     </NotesNavigationProvider>
-    </UserReactionsProvider>
     </NoteBookmarksProvider>
   )
 }

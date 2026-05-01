@@ -36,6 +36,9 @@ import RsvpButtons from './RsvpButtons.jsx'
 import EventActionsMenu from './EventActionsMenu.jsx'
 import CommentsThread from './CommentsThread.jsx'
 import ZapModal from '../../../components/ZapModal.jsx'
+import { useMyZapped, useMyZapPending } from '../../../lib/useMyZapped.js'
+import { useMyLiked } from '../../../lib/useMyLiked.js'
+import { publishLike } from '../../../lib/publishLike.js'
 
 export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
   const navigate = useNavigate()
@@ -215,6 +218,22 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
   const hostDisplay = hostProfile?.display_name || hostProfile?.displayName || hostProfile?.name || ''
   const hostLud16 = hostProfile?.lud16 || ''
   const eventATag = parsed ? `${parsed.kind}:${parsed.pubkey}:${parsed.dTag}` : ''
+  const zapped     = useMyZapped({ eventId: parsed?.id, addressable: eventATag })
+  const zapPending = useMyZapPending({ eventId: parsed?.id, addressable: eventATag })
+  const liked     = useMyLiked({ eventId: parsed?.id, addressable: eventATag })
+  const [liking, setLiking] = useState(false)
+  const canLike   = !isOwner && !!sessionUser?.pubkey && !sessionUser.readOnly && !!parsed?.id
+  async function handleLike() {
+    if (!canLike || liking) return
+    setLiking(true)
+    await publishLike({
+      eventId:     parsed.id,
+      eventPubkey: parsed.pubkey,
+      kind:        parsed.kind,
+      addressable: eventATag,
+    })
+    setLiking(false)
+  }
 
   return (
     <div className="px-3 sm:px-6 py-4 sm:py-6 max-w-3xl mx-auto">
@@ -307,15 +326,35 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
             currentStatus={myStatus}
             onStatusChange={handleRsvpStatusChange}
           />
+          {canLike && (
+            <button
+              type="button"
+              onClick={handleLike}
+              disabled={liking || liked}
+              title={liked ? 'You liked this event' : 'Like this event'}
+              className={`text-xs px-3 py-1.5 rounded-md border focus:outline-none focus:ring-1 focus:ring-red-500 disabled:opacity-60 transition-colors inline-flex items-center gap-1.5 ${
+                liked
+                  ? 'border-red-700 text-red-300 bg-red-950/40'
+                  : 'border-neutral-700 text-neutral-300 bg-neutral-900 hover:border-red-700 hover:text-red-300'
+              } ${liking ? 'animate-pulse' : ''}`}
+            >
+              <span aria-hidden>{liked ? '❤️' : '🤍'}</span>
+              <span>{liked ? 'Liked' : 'Like'}</span>
+            </button>
+          )}
           {hostLud16 && !isOwner && (
             <button
               type="button"
               onClick={() => setZapOpen(true)}
-              title={`Zap ${hostDisplay || 'the host'}`}
-              className="text-xs px-3 py-1.5 rounded-md border border-amber-700/60 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40 hover:text-amber-100 focus:outline-none focus:ring-1 focus:ring-amber-500 transition-colors inline-flex items-center gap-1.5"
+              title={zapped ? 'You zapped this event · zap again' : `Zap ${hostDisplay || 'the host'}`}
+              className={`text-xs px-3 py-1.5 rounded-md border focus:outline-none focus:ring-1 focus:ring-amber-500 transition-colors inline-flex items-center gap-1.5 ${
+                zapped
+                  ? 'border-amber-500 text-amber-100 bg-amber-700/40 hover:bg-amber-700/55'
+                  : 'border-amber-700/60 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40 hover:text-amber-100'
+              } ${zapPending ? 'animate-pulse' : ''}`}
             >
               <span aria-hidden>⚡</span>
-              <span>Zap</span>
+              <span>{zapped ? 'Zapped' : 'Zap'}</span>
             </button>
           )}
         </div>

@@ -2,34 +2,14 @@ import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, FALLBACK_RELAYS, signWithTimeout } from '../lib/ndk.js'
+import * as nwc from '../lib/nwc.js'
+import { useWalletStatus } from '../lib/useWalletStatus.js'
+import { markZapped, unmarkZapped, markZapPending, clearZapPending } from '../lib/myZapStore.js'
+import { allocateMsats } from '../lib/zapSplits.js'
+import { payZapSplits } from '../lib/payZapSplits.js'
+import { fetchLnurlMeta, fetchLnurlInvoice } from '../lib/lnurl.js'
 
 const PRESETS = [21, 100, 500, 1000, 5000, 10000]
-
-// ── LNURL helpers ───────────────────────────────────────────────────────────
-
-async function resolveLud16(lud16) {
-  const [name, domain] = lud16.split('@')
-  if (!name || !domain) throw new Error('Invalid lightning address')
-  const res = await fetch(`https://${domain}/.well-known/lnurlp/${encodeURIComponent(name)}`)
-  if (!res.ok) throw new Error('Lightning address not reachable')
-  const data = await res.json()
-  if (data.status === 'ERROR') throw new Error(data.reason || 'LNURL error')
-  return data // { callback, minSendable, maxSendable, commentAllowed, allowsNostr, nostrPubkey }
-}
-
-async function fetchInvoice(callback, amountMsats, comment, zapRequestJson) {
-  const url = new URL(callback)
-  url.searchParams.set('amount', String(amountMsats))
-  if (comment?.trim()) url.searchParams.set('comment', comment.trim())
-  // NIP-57: attach signed zap request event
-  if (zapRequestJson) url.searchParams.set('nostr', zapRequestJson)
-  const res = await fetch(url.toString())
-  if (!res.ok) throw new Error('Could not get invoice')
-  const data = await res.json()
-  if (data.status === 'ERROR') throw new Error(data.reason || 'Invoice error')
-  if (!data.pr) throw new Error('No invoice returned')
-  return data.pr
-}
 
 // ── Build and sign NIP-57 zap request (kind 9734) ───────────────────────────
 
@@ -64,9 +44,11 @@ export default function ZapModal({
   aTag,
   targetKind = '30023',
   user,
+  zapSplits,    // NIP-57.5 splits parsed from the target event's tags
   onClose,
 }) {
   const effectiveTargetEvent = targetEvent || articleEvent || null
+  const walletStatus          = useWalletStatus()
   const [step,    setStep]    = useState('amount')  // 'amount' | 'invoice'
   const [amount,  setAmount]  = useState(21)
   const [comment, setComment] = useState('')
@@ -77,7 +59,18 @@ export default function ZapModal({
   const [isNip57, setIsNip57] = useState(false)
   const [paid,    setPaid]    = useState(false)
   const subRef = useRef(null)
-  const pollRef = useRef(null)
+
+  // Single success path — flips the modal to the "Zap sent!" view AND
+  // records the zap in the session-wide store so every zap button across
+  // the app picks up the "already zapped" styling without waiting for
+  // the relay round-trip on the kind 9735 receipt. Idempotent.
+  function recordZapSuccess() {
+    setPaid(true)
+    markZapped({
+      eventId:     effectiveTargetEvent?.id || null,
+      addressable: aTag || null,
+    })
+  }
 
   // Listen for kind 9735 zap receipt on relays (NIP-57 path)
   // Also poll the LNURL verify endpoint as fallback (works for plain invoices too)
@@ -96,7 +89,7 @@ export default function ZapModal({
           // Check if this receipt's bolt11 matches our invoice
           const bolt11 = ev.tags?.find(t => t[0] === 'bolt11')?.[1]
           if (bolt11 && invoice.toLowerCase().startsWith(bolt11.toLowerCase().slice(0, 20))) {
-            setPaid(true)
+            recordZapSuccess()
           }
           // Also match by description hash — just accept any zap to this recipient in this window
           const desc = ev.tags?.find(t => t[0] === 'description')?.[1]
@@ -104,7 +97,7 @@ export default function ZapModal({
             try {
               const zapReq = JSON.parse(desc)
               const amountTag = zapReq.tags?.find(t => t[0] === 'amount')?.[1]
-              if (amountTag === String(amount * 1000)) setPaid(true)
+              if (amountTag === String(amount * 1000)) recordZapSuccess()
             } catch {}
           }
         })
@@ -120,19 +113,65 @@ export default function ZapModal({
         try { subRef.current.stop() } catch {}
         subRef.current = null
       }
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
     }
   }, [invoice, paid, isNip57, recipientPubkey, amount])
+
+  const hasSplits = Array.isArray(zapSplits) && zapSplits.length > 0
 
   async function handleGetInvoice() {
     if (!amount || amount <= 0) return
     setLoading(true)
     setError('')
+
+    // Splits + NWC: the orchestrator runs the whole multi-leg pipeline
+    // (resolve each lud16, sign per-leg zap-requests, fetch invoices,
+    // pay sequentially). Same close-immediately + optimistic mark UX as
+    // a single-recipient NWC zap — the button glows + pulses on the
+    // *target* event's button until every leg has settled. We don't try
+    // to track per-leg state in the UI; partial failures are silent
+    // (best-effort), matching the LB pattern. A total bust (every leg
+    // fails) reverts the optimistic mark.
+    if (hasSplits && nwc.isReady()) {
+      const target = {
+        eventId:     effectiveTargetEvent?.id || null,
+        addressable: aTag || null,
+      }
+      const allocations = allocateMsats(amount * 1000, zapSplits)
+      // markZapPending FIRST so markZapped's pending-check defers
+      // persistence — a tab close mid-NWC-pay won't leave a stale
+      // localStorage entry; clearZapPending commits on success or
+      // unmarkZapped + clearZapPending cleans up on failure.
+      markZapPending(target)
+      markZapped(target)
+      onClose()
+      ;(async () => {
+        const t0 = Date.now()
+        console.info(`[mynostr-nwc] zap split: ${allocations.length} legs, ${amount} sats total`)
+        try {
+          const result = await payZapSplits({
+            splits:      zapSplits,
+            allocations,
+            targetEvent: effectiveTargetEvent,
+            aTag,
+            targetKind,
+            comment:     comment.trim(),
+          })
+          const paidLegs = result.legs.filter(l => l.status === 'paid').length
+          console.info(`[mynostr-nwc] zap split: ${paidLegs}/${result.legs.length} legs paid in ${Date.now() - t0}ms`)
+          if (!result.anySucceeded) unmarkZapped(target)
+        } catch (e) {
+          // payZapSplits is documented as never-throws; defense-in-depth.
+          console.warn('[mynostr-nwc] split orchestrator threw:', e?.message || e)
+          unmarkZapped(target)
+        } finally {
+          clearZapPending(target)
+        }
+      })()
+      return
+    }
+
     try {
-      const info    = await resolveLud16(lud16)
+      const info    = await fetchLnurlMeta(lud16, { expectedPubkey: recipientPubkey })
       const msats   = amount * 1000
       const minSats = Math.ceil(info.minSendable / 1000)
       const maxSats = Math.floor(info.maxSendable / 1000)
@@ -158,8 +197,41 @@ export default function ZapModal({
         }
       }
 
-      const pr = await fetchInvoice(info.callback, msats, comment, zapRequestJson)
+      const { pr } = await fetchLnurlInvoice(info.callback, msats, comment.trim(), zapRequestJson)
       setInvoice(pr)
+
+      // NWC connected — close the modal immediately, optimistically mark
+      // the target zapped (button glows), flip pendingZap (button pulses),
+      // and run payInvoice in the background. When the preimage lands the
+      // pulse stops and the lit-up state stays. If payment fails we revert
+      // the optimistic mark — the user sees the button un-zap itself,
+      // matching the "no half-promised UI" rule we use for likes.
+      if (nwc.isReady()) {
+        const target = {
+          eventId:     effectiveTargetEvent?.id || null,
+          addressable: aTag || null,
+        }
+        // markZapPending FIRST — see splits branch for rationale.
+        markZapPending(target)
+        markZapped(target)
+        onClose()
+        ;(async () => {
+          const t0 = Date.now()
+          console.info('[mynostr-nwc] zap payInvoice: sending request (background)')
+          try {
+            await nwc.payInvoice(pr)
+            console.info(`[mynostr-nwc] zap payInvoice: settled in ${Date.now() - t0}ms`)
+          } catch (e) {
+            const msg = String(e?.message || e)
+            console.warn(`[mynostr-nwc] zap payInvoice failed after ${Date.now() - t0}ms:`, msg)
+            unmarkZapped(target)
+          } finally {
+            clearZapPending(target)
+          }
+        })()
+        return
+      }
+
       setStep('invoice')
     } catch (e) {
       setError(e.message || 'Something went wrong')
@@ -174,7 +246,7 @@ export default function ZapModal({
       try {
         await window.webln.enable()
         await window.webln.sendPayment(invoice)
-        setPaid(true)
+        recordZapSuccess()
         return
       } catch {
         // User cancelled or WebLN failed — fall through to lightning: URI
@@ -251,12 +323,44 @@ export default function ZapModal({
 
               {error && <p className="text-xs text-red-400 bg-red-900/20 border border-red-900/40 rounded px-3 py-2">{error}</p>}
 
+              {hasSplits && (
+                <div className="text-[11px] rounded border border-neutral-800 px-2.5 py-2 space-y-1">
+                  <p className="text-neutral-400 flex items-center gap-1.5">
+                    <span aria-hidden>🔀</span>
+                    <span>
+                      This {targetKind === '30023' ? 'article' : 'note'} splits zaps {zapSplits.length} ways
+                      <span className="text-neutral-600"> · {zapSplits.map(s => `${s.pct}%`).join(' / ')}</span>
+                    </span>
+                  </p>
+                  {!walletStatus?.connected && (
+                    <p className="text-amber-400/90 leading-snug">
+                      Connect a Lightning wallet to honor the split. Without one, your zap goes 100% to the author.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {walletStatus?.connected && (
+                <p className="text-[11px] text-neutral-500 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
+                  <span className="truncate">
+                    {hasSplits
+                      ? `Pays each split recipient via ${walletStatus.alias || 'your connected wallet'}`
+                      : `Pays via your connected wallet${walletStatus.alias ? ` · ${walletStatus.alias}` : ''}`}
+                  </span>
+                </p>
+              )}
+
               <button
                 onClick={handleGetInvoice}
                 disabled={loading || !amount || amount <= 0}
                 className="w-full py-2.5 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-sm text-white font-medium transition-colors"
               >
-                {loading ? 'Getting invoice…' : `Get Invoice · ${(amount || 0).toLocaleString()} sats`}
+                {loading
+                  ? 'Getting invoice…'
+                  : walletStatus?.connected
+                    ? `Send Zap · ${(amount || 0).toLocaleString()} sats`
+                    : `Get Invoice · ${(amount || 0).toLocaleString()} sats`}
               </button>
             </div>
           ) : paid ? (
@@ -312,7 +416,7 @@ export default function ZapModal({
                 </button>
               </div>
 
-              <button onClick={() => setPaid(true)}
+              <button onClick={() => recordZapSuccess()}
                 className="w-full text-xs text-neutral-500 hover:text-green-400 transition-colors py-1">
                 I already paid this
               </button>

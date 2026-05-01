@@ -23,6 +23,7 @@ import NotePreview from '../NotePreview.jsx'
 import NoteActionsMenu from './NoteActionsMenu.jsx'
 import NoteActionBar from './NoteActionBar.jsx'
 import { isSafeUrl } from '../../../../lib/utils.js'
+import { extractZapSplits } from '../../../../lib/zapSplits.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { useNotesNavigationContext } from '../../notesNavigationContext.jsx'
 
@@ -39,18 +40,6 @@ function timeAgo(seconds) {
   if (diff < 2592000) return `${Math.floor(diff / 86400)}d`
   if (diff < 31536000) return `${Math.floor(diff / 2592000)}mo`
   return `${Math.floor(diff / 31536000)}y`
-}
-
-function extractZapSplits(tags) {
-  if (!tags) return []
-  const out = []
-  for (const t of tags) {
-    if (t[0] !== 'zap' || !t[1]) continue
-    if (!/^[0-9a-fA-F]{64}$/.test(t[1])) continue
-    out.push({ pubkey: t[1].toLowerCase(), relay: t[2] || '', weight: Number(t[3]) || 1 })
-  }
-  const total = out.reduce((s, z) => s + z.weight, 0)
-  return out.map(z => ({ pubkey: z.pubkey, relay: z.relay, pct: total > 0 ? Math.round(z.weight / total * 100) : 0 }))
 }
 
 export default function NoteCard({
@@ -235,6 +224,7 @@ export default function NoteCard({
             zapSplits={zapSplits}
             authorPubkey={note?.pubkey}
             compactSplits
+            showZapSplits
           />
         </div>
         {/* Fade overlay hints that more content is hidden */}

@@ -19,6 +19,9 @@ import { useSessionCollections } from '../../../../lib/sessionCollectionsContext
 import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
 import ProductActionsMenu from './ProductActionsMenu.jsx'
 import ZapModal from '../../../../components/ZapModal.jsx'
+import { useMyZapped, useMyZapPending } from '../../../../lib/useMyZapped.js'
+import { useMyLiked } from '../../../../lib/useMyLiked.js'
+import { publishLike } from '../../../../lib/publishLike.js'
 
 /**
  * ProductDrawer — full detail view for one listing, opened from a
@@ -61,6 +64,21 @@ export default function ProductDrawer({
   // has no lightning address, or when the viewer IS the seller (you
   // can't zap yourself).
   const canZap = !previewMode && !!sellerLud16 && !isAuthor
+  // Like is similar — hidden in preview and for the author. Doesn't need
+  // a lud16; anyone with a signer can react.
+  const canLike   = !previewMode && !isAuthor && !!sessionUser?.pubkey && !sessionUser.readOnly
+  const [liking, setLiking] = useState(false)
+  async function handleLike() {
+    if (!canLike || liking) return
+    setLiking(true)
+    await publishLike({
+      eventId:     event.id,
+      eventPubkey: pubkey,
+      kind:        event.kind,
+      addressable: buildProductCoord(pubkey, dTag),
+    })
+    setLiking(false)
+  }
 
   // Active hero image index — multi-image listings get a thumbnail
   // strip below the hero that swaps which image is shown big.
@@ -227,6 +245,11 @@ export default function ProductDrawer({
                 shopstrUrl={shopstrUrl}
                 canZap={canZap}
                 onZapClick={() => setZapOpen(true)}
+                canLike={canLike}
+                liking={liking}
+                onLikeClick={handleLike}
+                eventId={event.id}
+                aTag={buildProductCoord(pubkey, dTag)}
               />
             )}
           </div>
@@ -805,7 +828,10 @@ function Field({ label, value }) {
 
 // ─── External links + zap ─────────────────────────────────────────────────
 
-function ExternalLinks({ plebeianUrl, shopstrUrl, canZap, onZapClick }) {
+function ExternalLinks({ plebeianUrl, shopstrUrl, canZap, onZapClick, canLike, liking, onLikeClick, eventId, aTag }) {
+  const zapped     = useMyZapped({ eventId, addressable: aTag })
+  const zapPending = useMyZapPending({ eventId, addressable: aTag })
+  const liked      = useMyLiked({ eventId, addressable: aTag })
   return (
     <div className="border-t border-neutral-800 pt-4 space-y-3">
       <div>
@@ -841,17 +867,39 @@ function ExternalLinks({ plebeianUrl, shopstrUrl, canZap, onZapClick }) {
           can't zap yourself). Save-to-collection / Watchlist live in
           the header three-dot menu now; this row keeps just the
           lightning action. */}
-      {canZap && (
+      {(canZap || canLike) && (
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            type="button"
-            onClick={onZapClick}
-            title="Zap the seller"
-            className="text-xs px-3 py-1.5 rounded-md border border-amber-700/60 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40 hover:text-amber-100 focus:outline-none focus:ring-1 focus:ring-amber-500 transition-colors inline-flex items-center gap-1.5"
-          >
-            <span aria-hidden>⚡</span>
-            <span>Zap author</span>
-          </button>
+          {canLike && (
+            <button
+              type="button"
+              onClick={onLikeClick}
+              disabled={liking || liked}
+              title={liked ? 'You liked this listing' : 'Like this listing'}
+              className={`text-xs px-3 py-1.5 rounded-md border focus:outline-none focus:ring-1 focus:ring-red-500 disabled:opacity-60 transition-colors inline-flex items-center gap-1.5 ${
+                liked
+                  ? 'border-red-700 text-red-300 bg-red-950/40'
+                  : 'border-neutral-700 text-neutral-300 bg-neutral-900 hover:border-red-700 hover:text-red-300'
+              } ${liking ? 'animate-pulse' : ''}`}
+            >
+              <span aria-hidden>{liked ? '❤️' : '🤍'}</span>
+              <span>{liked ? 'Liked' : 'Like'}</span>
+            </button>
+          )}
+          {canZap && (
+            <button
+              type="button"
+              onClick={onZapClick}
+              title={zapped ? 'You zapped this listing · zap again' : 'Zap the seller'}
+              className={`text-xs px-3 py-1.5 rounded-md border focus:outline-none focus:ring-1 focus:ring-amber-500 transition-colors inline-flex items-center gap-1.5 ${
+                zapped
+                  ? 'border-amber-500 text-amber-100 bg-amber-700/40 hover:bg-amber-700/55'
+                  : 'border-amber-700/60 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40 hover:text-amber-100'
+              } ${zapPending ? 'animate-pulse' : ''}`}
+            >
+              <span aria-hidden>⚡</span>
+              <span>{zapped ? 'Zapped author' : 'Zap author'}</span>
+            </button>
+          )}
         </div>
       )}
     </div>

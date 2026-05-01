@@ -19,6 +19,10 @@ export default function MobileNavDrawer({
   onLogout,
   onLogin,
   showHelp,
+  walletStatus,
+  canUseWallet,
+  onConnectWallet,
+  onDisconnectWallet,
 }) {
   const profile = user?.profile
   const navigate = useNavigate()
@@ -175,6 +179,29 @@ export default function MobileNavDrawer({
 
         {/* Bottom actions */}
         <div className="border-t border-neutral-800 p-2 space-y-1">
+          {canUseWallet && (
+            walletStatus?.connected ? (
+              <div className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-neutral-300">
+                <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
+                <span className="truncate flex-1">{walletStatus.alias || 'Wallet connected'}</span>
+                <button
+                  onClick={() => { onDisconnectWallet?.(); }}
+                  className="text-xs text-neutral-500 hover:text-red-300 transition-colors shrink-0"
+                  aria-label="Disconnect wallet"
+                >
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { onConnectWallet?.(); onClose() }}
+                className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-purple-300 hover:bg-neutral-900 rounded transition-colors"
+              >
+                <span>⚡</span>
+                <span>Connect Wallet</span>
+              </button>
+            )
+          )}
           <button
             onClick={() => { onBoost(); onClose() }}
             className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-amber-500 hover:bg-neutral-900 rounded transition-colors"

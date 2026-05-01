@@ -7,6 +7,10 @@ import { nip19 } from 'nostr-tools'
 import { isSafeUrl, getPublishedAt, withTimeout } from '../../../../lib/utils.js'
 import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
+import { useMyZapped, useMyZapPending } from '../../../../lib/useMyZapped.js'
+import { useMyLiked } from '../../../../lib/useMyLiked.js'
+import { publishLike } from '../../../../lib/publishLike.js'
+import { extractZapSplits } from '../../../../lib/zapSplits.js'
 import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
@@ -64,8 +68,9 @@ export default function ArticleReadPanel({
   const menuRef = useRef(null)
   const listMenuRef = useRef(null)
 
-  // Social actions
-  const [liked,        setLiked]        = useState(false)
+  // Social actions — `liked` is sourced from the cross-module reaction
+  // store so the heart survives reload, navigation, and likes issued
+  // from other clients. `liking` is the in-flight publish flag only.
   const [liking,       setLiking]       = useState(false)
   const [zapOpen,      setZapOpen]      = useState(false)
   const [zapLud16,     setZapLud16]     = useState(profile?.lud16 || null)
@@ -155,6 +160,10 @@ export default function ArticleReadPanel({
   const summary    = getTag(effectiveArticle, 'summary')
   const dTag       = getTag(article, 'd')
   const aTag       = article._aTag || `30023:${article.pubkey}:${dTag}`
+  const hasRealId  = /^[a-f0-9]{64}$/i.test(article?.id || '')
+  const zapped     = useMyZapped({ eventId: article?.id, addressable: aTag })
+  const zapPending = useMyZapPending({ eventId: article?.id, addressable: aTag })
+  const liked      = useMyLiked({ eventId: hasRealId ? article.id : null, addressable: aTag })
   const rawName = article._authorName
     || profile?.display_name
     || profile?.name
@@ -306,41 +315,16 @@ export default function ArticleReadPanel({
   // ── Social actions ───────────────────────────────────────────────────────────
   const canPublish = !readOnly && !!user?.pubkey
 
-  // Resolve the real event ID for bookmark items (whose .id is an aTag string).
-  // For articles fetched from relays/Primal, .id is already a valid hex event ID.
-  const hasRealEventId = /^[a-f0-9]{64}$/.test(article.id)
-
   async function handleLike() {
     if (!canPublish || liking || liked) return
-    // Optimistic flip — heart lights up immediately, pulses while in flight,
-    // reverts if sign/publish errors OR if publish returns without any
-    // relay ack. Matches NoteActionBar so a like reaching zero relays can't
-    // leave the UI in a false "liked" state on either module.
     setLiking(true)
-    setLiked(true)
-    try {
-      const ndk = getNDK()
-      const ev = new NDKEvent(ndk)
-      ev.kind = 7
-      ev.content = '+'
-      ev.tags = [
-        ['p', article.pubkey],
-        ['a', aTag],
-        ['k', '30023'],
-      ]
-      if (hasRealEventId) ev.tags.unshift(['e', article.id])
-      await signWithTimeout(ev)
-      const publishedTo = await ev.publish()
-      if (!publishedTo || publishedTo.size === 0) {
-        if (import.meta.env.DEV) console.warn('Article like reached no relays')
-        setLiked(false)
-      }
-    } catch (err) {
-      if (import.meta.env.DEV) console.warn('Like failed:', err)
-      setLiked(false)
-    } finally {
-      setLiking(false)
-    }
+    await publishLike({
+      eventId:     hasRealId ? article.id : null,
+      eventPubkey: article.pubkey,
+      kind:        30023,
+      addressable: aTag,
+    })
+    setLiking(false)
   }
 
   async function handleRepost() {
@@ -362,7 +346,7 @@ export default function ArticleReadPanel({
         ['a', aTag],
         ['k', '30023'],
       ]
-      if (hasRealEventId) ev.tags.unshift(['e', article.id])
+      if (hasRealId) ev.tags.unshift(['e', article.id])
       await signWithTimeout(ev)
       const publishedTo = await ev.publish()
       if (!publishedTo || publishedTo.size === 0) {
@@ -428,9 +412,10 @@ export default function ArticleReadPanel({
         lud16={zapLud16}
         recipientPubkey={article.pubkey}
         recipientName={authorName}
-        articleEvent={hasRealEventId ? article : null}
+        articleEvent={hasRealId ? article : null}
         aTag={aTag}
         user={user}
+        zapSplits={extractZapSplits(article?.tags)}
         onClose={() => setZapOpen(false)}
       />
     )}
@@ -510,10 +495,14 @@ export default function ArticleReadPanel({
         <button
           onClick={handleZapClick}
           disabled={zapFetching}
-          title={`Zap ${authorName}`}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-amber-800 hover:text-amber-400 disabled:opacity-40 transition-colors"
+          title={zapped ? 'You zapped this article · zap again' : `Zap ${authorName}`}
+          className={`flex items-center gap-1 text-xs px-2 py-1 rounded border disabled:opacity-40 transition-colors ${
+            zapped
+              ? 'border-amber-700 bg-amber-950/30 text-amber-300 hover:bg-amber-900/40'
+              : 'border-neutral-800 text-neutral-500 hover:border-amber-800 hover:text-amber-400'
+          } ${zapPending ? 'animate-pulse' : ''}`}
         >
-          ⚡ {zapFetching ? 'Finding…' : 'Zap'}
+          ⚡ {zapFetching ? 'Finding…' : zapped ? 'Zapped' : 'Zap'}
         </button>
 
         {/* Comment — navigates to the Notes Write module with this article
