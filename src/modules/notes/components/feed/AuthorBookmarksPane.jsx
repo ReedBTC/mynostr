@@ -4,7 +4,7 @@
  *
  * Fetches the author's kind 10003 (primary "Bookmarks") and kind 30003
  * (custom categories) events via useAuthorBookmarkCategories. Renders the
- * same BookmarkChipBar used by the owner's My Bookmarks tab in read-only
+ * same BookmarkCategoryMenu used by the owner's My Bookmarks tab in read-only
  * mode (no "+ New") so viewers can filter by category.
  *
  * If the viewer is signed in (canEdit from NoteBookmarksContext), each
@@ -30,7 +30,7 @@ import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
 import { useAuthorBookmarkCategories } from '../../../../lib/useAuthorBookmarkCategories.js'
 import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
-import BookmarkChipBar from './BookmarkChipBar.jsx'
+import BookmarkCategoryMenu from './BookmarkCategoryMenu.jsx'
 import NotesFeed from './NotesFeed.jsx'
 
 export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick }) {
@@ -229,7 +229,7 @@ export default function AuthorBookmarksPane({ pubkey, emptyMessage, onNoteClick 
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <BookmarkChipBar
+      <BookmarkCategoryMenu
         categories={categories}
         activeCategoryId={activeCategoryId}
         onSelect={setActiveCategoryId}

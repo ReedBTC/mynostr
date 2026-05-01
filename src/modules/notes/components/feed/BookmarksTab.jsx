@@ -32,7 +32,7 @@ import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
-import BookmarkChipBar from './BookmarkChipBar.jsx'
+import BookmarkCategoryMenu from './BookmarkCategoryMenu.jsx'
 import NotesFeed from './NotesFeed.jsx'
 import NoteThreadView from './NoteThreadView.jsx'
 import AuthorBookmarksPane from './AuthorBookmarksPane.jsx'
@@ -151,7 +151,6 @@ export default function BookmarksTab({ user, isOwner }) {
 
   // ── Owner: category chip state ──────────────────────────────────────
   const [activeCategoryId, setActiveCategoryId] = useState(null)
-  const [manageMode, setManageMode] = useState(false)
 
   // Status for the active bulk action. One op at a time so a single holder
   // is enough — each button reads `.action` to decide whether to show its
@@ -163,26 +162,19 @@ export default function BookmarksTab({ user, isOwner }) {
   // `.error`:  message string | ''
   const [bulkStatus, setBulkStatus] = useState({ action: null, error: '' })
 
-  // Exit manage mode whenever the category set drops to "nothing editable"
-  // (just primary, or empty). Prevents an orphan "Done" button lingering.
-  useEffect(() => {
-    if (!manageMode) return
-    const hasEditable = categories.some(c => c.id !== NOTE_PRIMARY_CATEGORY_ID && !c.readOnly)
-    if (!hasEditable) setManageMode(false)
-  }, [manageMode, categories])
-
   const handleRenameCategory = useCallback(async (categoryId, nextTitle) => {
     await renameCategory(categoryId, nextTitle)
   }, [renameCategory])
 
   const handleHideCategory = useCallback((categoryId) => {
-    // Outside manage mode, hiding the currently-active chip would leave a
-    // blank feed; snap to primary first.
-    if (!manageMode && activeCategoryId === categoryId) {
+    // Hiding the currently-active category leaves a blank feed; snap to
+    // primary first. Manage-mode special-casing dropped — the dropdown's
+    // own "Show hidden" toggle handles unhide flows now.
+    if (activeCategoryId === categoryId) {
       setActiveCategoryId(NOTE_PRIMARY_CATEGORY_ID)
     }
     hideCategory(categoryId, privacyView)
-  }, [manageMode, activeCategoryId, hideCategory, privacyView])
+  }, [activeCategoryId, hideCategory, privacyView])
 
   const handleUnhideCategory = useCallback((categoryId) => {
     unhideCategory(categoryId, privacyView)
@@ -211,9 +203,9 @@ export default function BookmarksTab({ user, isOwner }) {
 
   // Pick a sensible default chip once data is available. Prefer primary
   // if it exists, else the first non-hidden custom category. Also bounce
-  // off a hidden chip if the user hides the one they're currently
-  // viewing (outside manage mode; inside manage mode hidden chips stay
-  // selectable so unhide is reachable from any chip).
+  // off a currently-hidden category — handleHideCategory snaps off the
+  // active row, but a hidden category could still be active if it was
+  // hidden in another tab (cross-tab via storage events isn't wired).
   useEffect(() => {
     if (!isOwner) return
     if (categories.length === 0) {
@@ -221,8 +213,8 @@ export default function BookmarksTab({ user, isOwner }) {
       return
     }
     const current = categories.find(c => c.id === activeCategoryId)
-    const currentHiddenOutsideManage = current && hiddenIds.has(current.id) && !manageMode
-    if (current && !currentHiddenOutsideManage) return
+    const currentHidden = current && hiddenIds.has(current.id)
+    if (current && !currentHidden) return
     const primary = categories.find(c => c.id === NOTE_PRIMARY_CATEGORY_ID)
     if (primary) {
       setActiveCategoryId(primary.id)
@@ -230,7 +222,7 @@ export default function BookmarksTab({ user, isOwner }) {
     }
     const firstVisible = categories.find(c => !hiddenIds.has(c.id))
     setActiveCategoryId(firstVisible ? firstVisible.id : categories[0].id)
-  }, [isOwner, categories, activeCategoryId, hiddenIds, manageMode])
+  }, [isOwner, categories, activeCategoryId, hiddenIds])
 
   const activeCategory = categories.find(c => c.id === activeCategoryId) || null
 
@@ -453,12 +445,13 @@ export default function BookmarksTab({ user, isOwner }) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         {privacyToggle}
-        <BookmarkChipBar
+        <BookmarkCategoryMenu
           categories={[]}
           activeCategoryId={null}
           onSelect={setActiveCategoryId}
           onCreateCategory={createCategory}
           privacyView={privacyView}
+          pubkey={pubkey}
         />
         <div className="max-w-xl mx-auto w-full px-4 py-10 text-center">
           <p className="text-xs text-neutral-500">
@@ -490,19 +483,18 @@ export default function BookmarksTab({ user, isOwner }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {privacyToggle}
-      <BookmarkChipBar
+      <BookmarkCategoryMenu
         categories={categories}
         activeCategoryId={activeCategoryId}
         onSelect={setActiveCategoryId}
         onCreateCategory={createCategory}
-        manageMode={manageMode}
-        onToggleManageMode={setManageMode}
         onRenameCategory={handleRenameCategory}
         onDeleteCategory={handleDeleteCategory}
         hiddenIds={hiddenIds}
         onHideCategory={handleHideCategory}
         onUnhideCategory={handleUnhideCategory}
         privacyView={privacyView}
+        pubkey={pubkey}
       />
 
       {canShowBulkBar && (

@@ -82,9 +82,8 @@ export function useMarketSearch({
   category,         // first t-tag value
   // Client-side only — don't trigger refetch:
   keyword,
-  priceMin,
-  priceMax,
-  priceCurrency,
+  withImages,       // checkbox: only listings with at least one image
+  withPrice,        // checkbox: only listings with a numeric price
   includeNSFW,
   sort,
 }) {
@@ -203,9 +202,6 @@ export function useMarketSearch({
       .filter(x => x.decoded)
 
     const k = (keyword || '').trim().toLowerCase()
-    const cur = priceCurrency && priceCurrency !== 'ANY' ? priceCurrency : null
-    const min = Number.isFinite(priceMin) ? priceMin : null
-    const max = Number.isFinite(priceMax) ? priceMax : null
 
     const filtered = decoded.filter(x => {
       const d = x.decoded
@@ -214,6 +210,13 @@ export function useMarketSearch({
       if (d.visibility === 'hidden') return false
       // NSFW gate. The Sell composer encodes the nsfw flag as a t-tag.
       if (!includeNSFW && (d.tTags || []).includes('nsfw')) return false
+      // Image-presence filter: at least one ['image', ...] tag survived
+      // decoding. Listings without images are usually thin or
+      // placeholder; users browsing for products want to see them.
+      if (withImages && (!Array.isArray(d.images) || d.images.length === 0)) return false
+      // Price-presence filter: a numeric amount was set on the price tag.
+      // Excludes "contact for price" / unset listings.
+      if (withPrice && !Number.isFinite(d.price?.amount)) return false
       // Keyword — match across title, summary, content, tTags, mainCategory.
       if (k) {
         const haystack = [
@@ -224,18 +227,6 @@ export function useMarketSearch({
           ...(d.tTags || []),
         ].filter(Boolean).join(' ').toLowerCase()
         if (!haystack.includes(k)) return false
-      }
-      // Currency + price-range filter. Min/max only apply when a
-      // specific currency has been chosen — otherwise we'd be
-      // comparing sats to USD (nonsense). Defensive at the hook layer
-      // even though SearchTab's UI also disables min/max when
-      // currency is ANY; future callers wiring the hook differently
-      // shouldn't be able to trip the cross-currency comparison.
-      const p = d.price
-      if (cur) {
-        if (!p || p.currency !== cur) return false
-        if (min !== null && (!Number.isFinite(p.amount) || p.amount < min)) return false
-        if (max !== null && (!Number.isFinite(p.amount) || p.amount > max)) return false
       }
       return true
     })
@@ -248,7 +239,7 @@ export function useMarketSearch({
     }
     // 'newest' (default) — sort by created_at desc.
     return filtered.sort((a, b) => (b.event.created_at || 0) - (a.event.created_at || 0))
-  }, [events, keyword, priceMin, priceMax, priceCurrency, includeNSFW, sort])
+  }, [events, keyword, withImages, withPrice, includeNSFW, sort])
 
   return {
     listings,

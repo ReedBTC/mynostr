@@ -246,7 +246,7 @@ export default function EventActionsMenu({
           onClick={() => { downloadEventIcs(parsed); onClose?.() }}
           className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
         >
-          Add to calendar (.ics)
+          Export .ics
         </button>
       )}
       {isOwner && onLoadInEditor && (

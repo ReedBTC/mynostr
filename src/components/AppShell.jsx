@@ -304,7 +304,8 @@ function SidebarWalletRow({ status, onConnect, onDisconnect }) {
       <div className="flex items-center gap-2 text-[11px]">
         <span className="inline-flex items-center gap-1.5 min-w-0 flex-1 text-neutral-300">
           <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
-          <span className="truncate">{status.alias || 'Wallet connected'}</span>
+          <span className="text-neutral-500 shrink-0">NWC:</span>
+          <span className="truncate">{status.alias || 'Connected'}</span>
         </span>
         <button
           type="button"

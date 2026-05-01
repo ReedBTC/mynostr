@@ -181,9 +181,10 @@ export default function MobileNavDrawer({
         <div className="border-t border-neutral-800 p-2 space-y-1">
           {canUseWallet && (
             walletStatus?.connected ? (
-              <div className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-neutral-300">
+              <div className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-neutral-300">
                 <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
-                <span className="truncate flex-1">{walletStatus.alias || 'Wallet connected'}</span>
+                <span className="text-neutral-500 shrink-0">NWC:</span>
+                <span className="truncate flex-1">{walletStatus.alias || 'Connected'}</span>
                 <button
                   onClick={() => { onDisconnectWallet?.(); }}
                   className="text-xs text-neutral-500 hover:text-red-300 transition-colors shrink-0"

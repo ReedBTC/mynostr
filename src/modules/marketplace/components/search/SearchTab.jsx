@@ -21,7 +21,6 @@ import { useSearchParams } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
 import { useMarketSearch } from '../../../../lib/useMarketSearch.js'
 import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
-import { SUPPORTED_FIATS } from '../../../../lib/currency.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import { fetchProfiles } from '../../../../lib/primal.js'
 import UserSearch from '../../../../components/UserSearch.jsx'
@@ -54,7 +53,10 @@ const SORT_OPTIONS = [
   { value: 'price-desc', label: 'Price: high to low' },
 ]
 
-const NSFW_PREF_KEY = 'mynostr_search_nsfw_v1'
+// NSFW preference is intentionally NOT persisted — every session starts
+// with it unchecked so users opt in manually each time. The legacy
+// localStorage key from when it was sticky is cleaned up on mount.
+const NSFW_LEGACY_KEY = 'mynostr_search_nsfw_v1'
 // Per-pubkey filter persistence — mirrors Articles' DiscoverView shape.
 // Stores the last-applied filter set so navigating back to Search
 // restores what the user was looking at. The seller chip is also in
@@ -167,19 +169,17 @@ export default function SearchTab({ sessionUser }) {
   }
 
   // Filters — all lazy-init from saved state (per-pubkey blob).
-  const [category,      setCategory]      = useState(saved.category || '')
-  const [priceCurrency, setPriceCurrency] = useState(saved.priceCurrency || 'ANY')
-  const [priceMinStr,   setPriceMinStr]   = useState(saved.priceMinStr || '')
-  const [priceMaxStr,   setPriceMaxStr]   = useState(saved.priceMaxStr || '')
-  const [sort,          setSort]          = useState(saved.sort || 'newest')
-  const [advancedOpen,  setAdvancedOpen]  = useState(false)
-  // NSFW preference is global (not per-pubkey) — same key as before.
-  const [includeNSFW,   setIncludeNSFW]   = useState(() => {
-    try { return localStorage.getItem(NSFW_PREF_KEY) === '1' } catch { return false }
-  })
+  const [category,    setCategory]    = useState(saved.category || '')
+  const [withImages,  setWithImages]  = useState(!!saved.withImages)
+  const [withPrice,   setWithPrice]   = useState(!!saved.withPrice)
+  const [sort,        setSort]        = useState(saved.sort || 'newest')
+  // NSFW always starts unchecked — explicit opt-in per session, not
+  // sticky. Clean up the legacy persisted preference if it's still
+  // there from a previous build.
+  const [includeNSFW, setIncludeNSFW] = useState(false)
   useEffect(() => {
-    try { localStorage.setItem(NSFW_PREF_KEY, includeNSFW ? '1' : '0') } catch {}
-  }, [includeNSFW])
+    try { localStorage.removeItem(NSFW_LEGACY_KEY) } catch {}
+  }, [])
 
   // Persist the filter blob whenever any tracked filter changes.
   // Debounce so rapid keystrokes in the keyword field don't write
@@ -190,26 +190,21 @@ export default function SearchTab({ sessionUser }) {
         selectedAuthor,
         keyword: keywordInput,
         category,
-        priceCurrency,
-        priceMinStr,
-        priceMaxStr,
+        withImages,
+        withPrice,
         sort,
       })
     }, 400)
     return () => clearTimeout(t)
-  }, [sessionPubkey, selectedAuthor, keywordInput, category, priceCurrency, priceMinStr, priceMaxStr, sort])
-
-  const priceMin = priceMinStr ? Number(priceMinStr) : null
-  const priceMax = priceMaxStr ? Number(priceMaxStr) : null
+  }, [sessionPubkey, selectedAuthor, keywordInput, category, withImages, withPrice, sort])
 
   const { listings, loading, error, hasMore, loadMore, rawCount } = useMarketSearch({
     sessionPubkey,
     authorPubkey: selectedAuthor?.pubkey || null,
     category: category || null,
     keyword: debouncedKeyword,
-    priceMin,
-    priceMax,
-    priceCurrency,
+    withImages,
+    withPrice,
     includeNSFW,
     sort,
   })
@@ -328,14 +323,13 @@ export default function SearchTab({ sessionUser }) {
     clearAuthor()  // also strips ?seller= from URL
     setKeywordInput('')
     setCategory('')
-    setPriceCurrency('ANY')
-    setPriceMinStr('')
-    setPriceMaxStr('')
+    setWithImages(false)
+    setWithPrice(false)
     setSort('newest')
   }
 
   const hasAnyFilter = !!selectedAuthor || !!keywordInput.trim() || !!category ||
-    priceCurrency !== 'ANY' || !!priceMinStr || !!priceMaxStr || sort !== 'newest'
+    withImages || withPrice || sort !== 'newest'
 
   return (
     <div className="h-full flex flex-col">
@@ -402,74 +396,49 @@ export default function SearchTab({ sessionUser }) {
             </select>
           </div>
 
-          {/* Price + advanced row */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <select
-              value={priceCurrency}
-              onChange={(e) => setPriceCurrency(e.target.value)}
-              className="px-2 py-1.5 text-xs rounded border border-neutral-800 bg-neutral-900 text-neutral-300 outline-none focus:border-purple-600"
-              aria-label="Price currency"
-              title="Filter by listings priced in this currency"
-            >
-              <option value="ANY">Any currency</option>
-              <option value="SATS">Sats</option>
-              {SUPPORTED_FIATS.map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-            <input
-              type="number"
-              min="0"
-              value={priceMinStr}
-              onChange={(e) => setPriceMinStr(e.target.value)}
-              disabled={priceCurrency === 'ANY'}
-              placeholder="Min"
-              className="w-24 px-2 py-1.5 text-xs rounded border border-neutral-800 bg-neutral-900 text-neutral-200 outline-none focus:border-purple-600 disabled:opacity-40"
-              aria-label="Minimum price"
-            />
-            <input
-              type="number"
-              min="0"
-              value={priceMaxStr}
-              onChange={(e) => setPriceMaxStr(e.target.value)}
-              disabled={priceCurrency === 'ANY'}
-              placeholder="Max"
-              className="w-24 px-2 py-1.5 text-xs rounded border border-neutral-800 bg-neutral-900 text-neutral-200 outline-none focus:border-purple-600 disabled:opacity-40"
-              aria-label="Maximum price"
-            />
-            <button
-              onClick={() => setAdvancedOpen(o => !o)}
-              className="text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-400 hover:text-neutral-100 hover:border-neutral-600 transition-colors"
-            >
-              {advancedOpen ? '− Advanced' : '+ Advanced'}
-            </button>
+          {/* Quick-filter checkbox row — promoted from the old "Advanced"
+              expander now that price-range and currency selectors are
+              gone. NSFW joins images / price-set as a same-row toggle. */}
+          <div className="flex items-center gap-3 flex-wrap text-xs">
+            <label className="flex items-center gap-1.5 text-neutral-300 cursor-pointer hover:text-neutral-100 transition-colors">
+              <input
+                type="checkbox"
+                checked={withImages}
+                onChange={(e) => setWithImages(e.target.checked)}
+                className="accent-purple-600"
+              />
+              <span>With images</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-neutral-300 cursor-pointer hover:text-neutral-100 transition-colors">
+              <input
+                type="checkbox"
+                checked={withPrice}
+                onChange={(e) => setWithPrice(e.target.checked)}
+                className="accent-purple-600"
+              />
+              <span>With price</span>
+            </label>
+            <label className="flex items-center gap-1.5 text-neutral-400 cursor-pointer hover:text-neutral-200 transition-colors">
+              <input
+                type="checkbox"
+                checked={includeNSFW}
+                onChange={(e) => setIncludeNSFW(e.target.checked)}
+                className="accent-purple-600"
+              />
+              <span>Include NSFW</span>
+            </label>
+            <span className="text-[10px] text-neutral-600 ml-auto">
+              Searching {listings.length === rawCount ? `${rawCount}` : `${listings.length} of ${rawCount}`} listings
+            </span>
             {hasAnyFilter && (
               <button
                 onClick={clearFilters}
-                className="text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:text-red-400 hover:border-red-900 transition-colors ml-auto"
+                className="text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:text-red-400 hover:border-red-900 transition-colors"
               >
                 Clear filters
               </button>
             )}
           </div>
-
-          {/* Advanced row */}
-          {advancedOpen && (
-            <div className="pt-1 border-t border-neutral-800/60 flex items-center gap-3 flex-wrap">
-              <label className="flex items-center gap-1.5 text-xs text-neutral-400 cursor-pointer hover:text-neutral-200 transition-colors">
-                <input
-                  type="checkbox"
-                  checked={includeNSFW}
-                  onChange={(e) => setIncludeNSFW(e.target.checked)}
-                  className="accent-purple-600"
-                />
-                <span>Include NSFW</span>
-              </label>
-              <span className="text-[10px] text-neutral-600 ml-auto">
-                Searching {listings.length === rawCount ? `${rawCount}` : `${listings.length} of ${rawCount}`} listings
-              </span>
-            </div>
-          )}
         </div>
       </div>
 
