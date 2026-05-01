@@ -108,7 +108,7 @@ export async function payZapSplits({
       }
     } else {
       try {
-        const meta = await fetchLnurlMeta(lud16, { expectedPubkey: a.pubkey })
+        const meta = await fetchLnurlMeta(lud16)
         if (typeof meta.minSendable === 'number' && a.msats < meta.minSendable) {
           legResult = {
             recipient, msats: a.msats,

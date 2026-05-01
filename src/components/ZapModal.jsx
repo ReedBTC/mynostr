@@ -171,7 +171,7 @@ export default function ZapModal({
     }
 
     try {
-      const info    = await fetchLnurlMeta(lud16, { expectedPubkey: recipientPubkey })
+      const info    = await fetchLnurlMeta(lud16)
       const msats   = amount * 1000
       const minSats = Math.ceil(info.minSendable / 1000)
       const maxSats = Math.floor(info.maxSendable / 1000)

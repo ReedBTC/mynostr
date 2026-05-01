@@ -31,23 +31,19 @@ export const LUD16_RE = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+$/
 const FETCH_TIMEOUT_MS = 10_000
 
 /**
- * Resolve a lud16 to its LNURL-pay metadata (kind 6 .well-known
- * response). Throws on malformed input, network failure, or invalid
- * response shape.
+ * Resolve a lud16 to its LNURL-pay metadata (.well-known response).
+ * Throws on malformed input, network failure, or invalid response shape.
  *
  * Returns the parsed JSON: { callback, minSendable, maxSendable,
  * commentAllowed?, allowsNostr?, nostrPubkey?, ... }.
  *
- * **NIP-57 recipient verification.** When `expectedPubkey` is provided
- * and the LNURL response advertises NIP-57 support (`allowsNostr` +
- * `nostrPubkey`), we verify `nostrPubkey === expectedPubkey`. A
- * mismatch means the LNURL provider is claiming to represent a
- * different Nostr identity than the one in the recipient's kind 0
- * profile — refusal protects against a poisoned profile or a malicious
- * LNURL operator silently redirecting zaps. Without an expectedPubkey,
- * we don't enforce (matches the boost flow which doesn't use NIP-57).
+ * Per NIP-57, `nostrPubkey` is the LNURL service's signing key for zap
+ * receipts (kind 9735) — not the recipient's identity key. Custodial
+ * wallets always return the service's key; comparing it to the
+ * recipient's pubkey is incorrect. Receipt verification (matching the
+ * 9735 signer to this `nostrPubkey`) belongs in the receipt handler.
  */
-export async function fetchLnurlMeta(lud16, { expectedPubkey } = {}) {
+export async function fetchLnurlMeta(lud16) {
   if (typeof lud16 !== 'string' || !LUD16_RE.test(lud16)) {
     throw new Error('Invalid lightning address format')
   }
@@ -67,13 +63,6 @@ export async function fetchLnurlMeta(lud16, { expectedPubkey } = {}) {
   }
   if (typeof data.minSendable !== 'number' || typeof data.maxSendable !== 'number') {
     throw new Error('LNURL metadata missing min/maxSendable')
-  }
-  if (expectedPubkey && data.allowsNostr && data.nostrPubkey
-      && data.nostrPubkey !== expectedPubkey) {
-    throw new Error(
-      'LNURL provider claims to represent a different Nostr pubkey than expected ' +
-      '— refusing to send a NIP-57 zap-request to avoid mis-targeted zaps',
-    )
   }
   return data
 }
