@@ -86,7 +86,6 @@ export default function NoteComposer({
   const { requestUpload: requestImageUpload, element: uploadPicker } = useImageUploadFlow()
   const [videoUploading, setVideoUploading] = useState(false)
   const [videoError, setVideoError] = useState('')
-  const videoInputRef = useRef(null)
   const [cursorPos, setCursorPos] = useState(0)
   const [mentionActive, setMentionActive] = useState(false)
   const [importLoading, setImportLoading] = useState(false)
@@ -1068,22 +1067,25 @@ export default function NoteComposer({
                   <input
                     ref={imageInputRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,video/mp4,video/quicktime,video/webm,video/x-m4v"
                     className="hidden"
                     onChange={(e) => {
                       const file = e.target.files?.[0]
-                      if (file) handleImageUpload(file)
+                      if (file) {
+                        if (file.type.startsWith('image/')) handleImageUpload(file)
+                        else handleVideoUpload(file)
+                      }
                       e.target.value = ''
                     }}
                   />
                   <button
                     onClick={() => imageInputRef.current?.click()}
-                    disabled={imageUploading || readOnly}
+                    disabled={imageUploading || videoUploading || readOnly}
                     className="flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700 transition-colors disabled:opacity-50"
-                    title="Upload image"
-                    aria-label="Upload image"
+                    title="Upload image or video (MP4, MOV, WebM, M4V — up to 50 MB)"
+                    aria-label="Upload media"
                   >
-                    {imageUploading ? (
+                    {imageUploading || videoUploading ? (
                       <>
                         <span className="w-3 h-3 border border-neutral-500 border-t-transparent rounded-full animate-spin inline-block" />
                         <span>Uploading...</span>
@@ -1093,44 +1095,6 @@ export default function NoteComposer({
                         {/* Image glyph (frame + mountain) */}
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
                           <path fillRule="evenodd" d="M2 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4Zm10.5 5.707a.5.5 0 0 0-.146-.353l-2.5-2.5a.5.5 0 0 0-.708 0L7.5 8.5 6.354 7.354a.5.5 0 0 0-.708 0l-2 2A.5.5 0 0 0 3.5 10v1.5a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5V9.707ZM6.5 6a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
-                        </svg>
-                        {/* Upload glyph — signalling "upload an image" */}
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-                          <path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.636l2.955 3.129a.75.75 0 0 0 1.09-1.03l-4.25-4.5a.75.75 0 0 0-1.09 0l-4.25 4.5a.75.75 0 1 0 1.09 1.03L9.25 4.636v8.614Z" />
-                          <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
-                        </svg>
-                      </>
-                    )}
-                  </button>
-
-                  <input
-                    ref={videoInputRef}
-                    type="file"
-                    accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0]
-                      if (file) handleVideoUpload(file)
-                      e.target.value = ''
-                    }}
-                  />
-                  <button
-                    onClick={() => videoInputRef.current?.click()}
-                    disabled={videoUploading || readOnly}
-                    className="flex items-center gap-1 px-2.5 py-2 sm:px-2 sm:py-1 rounded text-xs bg-neutral-800 hover:bg-neutral-700 text-neutral-500 border border-neutral-700 transition-colors disabled:opacity-50"
-                    title="Upload video (MP4, MOV, WebM, M4V — up to 50 MB)"
-                    aria-label="Upload video"
-                  >
-                    {videoUploading ? (
-                      <>
-                        <span className="w-3 h-3 border border-neutral-500 border-t-transparent rounded-full animate-spin inline-block" />
-                        <span>Uploading...</span>
-                      </>
-                    ) : (
-                      <>
-                        {/* Film/video glyph */}
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-                          <path fillRule="evenodd" d="M1 5.25A2.25 2.25 0 0 1 3.25 3h13.5A2.25 2.25 0 0 1 19 5.25v9.5A2.25 2.25 0 0 1 16.75 17H3.25A2.25 2.25 0 0 1 1 14.75v-9.5Zm7.25 1.5a.75.75 0 0 0-1.145-.636l-4 2.5a.75.75 0 0 0 0 1.272l4 2.5A.75.75 0 0 0 8.25 11.75v-5Z" clipRule="evenodd" />
                         </svg>
                         {/* Upload glyph */}
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
