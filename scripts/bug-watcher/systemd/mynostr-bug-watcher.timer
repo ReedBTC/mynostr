@@ -1,0 +1,20 @@
+[Unit]
+Description=mynostr — periodic bug-relay watcher
+Documentation=file://%h/Desktop/Files/nostr/mynostr/scripts/bug-watcher/README.md
+
+[Timer]
+# Wait a beat after boot before the first run so the network is up and
+# the user session is settled.
+OnBootSec=2min
+# Then every 10 minutes from the previous run.
+OnUnitActiveSec=10min
+# Smear so multiple machines (or future siblings for other sites)
+# don't thunder the relay at the same instant.
+RandomizedDelaySec=30s
+# If the machine was off when the timer would have fired, run once on
+# wake — ensures no gap if the laptop sleeps overnight.
+Persistent=true
+Unit=mynostr-bug-watcher.service
+
+[Install]
+WantedBy=timers.target

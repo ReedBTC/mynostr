@@ -1,0 +1,15 @@
+[Unit]
+Description=mynostr — poll relay.mynostr.app for new bug reports and create GitHub issues
+Documentation=file://%h/Desktop/Files/nostr/mynostr/scripts/bug-watcher/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Desktop/Files/nostr/mynostr
+ExecStart=%h/Desktop/Files/nostr/mynostr/scripts/bug-watcher/run.sh
+# Bound runtime — a stuck WS connection should never stall the timer.
+TimeoutStartSec=60s
+Nice=10
+StandardOutput=journal
+StandardError=journal

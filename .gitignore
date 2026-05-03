@@ -41,3 +41,6 @@ npm-debug.log*
 
 # ── Working drafts of content not yet ready to publish ─────
 docs/v4v-2.0-spec.md
+
+# ── Bug-watcher runtime state (seen-ids, logs) ─────────────
+scripts/bug-watcher/state/
