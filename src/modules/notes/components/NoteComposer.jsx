@@ -29,6 +29,7 @@ import {
   MIN_LEAD_SECONDS,
   MAX_FUTURE_SECONDS,
 } from '../../../lib/scheduler.js'
+import TimePicker from '../../events/components/TimePicker.jsx'
 
 // Default height — roughly a full phone-screen's worth of composing room
 const TEXTAREA_MIN_H = 200
@@ -104,7 +105,11 @@ export default function NoteComposer({
   // Hidden when the worker isn't configured (no VITE_SCHEDULER_URL).
   const schedulerEnabled = isSchedulerConfigured()
   const [scheduleMode, setScheduleMode] = useState(false)
-  const [scheduleAt, setScheduleAt]     = useState('')
+  // Split into separate date + time fields to mirror the Events
+  // composer pattern. scheduleDate is "YYYY-MM-DD" (native date input);
+  // scheduleTime is "HH:MM" 24-hour (TimePicker's I/O).
+  const [scheduleDate, setScheduleDate] = useState('')
+  const [scheduleTime, setScheduleTime] = useState('')
   const [scheduling, setScheduling]     = useState(false)
   const [scheduleError, setScheduleError] = useState('')
   const [scheduleResult, setScheduleResult] = useState(null) // { eventId, scheduledFor }
@@ -166,9 +171,8 @@ export default function NoteComposer({
       setScheduleMode(true)
       const d = new Date(snap.publishAt * 1000)
       const pad = (n) => String(n).padStart(2, '0')
-      setScheduleAt(
-        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
-      )
+      setScheduleDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+      setScheduleTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
     }
   }, [user?.pubkey])
 
@@ -702,12 +706,12 @@ export default function NoteComposer({
   }, [onPublish])
 
   // Default scheduling time = next 15-min boundary AT LEAST MIN_LEAD_SECONDS
-  // out. So if it's 9:03 and min lead is 15min → 9:30 (the 9:15 bucket
-  // is too close); if it's 9:14:59 → 9:30 (still snaps cleanly).
+  // out. Returns separate date + time strings (YYYY-MM-DD and HH:MM)
+  // matching the two field formats. So if it's 9:03 and min lead is
+  // 15min → 9:30; if it's 9:14:59 → 9:30 (still snaps cleanly).
   const defaultScheduleLocal = useCallback(() => {
     const ts = Date.now() + MIN_LEAD_SECONDS * 1000
     const d = new Date(ts)
-    // Round UP to next 15-min boundary.
     const minutes = d.getMinutes()
     const next15 = Math.ceil(minutes / 15) * 15
     if (next15 === 60) {
@@ -716,23 +720,36 @@ export default function NoteComposer({
     } else {
       d.setMinutes(next15, 0, 0)
     }
-    // datetime-local format: YYYY-MM-DDTHH:MM (local TZ).
     const pad = n => String(n).padStart(2, '0')
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+    return {
+      date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+      time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    }
   }, [])
 
-  // Seed the picker the moment the user toggles "Schedule for later"
-  // on, so they see a sensible default rather than an empty input.
+  // Today's date (YYYY-MM-DD local) for the date input's `min`. Stops
+  // users from picking a past day; per-second past-time still gets
+  // caught by the validate-on-submit path in handleSchedule.
+  const todayLocal = useMemo(() => {
+    const d = new Date()
+    const pad = n => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }, [])
+
+  // Seed both fields the moment the user toggles "Schedule for later"
+  // on, so they see a sensible default rather than empty inputs.
   useEffect(() => {
-    if (scheduleMode && !scheduleAt) setScheduleAt(defaultScheduleLocal())
-  }, [scheduleMode, scheduleAt, defaultScheduleLocal])
+    if (scheduleMode && !scheduleDate && !scheduleTime) {
+      const def = defaultScheduleLocal()
+      setScheduleDate(def.date)
+      setScheduleTime(def.time)
+    }
+  }, [scheduleMode, scheduleDate, scheduleTime, defaultScheduleLocal])
 
   // Auto-enable Schedule mode when the draft was hydrated from an
   // imported event whose created_at is in the future (set by
   // buildDraftSnapshotFromEvent). Runs once per draft mount because
-  // the parent gives this component a `key={draft.id}`. The user can
-  // still un-tick the checkbox afterward; that just falls back to
-  // PUBLISH-now behavior, which signs at the current timestamp.
+  // the parent gives this component a `key={draft.id}`.
   useEffect(() => {
     const pa = initial.publishAt
     if (!pa || !Number.isFinite(pa)) return
@@ -740,9 +757,8 @@ export default function NoteComposer({
     setScheduleMode(true)
     const d = new Date(pa * 1000)
     const pad = (n) => String(n).padStart(2, '0')
-    setScheduleAt(
-      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
-    )
+    setScheduleDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+    setScheduleTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -809,15 +825,19 @@ export default function NoteComposer({
   // floor and ceiling, signs + POSTs via lib/scheduler.
   const handleSchedule = useCallback(async () => {
     setScheduleError('')
-    if (!scheduleAt) {
-      setScheduleError('Pick a publish time first.')
+    if (!scheduleDate || !scheduleTime) {
+      setScheduleError('Pick a publish date and time first.')
       return
     }
     if (!publishable) {
       setScheduleError('Note is empty or has unresolved fields.')
       return
     }
-    const publishUnixSec = Math.floor(new Date(scheduleAt).getTime() / 1000)
+    // Combine date + time into a local-tz Date. The string form
+    // `YYYY-MM-DDTHH:MM` is parsed as local time by Date — same shape
+    // the previous datetime-local input emitted, so server-side
+    // semantics don't change.
+    const publishUnixSec = Math.floor(new Date(`${scheduleDate}T${scheduleTime}`).getTime() / 1000)
     if (!Number.isFinite(publishUnixSec) || publishUnixSec <= 0) {
       setScheduleError('Invalid date/time.')
       return
@@ -844,7 +864,7 @@ export default function NoteComposer({
     } finally {
       setScheduling(false)
     }
-  }, [scheduleAt, publishable])
+  }, [scheduleDate, scheduleTime, publishable])
 
   // Ref-wrap the callback so identity changes in the parent don't thrash
   // this effect — only real snapshot/publishable changes should emit.
@@ -1320,7 +1340,8 @@ export default function NoteComposer({
                       onClick={() => {
                         setScheduleResult(null)
                         setScheduleMode(false)
-                        setScheduleAt('')
+                        setScheduleDate('')
+                        setScheduleTime('')
                         handleClear()
                       }}
                       className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-200 transition-colors"
@@ -1370,17 +1391,23 @@ export default function NoteComposer({
                         <label className="block text-[11px] text-neutral-400">
                           Publish at (your local time)
                         </label>
-                        <input
-                          type="datetime-local"
-                          value={scheduleAt}
-                          min={defaultScheduleLocal()}
-                          step={15 * 60}
-                          onChange={e => { setScheduleAt(e.target.value); setScheduleError('') }}
-                          className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
-                        />
+                        <div className="flex gap-2">
+                          <input
+                            type="date"
+                            value={scheduleDate}
+                            min={todayLocal}
+                            onChange={e => { setScheduleDate(e.target.value); setScheduleError('') }}
+                            className="flex-1 bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-100 focus:outline-none focus:border-purple-600"
+                          />
+                          <TimePicker
+                            value={scheduleTime}
+                            onChange={v => { setScheduleTime(v); setScheduleError('') }}
+                            className="w-32"
+                          />
+                        </div>
                         <p className="text-[10px] text-neutral-600 leading-snug">
                           Earliest: {MIN_LEAD_SECONDS / 60} min from now. Up to 30 days out.
-                          Snaps to 15-min boundaries.
+                          15-minute slots.
                         </p>
                         {scheduleError && (
                           <p className="text-[11px] text-red-400">{scheduleError}</p>

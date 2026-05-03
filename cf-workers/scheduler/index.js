@@ -45,8 +45,9 @@ const RELAY_OK_TIMEOUT_MS = 4_000
 
 // Max relays we'll accept per scheduled event. Bounds cron worst-case
 // fan-out and stops a malicious client from POSTing 100s of relays per
-// event to amplify the worker's outbound WS load.
-const MAX_RELAYS_PER_EVENT = 12
+// event to amplify the worker's outbound WS load. 24 covers even
+// prolific power users — typical kind 10002 lists are 5-15.
+const MAX_RELAYS_PER_EVENT = 24
 
 // Max KV value size we'll write (60 KB — KV's hard limit is 25 MB but
 // we don't want to be storing huge bodies; nostr events are small).
@@ -268,14 +269,16 @@ async function handleSchedule(request, env) {
 
   // Validate relays — must all be wss:// URLs, capped count.
   if (relays.length === 0) {
-    return json({ error: 'no-relays' }, 400)
+    return json({ error: 'No write relays found in your kind 10002 list.' }, 400)
   }
   if (relays.length > MAX_RELAYS_PER_EVENT) {
-    return json({ error: 'too-many-relays', max: MAX_RELAYS_PER_EVENT }, 400)
+    return json({
+      error: `Scheduler limit is ${MAX_RELAYS_PER_EVENT} write relays per note.`,
+    }, 400)
   }
   for (const r of relays) {
     if (typeof r !== 'string' || !/^wss:\/\/[^\s]+$/.test(r)) {
-      return json({ error: 'invalid-relay-url', value: r }, 400)
+      return json({ error: `Invalid relay URL in your list: ${r}` }, 400)
     }
   }
 
