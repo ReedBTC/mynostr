@@ -196,14 +196,13 @@ export default function DraftsTray({
     if (!schedulerEnabled || !pubkey) return
     setScheduleSyncing(true)
     try {
-      const items = await listScheduled(pubkey)
-      setScheduled(items.map(it => ({
-        eventId: it.eventId,
-        scheduledFor: it.scheduledFor,
-        content: it.contentPreview || it.content || '',
-        status: it.status,
-        attempts: it.attempts,
-      })))
+      // listScheduled writes the canonical shape to localStorage,
+      // including content (from event.content) and the full event blob.
+      // Re-read from there rather than re-mapping items here — single
+      // source of truth, and previously this place had a stale mapping
+      // that read it.contentPreview which the new worker doesn't emit.
+      await listScheduled(pubkey)
+      setScheduled(readLocalScheduled(pubkey))
     } catch {
       // On failure, fall back to local cache (already in state).
     } finally {
