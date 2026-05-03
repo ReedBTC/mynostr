@@ -48,6 +48,12 @@ export function redactNwcSecrets(value) {
 let activeClient = null
 let activeOwnerNpub = null
 let activeWalletAlias = null
+// True while ensureReady() is mid-flight (decrypt + relay probe). The
+// wallet row reads this through getStatus().probing and shows
+// "Checking wallet…" instead of "Connect Wallet" during cold-load
+// reconnection — otherwise users see a "Connect" button momentarily
+// and wonder if their stored connection was forgotten.
+let isEnsuring = false
 
 const listeners = new Set()
 function notify() {
@@ -76,9 +82,9 @@ export function onChange(fn) {
  */
 export function getStatus() {
   if (activeClient && activeOwnerNpub) {
-    return { connected: true, ownerNpub: activeOwnerNpub, alias: activeWalletAlias || null }
+    return { connected: true, ownerNpub: activeOwnerNpub, alias: activeWalletAlias || null, probing: isEnsuring }
   }
-  return { connected: false }
+  return { connected: false, probing: isEnsuring }
 }
 
 /** Quick sync check used by the zap UI to decide whether to default to NWC. */
@@ -197,53 +203,66 @@ export async function ensureReady(currentUser) {
   const ndk = getNDK()
   if (!ndk?.signer) return false
 
-  // 8s bound. Some signers (notably remote bunkers with broken relay sets
-  // and older extension builds) silently hang on NIP-44/04 decrypt instead
-  // of surfacing a rejection. Bound the call so the UI can't get stuck on
-  // "Unlocking wallet…" forever.
-  console.info('[mynostr-nwc] ensureReady: decrypting blob…')
-  let nwcUri
-  try {
-    nwcUri = await withTimeout(
-      decryptFromSelf(
-        ndk.signer,
-        ndk.getUser({ pubkey: currentUser.pubkey }),
-        blob.ciphertext,
-      ),
-      8000,
-      'Your signer didn\'t respond. If you use a remote signer (bunker/Amber), check that it\'s online and try again.',
-    )
-    console.info('[mynostr-nwc] ensureReady: decrypt ok')
-  } catch (e) {
-    console.warn('[mynostr-nwc] ensureReady: decrypt failed', redactNwcSecrets(String(e?.message || e)))
-    if (/timeout/i.test(String(e?.message || ''))) {
-      throw new Error('Your signer didn\'t respond. Check that your bunker / signer app is online and try again.')
-    }
-    throw new Error('Couldn\'t unlock your wallet connection. Reconnect to keep zapping.')
-  }
-
-  const client = new NWCClient({ nostrWalletConnectUrl: nwcUri })
-  console.info('[mynostr-nwc] ensureReady: probing getBalance…')
-  try {
-    await withTimeout(client.getBalance(), 8000, 'wallet-unreachable')
-    console.info('[mynostr-nwc] ensureReady: getBalance ok')
-  } catch (e) {
-    console.warn('[mynostr-nwc] ensureReady: getBalance failed', redactNwcSecrets(String(e?.message || e)))
-    try { client.close() } catch {}
-    throw new Error('Saved wallet connection is no longer reachable. Reconnect to keep zapping.')
-  }
-
-  activeClient = client
-  activeOwnerNpub = currentNpub
-  try {
-    const info = await withTimeout(client.getInfo(), 5000, 'info-timeout')
-    activeWalletAlias = info?.alias || null
-  } catch {
-    activeWalletAlias = null
-  }
-  console.info('[mynostr-nwc] ensureReady: connected')
+  // From here we're going to do real async work (decrypt + probe).
+  // Flip the probing flag and notify so the wallet row can flip from
+  // "Connect Wallet" to "Checking wallet…" before we await anything.
+  // Cleared in the finally below regardless of success / failure /
+  // thrown error.
+  isEnsuring = true
   notify()
-  return true
+  try {
+    // 8s bound. Some signers (notably remote bunkers with broken relay sets
+    // and older extension builds) silently hang on NIP-44/04 decrypt instead
+    // of surfacing a rejection. Bound the call so the UI can't get stuck on
+    // "Unlocking wallet…" forever.
+    console.info('[mynostr-nwc] ensureReady: decrypting blob…')
+    let nwcUri
+    try {
+      nwcUri = await withTimeout(
+        decryptFromSelf(
+          ndk.signer,
+          ndk.getUser({ pubkey: currentUser.pubkey }),
+          blob.ciphertext,
+        ),
+        8000,
+        'Your signer didn\'t respond. If you use a remote signer (bunker/Amber), check that it\'s online and try again.',
+      )
+      console.info('[mynostr-nwc] ensureReady: decrypt ok')
+    } catch (e) {
+      console.warn('[mynostr-nwc] ensureReady: decrypt failed', redactNwcSecrets(String(e?.message || e)))
+      if (/timeout/i.test(String(e?.message || ''))) {
+        throw new Error('Your signer didn\'t respond. Check that your bunker / signer app is online and try again.')
+      }
+      throw new Error('Couldn\'t unlock your wallet connection. Reconnect to keep zapping.')
+    }
+
+    const client = new NWCClient({ nostrWalletConnectUrl: nwcUri })
+    console.info('[mynostr-nwc] ensureReady: probing getBalance…')
+    try {
+      await withTimeout(client.getBalance(), 8000, 'wallet-unreachable')
+      console.info('[mynostr-nwc] ensureReady: getBalance ok')
+    } catch (e) {
+      console.warn('[mynostr-nwc] ensureReady: getBalance failed', redactNwcSecrets(String(e?.message || e)))
+      try { client.close() } catch {}
+      throw new Error('Saved wallet connection is no longer reachable. Reconnect to keep zapping.')
+    }
+
+    activeClient = client
+    activeOwnerNpub = currentNpub
+    try {
+      const info = await withTimeout(client.getInfo(), 5000, 'info-timeout')
+      activeWalletAlias = info?.alias || null
+    } catch {
+      activeWalletAlias = null
+    }
+    console.info('[mynostr-nwc] ensureReady: connected')
+    return true
+  } finally {
+    // Always clear the probing flag and notify — covers the success,
+    // throw-from-decrypt, and throw-from-probe branches with one notify.
+    isEnsuring = false
+    notify()
+  }
 }
 
 /**

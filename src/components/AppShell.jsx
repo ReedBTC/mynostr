@@ -347,6 +347,14 @@ function SidebarWalletRow({ status, onConnect }) {
       </div>
     )
   }
+  if (status?.probing) {
+    return (
+      <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0" aria-hidden="true" />
+        <span className="truncate">Checking wallet…</span>
+      </div>
+    )
+  }
   return (
     <button
       type="button"

@@ -15,7 +15,12 @@ function compute() {
   if (n.connected) return { ...n, kind: 'nwc' }
   const w = webln.getStatus()
   if (w.connected) return { connected: true, alias: w.alias, kind: 'webln' }
-  return { connected: false }
+  // Neither connected yet, but NWC's ensureReady() may be probing the
+  // saved connection — surface it so the wallet row can show
+  // "Checking wallet…" instead of "Connect Wallet" during cold load.
+  // WebLN doesn't probe at boot (we removed silent re-enable), so
+  // probing is purely a NWC-side signal.
+  return { connected: false, probing: !!n.probing }
 }
 
 export function useWalletStatus() {

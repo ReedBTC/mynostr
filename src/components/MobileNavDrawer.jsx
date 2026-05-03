@@ -194,6 +194,11 @@ export default function MobileNavDrawer({
                   Disconnect
                 </button>
               </div>
+            ) : walletStatus?.probing ? (
+              <div className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-neutral-400">
+                <span className="inline-block w-2 h-2 rounded-full bg-amber-500 animate-pulse shrink-0" aria-hidden="true" />
+                <span className="truncate flex-1">Checking wallet…</span>
+              </div>
             ) : (
               <button
                 onClick={() => { onConnectWallet?.(); onClose() }}
