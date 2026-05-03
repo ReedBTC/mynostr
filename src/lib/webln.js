@@ -26,17 +26,26 @@
  * nwc).
  */
 
+import { nip19 } from 'nostr-tools'
 import { withTimeout } from './utils.js'
 
 // Per-pubkey scoping: matches nwc.js + the project's general per-pubkey
 // storage rule. A previously-set flag must NOT silently re-enable WebLN
 // for a *different* signed-in user — otherwise zaps from user B route
-// through user A's still-authorized browser extension. The active
-// pubkey is passed in from the caller (WalletConnectModal etc.) so this
-// module never has to reach into session state.
+// through user A's still-authorized browser extension.
+//
+// Storage key uses the bech32 npub form so it ESCAPES the logout
+// wipe pattern in App.jsx (which targets keys ending in `_<hex>`).
+// Mirrors nwc.js's `mynostr_nwc_v1_<npub>` pattern — both wallet
+// connections persist across logout/login as a result. Callers can
+// pass either hex pubkey or pre-encoded npub; we normalize.
 const STORAGE_KEY_PREFIX = 'mynostr_webln_active_'
 function storageKeyFor(pubkey) {
-  return pubkey ? `${STORAGE_KEY_PREFIX}${pubkey}` : null
+  if (!pubkey) return null
+  try {
+    const npub = pubkey.startsWith?.('npub1') ? pubkey : nip19.npubEncode(pubkey)
+    return `${STORAGE_KEY_PREFIX}${npub}`
+  } catch { return null }
 }
 
 let activeAlias = null

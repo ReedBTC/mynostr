@@ -114,12 +114,29 @@ export default function App() {
     return () => { cancelled = true }
   }, [sessionUser?.pubkey, sessionUser?.readOnly])
 
-  // No silent WebLN re-enable on mount: if the user revoked the
-  // per-domain permission in their extension settings, calling enable()
-  // would surprise-prompt them out of context. Pair that with the
-  // per-pubkey scoping in webln.js: a stale flag from a previous user
-  // must NOT auto-authorize WebLN on the current session. Reconnect is
-  // explicit via the wallet modal.
+  // Silent WebLN re-enable on mount, mirroring nwc.ensureReady. Gated
+  // on a per-pubkey persisted flag so a stale flag from a previous
+  // user can't auto-authorize the current session. The "surprise
+  // prompt if extension permission was revoked" risk we cited when
+  // first removing this is real but rare — the prompt itself is
+  // honest ("this site wants to use your wallet"), and the friction
+  // of re-clicking on every login was visible to users. Per-pubkey
+  // scoping handles the cross-user case; we accept the surprise-prompt
+  // edge case as an OK trade.
+  useEffect(() => {
+    if (!sessionUser?.pubkey || sessionUser.readOnly) return
+    if (!webln.isAvailable() || webln.isReady()) return
+    if (!webln.hasStoredFlag(sessionUser.pubkey)) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        await webln.enable({ pubkey: sessionUser.pubkey })
+      } catch (e) {
+        if (!cancelled) console.warn('[mynostr-webln] silent re-enable failed', e?.message || e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [sessionUser?.pubkey, sessionUser?.readOnly])
 
   // Load the user's outgoing zap history so zap buttons across feeds /
   // articles / marketplace / events render with the "already zapped"
