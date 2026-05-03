@@ -32,5 +32,7 @@ MAX_PUBLISH_ATTEMPTS = "4"
 # Server-side enforcement; client mirrors this.
 MIN_LEAD_SECONDS = "900"
 
-# Maximum schedule horizon, in seconds. 30 days. Abuse cap.
-MAX_FUTURE_SECONDS = "2592000"
+# Maximum schedule horizon, in seconds. 1 year. Long enough for
+# annual posts; still bounds KV TTL and prevents pathological "100
+# years out" entries that would clutter listings forever.
+MAX_FUTURE_SECONDS = "31536000"

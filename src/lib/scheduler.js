@@ -23,7 +23,8 @@ import { getNDK, signWithTimeout } from './ndk.js'
 
 // 15 minutes — must match the worker's MIN_LEAD_SECONDS.
 export const MIN_LEAD_SECONDS = 900
-export const MAX_FUTURE_SECONDS = 30 * 24 * 3600
+// 1 year — must match the worker's MAX_FUTURE_SECONDS.
+export const MAX_FUTURE_SECONDS = 365 * 24 * 3600
 
 const STORAGE_PREFIX = 'mynostr_scheduled_'
 
