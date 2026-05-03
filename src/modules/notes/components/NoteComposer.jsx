@@ -23,6 +23,12 @@ import { uploadToBlossom } from '../../../lib/blossom.js'
 import { useImageUploadFlow } from '../../../components/ImageUploadConfirm.jsx'
 import { useIsMobile } from '../../../hooks/useIsMobile.js'
 import { parseReplyRefs } from '../../../lib/nip10.js'
+import {
+  scheduleNote,
+  isSchedulerConfigured,
+  MIN_LEAD_SECONDS,
+  MAX_FUTURE_SECONDS,
+} from '../../../lib/scheduler.js'
 
 // Default height — roughly a full phone-screen's worth of composing room
 const TEXTAREA_MIN_H = 200
@@ -93,6 +99,15 @@ export default function NoteComposer({
   const importInputRef = useRef(null)
   const [clearPending, setClearPending] = useState(false)
   const clearTimerRef = useRef(null)
+
+  // Schedule (kind 1 future-publish via the scheduler worker).
+  // Hidden when the worker isn't configured (no VITE_SCHEDULER_URL).
+  const schedulerEnabled = isSchedulerConfigured()
+  const [scheduleMode, setScheduleMode] = useState(false)
+  const [scheduleAt, setScheduleAt]     = useState('')
+  const [scheduling, setScheduling]     = useState(false)
+  const [scheduleError, setScheduleError] = useState('')
+  const [scheduleResult, setScheduleResult] = useState(null) // { eventId, scheduledFor }
 
   // Reply / quote threading inputs (text the user types), plus the fetched
   // reply target — needed so we can emit a proper NIP-10 p-tag for the author
@@ -674,6 +689,33 @@ export default function NoteComposer({
     if (onPublish) await onPublish()
   }, [onPublish])
 
+  // Default scheduling time = next 15-min boundary AT LEAST MIN_LEAD_SECONDS
+  // out. So if it's 9:03 and min lead is 15min → 9:30 (the 9:15 bucket
+  // is too close); if it's 9:14:59 → 9:30 (still snaps cleanly).
+  const defaultScheduleLocal = useCallback(() => {
+    const ts = Date.now() + MIN_LEAD_SECONDS * 1000
+    const d = new Date(ts)
+    // Round UP to next 15-min boundary.
+    const minutes = d.getMinutes()
+    const next15 = Math.ceil(minutes / 15) * 15
+    if (next15 === 60) {
+      d.setHours(d.getHours() + 1)
+      d.setMinutes(0, 0, 0)
+    } else {
+      d.setMinutes(next15, 0, 0)
+    }
+    // datetime-local format: YYYY-MM-DDTHH:MM (local TZ).
+    const pad = n => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }, [])
+
+  // Seed the picker the moment the user toggles "Schedule for later"
+  // on, so they see a sensible default rather than an empty input.
+  useEffect(() => {
+    if (scheduleMode && !scheduleAt) setScheduleAt(defaultScheduleLocal())
+  }, [scheduleMode, scheduleAt, defaultScheduleLocal])
+
+
   // Snapshot emitted upward to the parent hook so it can persist the draft
   // and expose `publishable` for Publish-all. Parent hook already debounces
   // localStorage writes, so this can fire on every change.
@@ -730,6 +772,48 @@ export default function NoteComposer({
     if (hasInvalidReply || hasInvalidQuote) return null
     return { content: expandedContent, tags: finalTags }
   }, [content, expandedContent, finalTags, hasInvalidReply, hasInvalidQuote])
+
+  // Schedule handler — defined AFTER `publishable` because it captures
+  // it. Validates the picked datetime against the worker's lead-time
+  // floor and ceiling, signs + POSTs via lib/scheduler.
+  const handleSchedule = useCallback(async () => {
+    setScheduleError('')
+    if (!scheduleAt) {
+      setScheduleError('Pick a publish time first.')
+      return
+    }
+    if (!publishable) {
+      setScheduleError('Note is empty or has unresolved fields.')
+      return
+    }
+    const publishUnixSec = Math.floor(new Date(scheduleAt).getTime() / 1000)
+    if (!Number.isFinite(publishUnixSec) || publishUnixSec <= 0) {
+      setScheduleError('Invalid date/time.')
+      return
+    }
+    const nowSec = Math.floor(Date.now() / 1000)
+    if (publishUnixSec < nowSec + MIN_LEAD_SECONDS) {
+      setScheduleError(`Pick a time at least ${MIN_LEAD_SECONDS / 60} minutes from now.`)
+      return
+    }
+    if (publishUnixSec > nowSec + MAX_FUTURE_SECONDS) {
+      setScheduleError('Pick a time within 30 days.')
+      return
+    }
+    setScheduling(true)
+    try {
+      const res = await scheduleNote({
+        content: publishable.content,
+        tags:    publishable.tags,
+        publishUnixSec,
+      })
+      setScheduleResult(res)
+    } catch (e) {
+      setScheduleError(e?.message || 'Schedule failed.')
+    } finally {
+      setScheduling(false)
+    }
+  }, [scheduleAt, publishable])
 
   // Ref-wrap the callback so identity changes in the parent don't thrash
   // this effect — only real snapshot/publishable changes should emit.
@@ -1186,33 +1270,110 @@ export default function NoteComposer({
               </div>
             )}
 
-            {/* Publish button */}
+            {/* Publish / Schedule button + scheduling panel */}
             <div className="mt-3">
               {!readOnly ? (
-                <>
-                  <button
-                    onClick={handlePublish}
-                    disabled={publishing || !content.trim() || zapSplitOver100 || hasInvalidReply || hasInvalidQuote}
-                    className="w-full py-3 sm:py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors"
-                  >
-                    {publishing ? 'Publishing...' : 'PUBLISH'}
-                  </button>
-                  {zapSplitOver100 && (
-                    <p className="mt-2 text-[11px] text-red-400">
-                      Zap splits total more than 100%. Adjust the splits before publishing.
+                scheduleResult ? (
+                  // Success view — composer body is now stale, prompt the
+                  // user to clear so a fresh draft replaces it.
+                  <div className="rounded-lg border border-green-800/60 bg-green-950/20 px-3 py-3 space-y-2">
+                    <p className="text-green-400 font-medium text-sm">Scheduled!</p>
+                    <p className="text-[11px] text-neutral-400 leading-snug">
+                      This note will publish at{' '}
+                      <span className="text-neutral-200">
+                        {new Date(scheduleResult.scheduledFor * 1000).toLocaleString()}
+                      </span>.
+                      Cancel any time from the Drafts tray's Scheduled section.
                     </p>
-                  )}
-                  {hasInvalidReply && (
-                    <p className="mt-2 text-[11px] text-red-400">
-                      Reply field needs a valid note ID (note1…, nevent1…, or naddr1…) — or clear it before publishing.
-                    </p>
-                  )}
-                  {hasInvalidQuote && (
-                    <p className="mt-2 text-[11px] text-red-400">
-                      Quote field needs a valid note ID (note1…, nevent1…, or naddr1…) — or clear it before publishing.
-                    </p>
-                  )}
-                </>
+                    <button
+                      onClick={() => {
+                        setScheduleResult(null)
+                        setScheduleMode(false)
+                        setScheduleAt('')
+                        handleClear()
+                      }}
+                      className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-200 transition-colors"
+                    >
+                      Done
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      onClick={scheduleMode ? handleSchedule : handlePublish}
+                      disabled={
+                        (scheduleMode ? scheduling : publishing) ||
+                        !content.trim() ||
+                        zapSplitOver100 ||
+                        hasInvalidReply ||
+                        hasInvalidQuote
+                      }
+                      className={`w-full py-3 sm:py-2 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors ${
+                        scheduleMode
+                          ? 'bg-blue-600 hover:bg-blue-500'
+                          : 'bg-purple-600 hover:bg-purple-500'
+                      }`}
+                    >
+                      {scheduleMode
+                        ? (scheduling ? 'Scheduling…' : 'SCHEDULE')
+                        : (publishing ? 'Publishing...' : 'PUBLISH')}
+                    </button>
+
+                    {schedulerEnabled && (
+                      <label className="mt-2 flex items-center gap-2 text-[11px] text-neutral-500 select-none cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={scheduleMode}
+                          onChange={e => {
+                            setScheduleMode(e.target.checked)
+                            setScheduleError('')
+                          }}
+                          className="accent-blue-600"
+                        />
+                        <span>🕐 Schedule for later</span>
+                      </label>
+                    )}
+
+                    {scheduleMode && (
+                      <div className="mt-2 rounded border border-neutral-800 bg-neutral-950 px-3 py-2.5 space-y-1.5">
+                        <label className="block text-[11px] text-neutral-400">
+                          Publish at (your local time)
+                        </label>
+                        <input
+                          type="datetime-local"
+                          value={scheduleAt}
+                          min={defaultScheduleLocal()}
+                          step={15 * 60}
+                          onChange={e => { setScheduleAt(e.target.value); setScheduleError('') }}
+                          className="w-full bg-neutral-900 border border-neutral-700 rounded px-2 py-1.5 text-xs text-neutral-100 focus:outline-none focus:border-blue-500"
+                        />
+                        <p className="text-[10px] text-neutral-600 leading-snug">
+                          Earliest: {MIN_LEAD_SECONDS / 60} min from now. Up to 30 days out.
+                          Snaps to 15-min boundaries.
+                        </p>
+                        {scheduleError && (
+                          <p className="text-[11px] text-red-400">{scheduleError}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {zapSplitOver100 && (
+                      <p className="mt-2 text-[11px] text-red-400">
+                        Zap splits total more than 100%. Adjust the splits before publishing.
+                      </p>
+                    )}
+                    {hasInvalidReply && (
+                      <p className="mt-2 text-[11px] text-red-400">
+                        Reply field needs a valid note ID (note1…, nevent1…, or naddr1…) — or clear it before publishing.
+                      </p>
+                    )}
+                    {hasInvalidQuote && (
+                      <p className="mt-2 text-[11px] text-red-400">
+                        Quote field needs a valid note ID (note1…, nevent1…, or naddr1…) — or clear it before publishing.
+                      </p>
+                    )}
+                  </>
+                )
               ) : (
                 <div className="w-full py-2 bg-neutral-800 rounded-lg text-xs text-amber-500 font-medium text-center">
                   Read-only mode

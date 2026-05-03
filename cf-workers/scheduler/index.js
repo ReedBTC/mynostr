@@ -1,104 +1,211 @@
 /**
  * Cloudflare Worker — Note Scheduler
  *
- * Handles three responsibilities:
- *   1. POST /schedule   — store a pre-signed Nostr event in KV with a time-bucketed key
- *   2. GET  /scheduled  — list pending scheduled events for a pubkey (for the UI poll)
- *   3. Cron trigger     — fire every minute, publish all due events, delete their KV entries
+ * Stores pre-signed Nostr events and publishes them at their scheduled
+ * time. Cron fires every 15 min; client schedules with ≥15 min lead.
  *
- * KV key format:  sched:{pubkey}:{YYYY-MM-DD-HH-MM}:{event_id}
- * Pubkey-first so the list endpoint can prefix-scan per user without full-table scan.
+ * Endpoints:
+ *   POST   /schedule        — store a pre-signed event + relay list
+ *   GET    /scheduled       — list pending events for a pubkey
+ *   DELETE /cancel/:eventId — remove a pending or failed event
+ *   (cron)                  — publish due events to their stored relays
  *
- * Env bindings required (set in wrangler.toml):
- *   SCHEDULED_NOTES   — KV namespace binding
- *   RELAYS            — JSON array string of relay URLs to publish to (var or secret)
- *   ALLOWED_ORIGINS   — comma-separated allowed CORS origins (var), e.g. "https://mynostr.app"
+ * Trust model: signed-but-not-yet-broadcast events sit in KV until
+ * publish time. Worst case: a KV compromise lets the attacker read
+ * notes that haven't yet been broadcast — i.e. they leak slightly
+ * earlier than intended. The signed payload itself can't be forged
+ * (we re-verify Schnorr on POST) and can't be tampered (re-deriving
+ * the event id off the canonical serialization happens server-side).
  *
- * TODO: implement relay publish logic in handleCron once nostr-tools is bundled
- * into the worker. Stub currently logs due events only.
+ * KV value shape (per scheduled event):
+ *   {
+ *     event:    <signed Nostr event>,
+ *     relays:   string[],         // user's outbox at schedule time
+ *     attempts: number,           // publish attempts so far (0..MAX)
+ *     status:   'pending' | 'failed',
+ *   }
+ *
+ * KV key shape:
+ *   sched:{pubkey}:{bucketTs}:{eventId}
+ *   - pubkey first → list({prefix:'sched:{pubkey}:'}) is per-user O(n)
+ *   - bucketTs is the scheduled publish time rounded down to the
+ *     nearest 15-minute boundary, e.g. 2026-05-03-14-15
+ *   - eventId disambiguates if a user schedules >1 note for the same
+ *     bucket
  */
 
-// ─── CORS ───────────────────────────────────────────────────────────────────
+import { schnorr } from '@noble/curves/secp256k1'
+import { sha256 } from '@noble/hashes/sha256'
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+// Per-publish ack timeout. Keep tight — cron has a hard wall-clock
+// limit on Cloudflare and we may be publishing N notes × M relays.
+const RELAY_OK_TIMEOUT_MS = 4_000
+
+// Max relays we'll accept per scheduled event. Bounds cron worst-case
+// fan-out and stops a malicious client from POSTing 100s of relays per
+// event to amplify the worker's outbound WS load.
+const MAX_RELAYS_PER_EVENT = 12
+
+// Max KV value size we'll write (60 KB — KV's hard limit is 25 MB but
+// we don't want to be storing huge bodies; nostr events are small).
+const MAX_VALUE_SIZE_BYTES = 60 * 1024
+
+// ─── CORS ────────────────────────────────────────────────────────────────────
 
 function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || ''
   const allowed = (env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
-  // In dev, allow localhost origins; in production, only whitelisted origins
-  const isAllowed = allowed.length === 0
-    || allowed.includes(origin)
-    || origin.startsWith('http://localhost')
-    || origin.startsWith('http://127.0.0.1')
+  const isAllowed =
+    allowed.includes(origin) ||
+    origin.startsWith('http://localhost') ||
+    origin.startsWith('http://127.0.0.1') ||
+    origin.startsWith('http://192.168.')   // LAN dev
   return {
     'Access-Control-Allow-Origin': isAllowed ? origin : '',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Max-Age': '86400',
   }
 }
 
-function handleOptions(request, env) {
-  return new Response(null, { status: 204, headers: corsHeaders(request, env) })
+// ─── Hex helpers ─────────────────────────────────────────────────────────────
+
+function hexToBytes(hex) {
+  if (typeof hex !== 'string' || hex.length % 2) throw new Error('bad hex')
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  return out
 }
 
-// ─── Nostr event signature verification ─────────────────────────────────────
-// Minimal schnorr signature verification using the Web Crypto API.
-// Nostr events use secp256k1 schnorr (BIP-340) signatures. Web Crypto doesn't
-// natively support secp256k1, so we verify the event ID hash matches the
-// serialized event and check structural integrity. Full signature verification
-// requires importing nostr-tools — stubbed here with hash-only validation
-// until the worker bundles nostr-tools.
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+// ─── Nostr verification (id + Schnorr sig) ───────────────────────────────────
 
 /**
- * Verify that the event id matches the canonical serialization.
- * This catches tampered payloads (modified content/tags after signing)
- * but does NOT verify the cryptographic signature itself.
- * TODO: add full schnorr sig verification when nostr-tools is bundled.
+ * Recompute event.id from the canonical NIP-01 serialization and verify
+ * it matches the claimed id. Then verify the BIP-340 Schnorr signature
+ * over that id. Returns true only if both pass.
  */
-async function verifyEventId(event) {
-  if (!event?.id || !event?.pubkey || !event?.sig || event.created_at == null) {
-    return false
-  }
+async function verifyEvent(event) {
+  if (!event || typeof event !== 'object') return false
+  if (typeof event.id !== 'string' || !/^[0-9a-f]{64}$/.test(event.id)) return false
+  if (typeof event.pubkey !== 'string' || !/^[0-9a-f]{64}$/.test(event.pubkey)) return false
+  if (typeof event.sig !== 'string' || !/^[0-9a-f]{128}$/.test(event.sig)) return false
+  if (!Number.isInteger(event.created_at)) return false
+  if (!Number.isInteger(event.kind)) return false
+
   const serialized = JSON.stringify([
     0,
     event.pubkey,
     event.created_at,
     event.kind,
-    event.tags || [],
-    event.content || '',
+    Array.isArray(event.tags) ? event.tags : [],
+    typeof event.content === 'string' ? event.content : '',
   ])
-  const encoded = new TextEncoder().encode(serialized)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', encoded)
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
-  return hashHex === event.id
+  const idBytes = sha256(new TextEncoder().encode(serialized))
+  if (bytesToHex(idBytes) !== event.id) return false
+
+  try {
+    return schnorr.verify(hexToBytes(event.sig), idBytes, hexToBytes(event.pubkey))
+  } catch {
+    return false
+  }
 }
 
-// ─── Handlers ───────────────────────────────────────────────────────────────
+// ─── Bucket helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Round a unix-seconds timestamp down to the nearest 15-minute boundary
+ * and format as `YYYY-MM-DD-HH-MM` for use as a sortable KV key segment.
+ */
+function bucketFromUnixSec(unixSec) {
+  const d = new Date(unixSec * 1000)
+  const minutes = Math.floor(d.getUTCMinutes() / 15) * 15
+  d.setUTCMinutes(minutes, 0, 0)
+  const pad = (n) => String(n).padStart(2, '0')
+  return [
+    d.getUTCFullYear(),
+    pad(d.getUTCMonth() + 1),
+    pad(d.getUTCDate()),
+    pad(d.getUTCHours()),
+    pad(d.getUTCMinutes()),
+  ].join('-')
+}
+
+function bucketIsAtOrBefore(bucket, now) {
+  // Lexicographic compare works because format is fixed-width.
+  return bucket <= now
+}
+
+// ─── NIP-98 (HTTP auth) verification ─────────────────────────────────────────
+// For DELETE /cancel/:eventId. Header shape:
+//   Authorization: Nostr <base64(nostr-event-json)>
+// The event must be kind 27235, with `u` tag matching the request URL,
+// `method` tag matching the HTTP method, and created_at within 60s.
+
+async function verifyNip98(request, expectedPubkey) {
+  const auth = request.headers.get('Authorization') || ''
+  const m = auth.match(/^Nostr\s+([A-Za-z0-9+/=_-]+)$/)
+  if (!m) return { ok: false, reason: 'missing-or-malformed-auth-header' }
+  let event
+  try {
+    const json = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'))
+    event = JSON.parse(json)
+  } catch {
+    return { ok: false, reason: 'auth-event-decode-failed' }
+  }
+  if (event.kind !== 27235) return { ok: false, reason: 'wrong-kind' }
+  if (event.pubkey !== expectedPubkey) {
+    return { ok: false, reason: 'pubkey-mismatch' }
+  }
+  const nowSec = Math.floor(Date.now() / 1000)
+  if (Math.abs(nowSec - (event.created_at || 0)) > 60) {
+    return { ok: false, reason: 'auth-event-stale' }
+  }
+  const uTag = event.tags?.find(t => t[0] === 'u')?.[1]
+  const methodTag = event.tags?.find(t => t[0] === 'method')?.[1]
+  if (!uTag || uTag !== request.url) return { ok: false, reason: 'url-mismatch' }
+  if (!methodTag || methodTag.toUpperCase() !== request.method.toUpperCase()) {
+    return { ok: false, reason: 'method-mismatch' }
+  }
+  const sigOk = await verifyEvent(event)
+  if (!sigOk) return { ok: false, reason: 'auth-event-bad-signature' }
+  return { ok: true }
+}
+
+// ─── HTTP entry point ────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
-      return handleOptions(request, env)
+      return withCors(new Response(null, { status: 204 }), request, env)
     }
 
     const url = new URL(request.url)
     let response
 
-    if (request.method === 'POST' && url.pathname === '/schedule') {
-      response = await handleSchedule(request, env)
-    } else if (request.method === 'GET' && url.pathname === '/scheduled') {
-      response = await handleList(request, env)
-    } else {
-      response = new Response('Not found', { status: 404 })
+    try {
+      if (request.method === 'POST' && url.pathname === '/schedule') {
+        response = await handleSchedule(request, env)
+      } else if (request.method === 'GET' && url.pathname === '/scheduled') {
+        response = await handleList(request, env)
+      } else if (request.method === 'DELETE' && url.pathname.startsWith('/cancel/')) {
+        const eventId = url.pathname.slice('/cancel/'.length)
+        response = await handleCancel(request, env, eventId)
+      } else {
+        response = json({ error: 'Not found' }, 404)
+      }
+    } catch (err) {
+      response = json({ error: err.message || 'internal error' }, 500)
     }
 
-    // Attach CORS headers to every response
-    const cors = corsHeaders(request, env)
-    for (const [k, v] of Object.entries(cors)) {
-      response.headers.set(k, v)
-    }
-    return response
+    return withCors(response, request, env)
   },
 
   async scheduled(_event, env, ctx) {
@@ -106,114 +213,298 @@ export default {
   },
 }
 
-/**
- * POST /schedule
- * Body: { event: <signed Nostr event JSON>, publishAt: <ISO timestamp> }
- */
-async function handleSchedule(request, env) {
-  try {
-    const { event, publishAt } = await request.json()
-    if (!event?.id || !event?.pubkey || !event?.sig || !publishAt) {
-      return json({ error: 'Missing required fields: event.id, event.pubkey, event.sig, publishAt' }, 400)
-    }
-
-    // Verify the event id matches the canonical serialization
-    // (catches tampered payloads — modified content/tags after signing)
-    const valid = await verifyEventId(event)
-    if (!valid) {
-      return json({ error: 'Invalid event: id does not match serialized content' }, 400)
-    }
-
-    // Reject events scheduled more than 30 days in the future (abuse prevention)
-    const publishTime = new Date(publishAt).getTime()
-    const maxFuture = Date.now() + 30 * 24 * 60 * 60 * 1000
-    if (isNaN(publishTime) || publishTime < Date.now() || publishTime > maxFuture) {
-      return json({ error: 'publishAt must be a valid time between now and 30 days from now' }, 400)
-    }
-
-    // Build time-bucketed KV key — pubkey-first for efficient per-user list queries
-    const ts = new Date(publishAt)
-    const bucket = [
-      ts.getUTCFullYear(),
-      String(ts.getUTCMonth() + 1).padStart(2, '0'),
-      String(ts.getUTCDate()).padStart(2, '0'),
-      String(ts.getUTCHours()).padStart(2, '0'),
-      String(ts.getUTCMinutes()).padStart(2, '0'),
-    ].join('-')
-
-    const key = `sched:${event.pubkey}:${bucket}:${event.id}`
-    // TTL: keep for 7 days after the scheduled publish time so the UI can show recently-sent
-    const expirationTtl = 60 * 60 * 24 * 7
-
-    await env.SCHEDULED_NOTES.put(key, JSON.stringify(event), { expirationTtl })
-    return json({ ok: true, key })
-  } catch (err) {
-    return json({ error: err.message }, 500)
+function withCors(response, request, env) {
+  const headers = new Headers(response.headers)
+  for (const [k, v] of Object.entries(corsHeaders(request, env))) {
+    headers.set(k, v)
   }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
 }
 
-/**
- * GET /scheduled?pubkey=<hex>
- * Returns pending scheduled events for a specific pubkey.
- * Uses pubkey-prefixed KV keys for efficient per-user list queries.
- */
+// ─── POST /schedule ──────────────────────────────────────────────────────────
+
+async function handleSchedule(request, env) {
+  let body
+  try {
+    body = await request.json()
+  } catch {
+    return json({ error: 'invalid-json' }, 400)
+  }
+  const { event, publishAt, relays } = body || {}
+
+  if (!event || !publishAt || !Array.isArray(relays)) {
+    return json({ error: 'missing-fields', expected: 'event, publishAt, relays[]' }, 400)
+  }
+
+  // Validate publishAt — accept either ISO string or unix seconds number.
+  const publishUnixSec = typeof publishAt === 'number'
+    ? Math.floor(publishAt)
+    : Math.floor(new Date(publishAt).getTime() / 1000)
+  if (!Number.isFinite(publishUnixSec) || publishUnixSec <= 0) {
+    return json({ error: 'invalid-publishAt' }, 400)
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000)
+  const minLead = parseInt(env.MIN_LEAD_SECONDS || '900', 10)
+  const maxFuture = parseInt(env.MAX_FUTURE_SECONDS || '2592000', 10)
+  if (publishUnixSec < nowSec + minLead) {
+    return json({ error: 'publish-too-soon', minLeadSeconds: minLead }, 400)
+  }
+  if (publishUnixSec > nowSec + maxFuture) {
+    return json({ error: 'publish-too-far', maxFutureSeconds: maxFuture }, 400)
+  }
+
+  // Cross-check: the event's created_at SHOULD match publishAt. We use
+  // event.created_at as the canonical schedule time when we publish, so
+  // a mismatch would mean the relay sees a different timestamp than the
+  // user requested. Reject obvious drift but tolerate small skew.
+  if (Math.abs((event.created_at ?? 0) - publishUnixSec) > 60) {
+    return json({ error: 'created_at-publishAt-mismatch' }, 400)
+  }
+
+  // Validate relays — must all be wss:// URLs, capped count.
+  if (relays.length === 0) {
+    return json({ error: 'no-relays' }, 400)
+  }
+  if (relays.length > MAX_RELAYS_PER_EVENT) {
+    return json({ error: 'too-many-relays', max: MAX_RELAYS_PER_EVENT }, 400)
+  }
+  for (const r of relays) {
+    if (typeof r !== 'string' || !/^wss:\/\/[^\s]+$/.test(r)) {
+      return json({ error: 'invalid-relay-url', value: r }, 400)
+    }
+  }
+
+  // Re-verify event id + signature server-side. Don't trust the client.
+  const sigOk = await verifyEvent(event)
+  if (!sigOk) {
+    return json({ error: 'invalid-event-signature' }, 400)
+  }
+
+  const value = JSON.stringify({
+    event,
+    relays: Array.from(new Set(relays)),
+    attempts: 0,
+    status: 'pending',
+  })
+  if (value.length > MAX_VALUE_SIZE_BYTES) {
+    return json({ error: 'event-too-large' }, 413)
+  }
+
+  const bucket = bucketFromUnixSec(publishUnixSec)
+  const key = `sched:${event.pubkey}:${bucket}:${event.id}`
+
+  // KV TTL: keep for the scheduled time + 7 days. After that we don't
+  // care — failed entries get cleaned up automatically.
+  const expirationTtl = Math.max(60, (publishUnixSec - nowSec) + 7 * 86400)
+
+  await env.SCHEDULED_NOTES.put(key, value, { expirationTtl })
+  return json({ ok: true, eventId: event.id, scheduledFor: publishUnixSec })
+}
+
+// ─── GET /scheduled?pubkey=<hex> ─────────────────────────────────────────────
+
 async function handleList(request, env) {
   const url = new URL(request.url)
   const pubkey = url.searchParams.get('pubkey')
-  if (!pubkey) return json({ error: 'pubkey required' }, 400)
-
-  // Validate pubkey is a 64-char hex string (prevents injection into KV prefix)
+  if (!pubkey) return json({ error: 'pubkey-required' }, 400)
   if (!/^[0-9a-f]{64}$/.test(pubkey)) {
-    return json({ error: 'Invalid pubkey format' }, 400)
+    return json({ error: 'invalid-pubkey' }, 400)
   }
 
-  // Prefix scan scoped to this pubkey — no full-table scan
   const result = await env.SCHEDULED_NOTES.list({ prefix: `sched:${pubkey}:` })
-  const scheduled = result.keys.map(k => ({ key: k.name, expiration: k.expiration }))
-
-  return json({ scheduled })
+  // Resolve values so the UI can render content + scheduled time +
+  // status without a per-key follow-up. Capped — KV.list returns 1000
+  // keys per page; that's our soft limit per pubkey.
+  const items = []
+  for (const k of result.keys) {
+    const raw = await env.SCHEDULED_NOTES.get(k.name)
+    if (!raw) continue
+    try {
+      const parsed = JSON.parse(raw)
+      const parts = k.name.split(':')   // sched, pubkey, bucket, eventId
+      items.push({
+        key: k.name,
+        eventId: parts[3] || parsed.event?.id,
+        bucket: parts[2],
+        scheduledFor: parsed.event?.created_at,
+        kind: parsed.event?.kind,
+        contentPreview: String(parsed.event?.content || '').slice(0, 200),
+        attempts: parsed.attempts,
+        status: parsed.status,
+      })
+    } catch {}
+  }
+  return json({ scheduled: items })
 }
 
-/**
- * Cron handler — called every minute by the Cloudflare Cron Trigger.
- * Lists all KV entries with the current-minute bucket and publishes due events.
- *
- * Note: with pubkey-first keys (sched:{pubkey}:{bucket}:{id}), we can't prefix-scan
- * by time bucket alone. Instead we scan all sched: keys and filter by bucket substring.
- * At scale this would need a secondary time-indexed key or a different data structure.
- * Fine for the free/early-stage tier.
- */
-async function handleCron(env) {
-  const now = new Date()
-  const bucket = [
-    now.getUTCFullYear(),
-    String(now.getUTCMonth() + 1).padStart(2, '0'),
-    String(now.getUTCDate()).padStart(2, '0'),
-    String(now.getUTCHours()).padStart(2, '0'),
-    String(now.getUTCMinutes()).padStart(2, '0'),
-  ].join('-')
+// ─── DELETE /cancel/:eventId ─────────────────────────────────────────────────
 
-  // List all scheduled keys and filter for this minute's bucket
-  const { keys } = await env.SCHEDULED_NOTES.list({ prefix: 'sched:' })
-  const dueKeys = keys.filter(k => k.name.includes(`:${bucket}:`))
-
-  for (const { name } of dueKeys) {
-    const raw = await env.SCHEDULED_NOTES.get(name)
-    if (!raw) continue
-
-    const event = JSON.parse(raw)
-    // TODO: publish `event` to env.RELAYS using nostr-tools WebSocket publish
-    console.log(`[scheduler] Publishing event ${event.id} (kind ${event.kind})`)
-
-    // Delete immediately — if publish fails we log it but don't retry here.
-    // Future improvement: move to a dead-letter list for retry.
-    await env.SCHEDULED_NOTES.delete(name)
+async function handleCancel(request, env, eventId) {
+  if (!/^[0-9a-f]{64}$/.test(eventId)) {
+    return json({ error: 'invalid-event-id' }, 400)
   }
 
-  console.log(`[scheduler] Cron tick ${bucket}: processed ${dueKeys.length} events`)
+  // Find the entry first so we know which pubkey to validate against.
+  // The eventId alone is unique across users (event hashes don't collide
+  // across distinct pubkeys), but key shape is `sched:{pk}:{bucket}:{id}`
+  // so we have to scan. Per-pubkey scan would require the client to
+  // pass pubkey too — but then anyone can pass anyone's pubkey. Trust
+  // model: NIP-98 auth proves the cancel-er IS the author.
+  //
+  // We use a two-step: client passes pubkey as a hint, we scan their
+  // own bucket prefix, then verify NIP-98 from the same pubkey.
+  const url = new URL(request.url)
+  const pubkey = url.searchParams.get('pubkey')
+  if (!pubkey || !/^[0-9a-f]{64}$/.test(pubkey)) {
+    return json({ error: 'pubkey-query-param-required' }, 400)
+  }
+
+  const auth = await verifyNip98(request, pubkey)
+  if (!auth.ok) return json({ error: 'unauthorized', reason: auth.reason }, 401)
+
+  // Locate the entry under this pubkey.
+  const list = await env.SCHEDULED_NOTES.list({ prefix: `sched:${pubkey}:` })
+  const target = list.keys.find(k => k.name.endsWith(`:${eventId}`))
+  if (!target) return json({ error: 'not-found' }, 404)
+
+  await env.SCHEDULED_NOTES.delete(target.name)
+  return json({ ok: true, eventId, key: target.name })
 }
 
-/** Convenience: return a JSON response */
+// ─── Cron — publish due events ───────────────────────────────────────────────
+
+async function handleCron(env) {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const nowBucket = bucketFromUnixSec(nowSec)
+  const maxAttempts = parseInt(env.MAX_PUBLISH_ATTEMPTS || '4', 10)
+
+  // List all scheduled keys. For alpha volume this is fine (KV.list
+  // returns up to 1000 keys per page). When we outgrow that we'll move
+  // to a per-bucket secondary index.
+  const { keys } = await env.SCHEDULED_NOTES.list({ prefix: 'sched:' })
+
+  let published = 0
+  let failedFinal = 0
+  let stillPending = 0
+  let skipped = 0
+
+  for (const { name } of keys) {
+    // sched:{pubkey}:{bucket}:{eventId}
+    const parts = name.split(':')
+    if (parts.length !== 4) { skipped++; continue }
+    const bucket = parts[2]
+    if (!bucketIsAtOrBefore(bucket, nowBucket)) { skipped++; continue }   // not yet due
+
+    const raw = await env.SCHEDULED_NOTES.get(name)
+    if (!raw) { skipped++; continue }
+    let parsed
+    try { parsed = JSON.parse(raw) } catch { skipped++; continue }
+
+    if (parsed.status === 'failed') { skipped++; continue }   // already gave up; UI will surface
+
+    const okCount = await publishToRelays(parsed.event, parsed.relays || [])
+
+    if (okCount > 0) {
+      // At least one relay accepted — call it published, drop from KV.
+      await env.SCHEDULED_NOTES.delete(name)
+      published++
+      console.log(`[scheduler] published ${parsed.event.id.slice(0, 12)}… to ${okCount}/${parsed.relays.length} relays`)
+    } else {
+      const attempts = (parsed.attempts || 0) + 1
+      const newStatus = attempts >= maxAttempts ? 'failed' : 'pending'
+      const updated = JSON.stringify({ ...parsed, attempts, status: newStatus })
+      // Preserve the original TTL — KV.put will reset the TTL each time
+      // we write. Compute remaining: (publishedTime + 7d) - now.
+      const eventTime = parsed.event?.created_at || nowSec
+      const expirationTtl = Math.max(60, (eventTime - nowSec) + 7 * 86400)
+      await env.SCHEDULED_NOTES.put(name, updated, { expirationTtl })
+      if (newStatus === 'failed') {
+        failedFinal++
+        console.warn(`[scheduler] giving up on ${parsed.event.id.slice(0, 12)}… after ${attempts} attempts`)
+      } else {
+        stillPending++
+        console.log(`[scheduler] retry ${attempts}/${maxAttempts} for ${parsed.event.id.slice(0, 12)}…`)
+      }
+    }
+  }
+
+  console.log(`[scheduler] tick ${nowBucket}: published=${published} failedFinal=${failedFinal} stillPending=${stillPending} skipped=${skipped}`)
+}
+
+// ─── WS publish (one event → N relays) ───────────────────────────────────────
+// Opens a WS to each relay, sends EVENT, waits for OK with a tight
+// timeout. Returns number of relays that ACKed `true`.
+
+async function publishToRelays(event, relays) {
+  const results = await Promise.all(relays.map(url => publishOne(event, url)))
+  return results.filter(Boolean).length
+}
+
+function publishOne(event, relayUrl) {
+  return new Promise((resolve) => {
+    let ws
+    try {
+      ws = new WebSocket(relayUrl)
+    } catch (e) {
+      console.warn(`[scheduler] WS construct failed for ${relayUrl}: ${e?.message}`)
+      resolve(false)
+      return
+    }
+
+    let settled = false
+    const finish = (ok) => {
+      if (settled) return
+      settled = true
+      try { ws.close() } catch {}
+      resolve(ok)
+    }
+    const timer = setTimeout(() => finish(false), RELAY_OK_TIMEOUT_MS)
+
+    ws.addEventListener('open', () => {
+      try { ws.send(JSON.stringify(['EVENT', event])) }
+      catch (e) {
+        console.warn(`[scheduler] send failed on ${relayUrl}: ${e?.message}`)
+        clearTimeout(timer)
+        finish(false)
+      }
+    })
+
+    ws.addEventListener('message', (m) => {
+      let msg
+      try { msg = JSON.parse(m.data) } catch { return }
+      if (!Array.isArray(msg)) return
+      // Expect ["OK", <eventId>, <bool>, <message>]
+      if (msg[0] === 'OK' && msg[1] === event.id) {
+        const ok = msg[2] === true
+        if (!ok) {
+          console.warn(`[scheduler] ${relayUrl} rejected ${event.id.slice(0, 12)}…: ${msg[3] || ''}`)
+        }
+        clearTimeout(timer)
+        finish(ok)
+      }
+    })
+
+    ws.addEventListener('error', (err) => {
+      console.warn(`[scheduler] WS error on ${relayUrl}: ${err?.message || err?.type || 'unknown'}`)
+      clearTimeout(timer)
+      finish(false)
+    })
+
+    ws.addEventListener('close', () => {
+      // Closed before OK — treat as fail unless we already finished.
+      clearTimeout(timer)
+      finish(false)
+    })
+  })
+}
+
+// ─── JSON response helper ────────────────────────────────────────────────────
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,

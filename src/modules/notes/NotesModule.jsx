@@ -329,6 +329,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={publishAll}
               onMoveDraft={moveDraft}
+              pubkey={sessionUser?.pubkey || ''}
             />
           )}
           {currentDraft && (
@@ -359,6 +360,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onExportAllDrafts={handleExportAllDrafts}
               onPublishAll={publishAll}
               onMoveDraft={moveDraft}
+              pubkey={sessionUser?.pubkey || ''}
             />
           )}
         </div>

@@ -11,7 +11,13 @@
  * "+ New" seeds an empty draft and focuses it. "Publish all" opens a
  * confirmation modal before iterating through every draft with text.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  isSchedulerConfigured,
+  listScheduled,
+  cancelScheduled,
+  readLocalScheduled,
+} from '../../../lib/scheduler.js'
 
 function previewText(content) {
   const trimmed = (content || '').trim()
@@ -170,10 +176,61 @@ export default function DraftsTray({
   onExportAllDrafts,
   onPublishAll,
   onMoveDraft,
+  pubkey = '',
   isMobileOpen = false,
   onMobileClose,
   isMobile = false,
 }) {
+  // ── Scheduled section ────────────────────────────────────────────────
+  // Worker is the source of truth; localStorage is just a fast-path
+  // mirror so the section renders before the network round-trip.
+  const schedulerEnabled = isSchedulerConfigured()
+  const [scheduled, setScheduled] = useState(() => pubkey ? readLocalScheduled(pubkey) : [])
+  const [scheduleSyncing, setScheduleSyncing] = useState(false)
+  const [cancellingId, setCancellingId] = useState('')
+
+  const refreshScheduled = useCallback(async () => {
+    if (!schedulerEnabled || !pubkey) return
+    setScheduleSyncing(true)
+    try {
+      const items = await listScheduled(pubkey)
+      setScheduled(items.map(it => ({
+        eventId: it.eventId,
+        scheduledFor: it.scheduledFor,
+        content: it.contentPreview || it.content || '',
+        status: it.status,
+        attempts: it.attempts,
+      })))
+    } catch {
+      // On failure, fall back to local cache (already in state).
+    } finally {
+      setScheduleSyncing(false)
+    }
+  }, [schedulerEnabled, pubkey])
+
+  // Initial fetch + refresh on tab focus so cross-device cancellations
+  // and publish-after-fire transitions stay in sync.
+  useEffect(() => {
+    refreshScheduled()
+    const onFocus = () => refreshScheduled()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [refreshScheduled])
+
+  async function handleCancelScheduled(eventId) {
+    if (!pubkey || cancellingId) return
+    setCancellingId(eventId)
+    try {
+      await cancelScheduled(eventId, pubkey)
+      setScheduled(s => s.filter(e => e.eventId !== eventId))
+    } catch (e) {
+      // Surface inline so the user knows; no toast system here yet.
+      console.warn('[scheduler] cancel failed:', e?.message || e)
+    } finally {
+      setCancellingId('')
+    }
+  }
+
   const [confirmPublishOpen, setConfirmPublishOpen] = useState(false)
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
   const [importStatus, setImportStatus] = useState(null)
@@ -258,6 +315,30 @@ export default function DraftsTray({
             onMove={(delta) => onMoveDraft?.(d.id, delta)}
           />
         ))}
+
+        {/* Scheduled section — only renders when there are pending or
+            failed scheduled notes for this pubkey. Sits below the
+            drafts so the active workflow stays at the top. */}
+        {schedulerEnabled && scheduled.length > 0 && (
+          <div className="mt-3 pt-2 border-t border-neutral-800 space-y-1">
+            <div className="px-2 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">
+                Scheduled ({scheduled.length})
+              </span>
+              {scheduleSyncing && (
+                <span className="text-[10px] text-neutral-600">syncing…</span>
+              )}
+            </div>
+            {scheduled.map(item => (
+              <ScheduledRow
+                key={item.eventId}
+                item={item}
+                cancelling={cancellingId === item.eventId}
+                onCancel={() => handleCancelScheduled(item.eventId)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="border-t border-neutral-800 p-2 space-y-1.5">
@@ -390,5 +471,44 @@ export default function DraftsTray({
         />
       )}
     </aside>
+  )
+}
+
+
+function ScheduledRow({ item, cancelling, onCancel }) {
+  const when = item.scheduledFor
+    ? new Date(item.scheduledFor * 1000).toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+      })
+    : ""
+  const failed = item.status === "failed"
+  const preview = (item.content || "").trim().split("\n")[0].slice(0, 60) || "(empty)"
+  return (
+    <div
+      className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs border ${
+        failed
+          ? "border-red-900/60 bg-red-950/20"
+          : "border-neutral-800 bg-neutral-900/40"
+      }`}
+    >
+      <span className={failed ? "text-red-400" : "text-blue-400"}>
+        {failed ? "⚠" : "🕐"}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-neutral-300">{preview}</div>
+        <div className="text-[10px] text-neutral-500 leading-tight">
+          {failed ? `failed after ${item.attempts} attempts` : when}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={cancelling}
+        className="shrink-0 text-[10px] text-neutral-500 hover:text-red-300 disabled:opacity-40 transition-colors px-1"
+        title={failed ? "Remove" : "Cancel"}
+      >
+        {cancelling ? "…" : (failed ? "Remove" : "Cancel")}
+      </button>
+    </div>
   )
 }

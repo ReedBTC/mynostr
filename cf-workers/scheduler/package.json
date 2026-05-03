@@ -1,0 +1,11 @@
+{
+  "name": "mynostr-scheduler",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloudflare Worker that publishes pre-signed Nostr events on a 15-minute cron. Sister to the mynostr web app.",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@noble/curves": "^1.6.0"
+  }
+}

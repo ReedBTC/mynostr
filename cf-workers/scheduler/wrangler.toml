@@ -1,19 +1,36 @@
 name = "mynostr-scheduler"
 main = "index.js"
 compatibility_date = "2024-09-23"
+# Workers runtime needs Node-style streams for the @noble/curves bundle.
+compatibility_flags = ["nodejs_compat"]
 
-# Cron trigger — fires every minute to publish due scheduled notes
+# Cron trigger — fires every 15 minutes. Matches the client-side
+# "schedule no sooner than 15 min from now" floor: a note scheduled at
+# 09:00 lands in the 09:00 bucket, picked up by the 09:00 (or 09:15)
+# tick. Free-tier cron is generous; 96/day is trivial.
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/15 * * * *"]
 
-# KV namespace for scheduled notes
-# Run `wrangler kv:namespace create SCHEDULED_NOTES` to provision, then paste the id here
+# KV namespace for scheduled notes.
+# Run `wrangler kv:namespace create SCHEDULED_NOTES` to provision,
+# then paste the id here.
 [[kv_namespaces]]
 binding = "SCHEDULED_NOTES"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "67e82fa6d1c34c07abb9553f8f46e3cb"
 
-# Relay list passed to the worker at runtime
-# Override with `wrangler secret put RELAYS` for production
 [vars]
-RELAYS = '["wss://relay.damus.io","wss://nos.lol","wss://relay.nostr.band","wss://relay.primal.net"]'
+# Comma-separated CORS allowlist. Localhost is always allowed (dev).
 ALLOWED_ORIGINS = "https://mynostr.app"
+
+# Maximum publish attempts before giving up. With a 15-min cron, 4
+# attempts ≈ 1 hour of retries. After the cap, the entry stays in KV
+# with status:'failed' so the UI can surface it for manual retry/delete.
+MAX_PUBLISH_ATTEMPTS = "4"
+
+# Minimum lead time when scheduling, in seconds. Must be ≥ the cron
+# period so a schedule submitted just before a tick can't get missed.
+# Server-side enforcement; client mirrors this.
+MIN_LEAD_SECONDS = "900"
+
+# Maximum schedule horizon, in seconds. 30 days. Abuse cap.
+MAX_FUTURE_SECONDS = "2592000"
