@@ -158,6 +158,18 @@ export default function NoteComposer({
     setReplyToInput(snap.replyToInput)
     setQuoteInput(snap.quoteInput)
     if (snap.zapSplits.length > 0 || snap.userZapPct != null) setShowAdvanced(true)
+    // Same auto-detect logic as the mount effect, but for the in-place
+    // upload path (this composer instance isn't being remounted —
+    // we're mutating its state, so the mount effect can't catch it).
+    if (snap.publishAt && Number.isFinite(snap.publishAt)
+        && snap.publishAt > Math.floor(Date.now() / 1000) + 60) {
+      setScheduleMode(true)
+      const d = new Date(snap.publishAt * 1000)
+      const pad = (n) => String(n).padStart(2, '0')
+      setScheduleAt(
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
+      )
+    }
   }, [user?.pubkey])
 
   // Load event from JSON file
@@ -714,6 +726,25 @@ export default function NoteComposer({
   useEffect(() => {
     if (scheduleMode && !scheduleAt) setScheduleAt(defaultScheduleLocal())
   }, [scheduleMode, scheduleAt, defaultScheduleLocal])
+
+  // Auto-enable Schedule mode when the draft was hydrated from an
+  // imported event whose created_at is in the future (set by
+  // buildDraftSnapshotFromEvent). Runs once per draft mount because
+  // the parent gives this component a `key={draft.id}`. The user can
+  // still un-tick the checkbox afterward; that just falls back to
+  // PUBLISH-now behavior, which signs at the current timestamp.
+  useEffect(() => {
+    const pa = initial.publishAt
+    if (!pa || !Number.isFinite(pa)) return
+    if (pa <= Math.floor(Date.now() / 1000) + 60) return
+    setScheduleMode(true)
+    const d = new Date(pa * 1000)
+    const pad = (n) => String(n).padStart(2, '0')
+    setScheduleAt(
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
 
   // Snapshot emitted upward to the parent hook so it can persist the draft

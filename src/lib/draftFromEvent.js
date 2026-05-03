@@ -31,12 +31,32 @@ const DEFAULT_SNAPSHOT = {
   publishAt: null,
 }
 
+// Future-time threshold: if the imported event's created_at is more
+// than this many seconds ahead of "now", treat it as a scheduled note
+// and surface publishAt so the composer auto-enables Schedule mode.
+// Mirrors the worker's 60s drift tolerance — anything closer than
+// that is treated as a normal "publish now" event.
+const FUTURE_THRESHOLD_SEC = 60
+
 export async function buildDraftSnapshotFromEvent(event, userPubkey) {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const evCreated = Number.isInteger(event?.created_at) ? event.created_at : null
+  const inferredPublishAt = (evCreated != null && evCreated > nowSec + FUTURE_THRESHOLD_SEC)
+    ? evCreated
+    : null
+
   // Sidecar fast path — full UI state restored from the export.
   // Spread over DEFAULT_SNAPSHOT so older exports with a partial
   // sidecar still get sensible defaults for any newly-added fields.
+  // Cross-check publishAt against the event's created_at: if the
+  // sidecar omitted publishAt but the event itself is future-stamped,
+  // promote it. (Sidecar wins when explicitly set.)
   if (event && event._mynostr_form && typeof event._mynostr_form === 'object') {
-    return { ...DEFAULT_SNAPSHOT, ...event._mynostr_form }
+    const merged = { ...DEFAULT_SNAPSHOT, ...event._mynostr_form }
+    if (merged.publishAt == null && inferredPublishAt != null) {
+      merged.publishAt = inferredPublishAt
+    }
+    return merged
   }
 
   const rawContent = event.content || ''
@@ -183,6 +203,6 @@ export async function buildDraftSnapshotFromEvent(event, userPubkey) {
     quoteInput,
     quoteTarget: null,
     relayOverride: { enabled: false, relays: [] },
-    publishAt: null,
+    publishAt: inferredPublishAt,
   }
 }
