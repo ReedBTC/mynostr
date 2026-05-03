@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { publishNote } from './publishNote.js'
+import { clearThreadCache } from './useNoteThread.js'
 
 const LIST_KEY = 'mynostr_notes_drafts_'
 const CURRENT_KEY = 'mynostr_notes_current_draft_'
@@ -186,6 +187,10 @@ export function useNoteDrafts(pubkey) {
     try {
       const result = await publishNote({ content: pub.content, tags: pub.tags, relayOverride })
       updateDraft(id, { status: 'published', publishResult: result, publishError: null })
+      // Invalidate thread cache so re-entering a thread the user just
+      // replied in shows the fresh view (Primal lag would otherwise
+      // serve a stale snapshot from cache for the rest of the session).
+      try { clearThreadCache() } catch {}
       return { ok: true, result }
     } catch (e) {
       updateDraft(id, { status: 'failed', publishError: e?.message || 'Publish failed' })

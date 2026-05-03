@@ -1,19 +1,31 @@
 import { useState, useEffect } from 'react'
 import * as nwc from '../lib/nwc.js'
+import * as webln from '../lib/webln.js'
 
 /**
- * NWC connect modal — paste a connection string, validate it via getBalance,
- * encrypt to the user's Nostr key, persist + activate. Used from the sidebar
- * wallet row and (later) from any zap surface that needs a wallet.
+ * Wallet connect modal — two paths:
+ *   1. WebLN ("Use my browser extension") — one-tap for Alby/Mutiny users.
+ *      Visible iff window.webln is present.
+ *   2. NWC — paste a connection string, validate via getBalance, encrypt
+ *      to the user's Nostr key, persist + activate.
  *
- * If the user is signed out or read-only when this opens, fail fast — wallet
- * encryption requires a signer. The sidebar trigger already gates on this,
- * so the in-modal check is a safety guard.
+ * If the user is signed out or read-only when this opens, the NWC path
+ * fails fast — encryption requires a signer. WebLN doesn't need a
+ * signer (the extension manages its own credentials), so it would work
+ * read-only in principle, but the wallet row that opens this modal is
+ * already gated on `canUseWallet` — keeping consistent gating here.
  */
+function friendlyOrFallback(rawMsg, fallback) {
+  const msg = String(rawMsg || '')
+  const looksFriendly = msg.length > 0 && msg.length < 200 && !/Error:|stack|undefined/i.test(msg)
+  return looksFriendly ? msg : fallback
+}
+
 export default function WalletConnectModal({ user, onClose, onConnected }) {
   const [uri, setUri] = useState('')
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState('')
+  const weblnAvailable = webln.isAvailable()
 
   useEffect(() => {
     function onKey(e) {
@@ -41,8 +53,33 @@ export default function WalletConnectModal({ user, onClose, onConnected }) {
     } catch (e) {
       const safeMsg = nwc.redactNwcSecrets(String(e?.message || e))
       console.warn('[mynostr-nwc] connect failed', safeMsg)
-      const looksFriendly = safeMsg.length > 0 && safeMsg.length < 200 && !/Error:|stack|undefined/i.test(safeMsg)
-      setError(looksFriendly ? safeMsg : 'Couldn\'t connect to your wallet. Check the connection string and that your wallet is online.')
+      setError(friendlyOrFallback(
+        safeMsg,
+        'Couldn\'t connect to your wallet. Check the connection string and that your wallet is online.',
+      ))
+    } finally {
+      setConnecting(false)
+    }
+  }
+
+  async function handleWeblnConnect() {
+    setError('')
+    if (!user?.pubkey) {
+      setError('Sign in first — wallet authorization is scoped to your Nostr identity.')
+      return
+    }
+    setConnecting(true)
+    try {
+      await webln.enable({ pubkey: user.pubkey })
+      onConnected?.()
+      onClose()
+    } catch (e) {
+      const msg = String(e?.message || e)
+      console.warn('[mynostr-webln] enable failed', msg)
+      setError(friendlyOrFallback(
+        msg,
+        'Your browser extension didn\'t connect. Make sure it\'s unlocked and try again.',
+      ))
     } finally {
       setConnecting(false)
     }
@@ -75,11 +112,32 @@ export default function WalletConnectModal({ user, onClose, onConnected }) {
 
           <div className="px-4 py-5 space-y-4">
             <p className="text-xs text-neutral-400 leading-snug">
-              Connecting a Lightning wallet via NWC lets MyNostr send zaps
-              directly through your wallet — no copy-paste invoices. Your
-              connection string is encrypted with your Nostr key before
-              saving, so a malicious browser extension can't steal it.
+              Connect a Lightning wallet so MyNostr can send zaps directly —
+              no copy-paste invoices. Both options below pay through your own
+              wallet; MyNostr never holds funds.
             </p>
+
+            {weblnAvailable && (
+              <>
+                <button
+                  onClick={handleWeblnConnect}
+                  disabled={connecting}
+                  className="w-full py-2.5 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium text-white transition-colors"
+                >
+                  {connecting ? 'Connecting…' : '⚡ Use my browser extension'}
+                </button>
+                <p className="text-[10px] text-neutral-600 leading-snug -mt-2">
+                  Detected a WebLN-compatible extension (Alby, Mutiny, etc.).
+                  One tap to authorize — no string to paste.
+                </p>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <div className="flex-1 h-px bg-neutral-800" />
+                  <span className="text-[10px] text-neutral-600 uppercase tracking-wider">or</span>
+                  <div className="flex-1 h-px bg-neutral-800" />
+                </div>
+              </>
+            )}
 
             <div>
               <label className="block text-xs text-neutral-400 mb-1.5">NWC connection string</label>
@@ -111,9 +169,9 @@ export default function WalletConnectModal({ user, onClose, onConnected }) {
             <button
               onClick={handleConnect}
               disabled={connecting}
-              className="w-full py-2.5 rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium text-white transition-colors"
+              className="w-full py-2.5 rounded bg-neutral-700 hover:bg-neutral-600 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium text-white transition-colors"
             >
-              {connecting ? 'Connecting…' : 'Connect Wallet'}
+              {connecting ? 'Connecting…' : weblnAvailable ? 'Connect via NWC' : 'Connect Wallet'}
             </button>
           </div>
         </div>

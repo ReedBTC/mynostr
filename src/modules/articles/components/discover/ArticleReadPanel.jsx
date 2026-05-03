@@ -11,6 +11,7 @@ import { useMyZapped, useMyZapPending } from '../../../../lib/useMyZapped.js'
 import { useMyLiked } from '../../../../lib/useMyLiked.js'
 import { publishLike } from '../../../../lib/publishLike.js'
 import { extractZapSplits } from '../../../../lib/zapSplits.js'
+import { useCommentCount, formatCommentCount } from '../../../../lib/useCommentCount.js'
 import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
 
@@ -164,6 +165,8 @@ export default function ArticleReadPanel({
   const zapped     = useMyZapped({ eventId: article?.id, addressable: aTag })
   const zapPending = useMyZapPending({ eventId: article?.id, addressable: aTag })
   const liked      = useMyLiked({ eventId: hasRealId ? article.id : null, addressable: aTag })
+  const commentCount      = useCommentCount({ aTag })
+  const commentCountLabel = formatCommentCount(commentCount)
   const rawName = article._authorName
     || profile?.display_name
     || profile?.name
@@ -477,6 +480,20 @@ export default function ArticleReadPanel({
       {/* ── Social action bar ── */}
       <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-neutral-800 flex-shrink-0">
 
+        {/* Comment — navigates to the Notes Write module with this article
+            prefilled into the Reply field. Publishes as a kind 1 threaded by
+            a-tag against the article's naddr coordinate. Count covers both
+            kind 1 (legacy) and kind 1111 (NIP-22) replies on the a-tag. */}
+        <button
+          onClick={() => openInComposer('replyTo')}
+          disabled={!canPublish}
+          title={canPublish ? 'Comment on this article' : 'Sign in to comment'}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 disabled:opacity-40 transition-colors"
+        >
+          <span>💬</span>
+          <span>{commentCountLabel || 'Comment'}</span>
+        </button>
+
         {/* Like */}
         <button
           onClick={handleLike}
@@ -503,18 +520,6 @@ export default function ArticleReadPanel({
           } ${zapPending ? 'animate-pulse' : ''}`}
         >
           ⚡ {zapFetching ? 'Finding…' : zapped ? 'Zapped' : 'Zap'}
-        </button>
-
-        {/* Comment — navigates to the Notes Write module with this article
-            prefilled into the Reply field. Publishes as a kind 1 threaded by
-            a-tag against the article's naddr coordinate. */}
-        <button
-          onClick={() => openInComposer('replyTo')}
-          disabled={!canPublish}
-          title={canPublish ? 'Comment on this article' : 'Sign in to comment'}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 disabled:opacity-40 transition-colors"
-        >
-          💬 Comment
         </button>
 
         {/* Repost */}

@@ -95,12 +95,19 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   // Cross-module Comment / Quote deep-link. Any feed can push
   // `{ composerPrefill: { replyTo?, quote? } }` into router state when
   // navigating here; we open a NEW draft (not replace current) seeded
-  // with the prefill, force the Write tab, and strip the state from
+  // with the prefill, route to the Write tab, and strip the state from
   // history so back/forward doesn't replay the prefill.
+  //
+  // Single navigate is load-bearing: an earlier two-call dance
+  // (setModuleTab + a follow-up pathname/state-clear) raced against
+  // itself — the second `replace` stomped the path change, dropping the
+  // user back at /notes with the draft silently created but no visible
+  // tab switch. One navigate that does both at once avoids the race.
   useEffect(() => {
     const pending = location.state?.composerPrefill
     if (!pending) return
     if (!isOwner) return
+    if (!npub) return
     const { replyTo, quote } = pending
     createDraft({
       snapshot: {
@@ -108,9 +115,8 @@ export default function NotesModule({ user, sessionUser, subtab }) {
         ...(quote && { quoteInput: quote }),
       },
     })
-    setModuleTab('write')
-    navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, isOwner, createDraft, navigate, setModuleTab])
+    navigate(`/${npub}/notes/write`, { replace: true, state: null })
+  }, [location.state, isOwner, npub, createDraft, navigate])
 
   // Multi-JSON import — each file becomes a new draft. Size-capped per file
   // to match the single-file import path. Returns a summary so the tray can

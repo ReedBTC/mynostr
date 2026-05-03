@@ -2,10 +2,12 @@
  * Sequential NIP-57 zap-split orchestrator.
  *
  * Given a target event with zap-split tags, pay each recipient's share
- * via NWC. Each leg: resolve lud16 from the recipient's kind 0 → build +
- * sign a NIP-57 zap-request (kind 9734) targeting THAT recipient's
- * pubkey but referencing the original event → fetch a bolt11 from the
- * recipient's LNURL with the signed zap-request attached → pay via NWC.
+ * via the user's connected wallet (NWC or WebLN — NWC takes precedence
+ * when both are present). Each leg: resolve lud16 from the recipient's
+ * kind 0 → build + sign a NIP-57 zap-request (kind 9734) targeting THAT
+ * recipient's pubkey but referencing the original event → fetch a
+ * bolt11 from the recipient's LNURL with the signed zap-request
+ * attached → pay via the active wallet adapter.
  *
  * Why sequential payInvoice (not parallel): NWC's reply-event subscription
  * gets noisy when multiple payInvoice round-trips are in flight (validated
@@ -35,6 +37,18 @@ import { getNDK, FALLBACK_RELAYS, signWithTimeout } from './ndk.js'
 import { fetchProfiles } from './primal.js'
 import { fetchLnurlMeta, fetchLnurlInvoice } from './lnurl.js'
 import * as nwc from './nwc.js'
+import * as webln from './webln.js'
+
+// NWC takes precedence when both are connected (NWC = explicit; WebLN
+// can re-enable silently from the persisted flag). Mirrors ZapModal.
+function payInvoiceViaActiveWallet(bolt11) {
+  if (nwc.isReady())   return nwc.payInvoice(bolt11)
+  if (webln.isReady()) return webln.payInvoice(bolt11)
+  return Promise.reject(new Error('No wallet connected'))
+}
+function anyWalletReady() {
+  return nwc.isReady() || webln.isReady()
+}
 
 async function buildSignedZapRequest({
   recipientPubkey, targetEvent, aTag, targetKind, amountMsats, comment,
@@ -77,15 +91,15 @@ export async function payZapSplits({
     // legs without a cached profile.
   }
 
-  // Caller should have checked nwc.isReady() before calling, but
+  // Caller should have checked anyWalletReady() before calling, but
   // short-circuit cleanly if not.
-  if (!nwc.isReady()) {
+  if (!anyWalletReady()) {
     return {
       legs: allocations.map(a => ({
         recipient: { ...a, lud16: null },
         msats: a.msats,
         status: 'failed',
-        error: 'NWC not connected',
+        error: 'No wallet connected',
       })),
       anySucceeded: false,
       allSucceeded: false,
@@ -128,7 +142,7 @@ export async function payZapSplits({
             })
           }
           const { pr } = await fetchLnurlInvoice(meta.callback, a.msats, comment, zapRequestJson)
-          await nwc.payInvoice(pr)
+          await payInvoiceViaActiveWallet(pr)
           legResult = { recipient, msats: a.msats, status: 'paid' }
         }
       } catch (e) {

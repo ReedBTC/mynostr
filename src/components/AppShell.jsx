@@ -7,12 +7,24 @@ import { useIsMobile } from '../hooks/useIsMobile.js'
 import { useOwnerContext } from '../lib/ownerContext.jsx'
 import { useLoginModal } from './LoginModalContext.jsx'
 import BoostModal from './BoostModal.jsx'
+import BugReportModal from './BugReportModal.jsx'
 import HelpModal from '../modules/articles/components/HelpModal.jsx'
 import MobileNavDrawer from './MobileNavDrawer.jsx'
 import ShareButton from './ShareButton.jsx'
 import WalletConnectModal from './WalletConnectModal.jsx'
 import { useWalletStatus } from '../lib/useWalletStatus.js'
 import * as nwc from '../lib/nwc.js'
+import * as webln from '../lib/webln.js'
+
+// Dispatch disconnect to whichever adapter is currently active.
+// `pubkey` is the currently-signed-in user — webln scopes its persisted
+// "previously authorized" flag per-pubkey, so disconnect needs to know
+// whose flag to clear. Both calls are safe no-ops if their adapter
+// isn't connected.
+function disconnectActiveWallet(pubkey) {
+  if (nwc.isReady())   nwc.disconnect()
+  if (webln.isReady()) webln.disconnect({ pubkey })
+}
 
 /**
  * AppShell — persistent layout wrapping every module.
@@ -35,6 +47,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
   const [helpOpen,  setHelpOpen]    = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [walletOpen, setWalletOpen] = useState(false)
+  const [bugOpen,    setBugOpen]    = useState(false)
   const walletStatus = useWalletStatus()
   // Hide the wallet row entirely for logged-out and read-only sessions —
   // NWC encryption needs a signer, and a connect attempt would just error.
@@ -83,6 +96,17 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               aria-label="Boost MyNostr"
             >
               Boost MyNostr
+            </button>
+            <button
+              onClick={() => {
+                if (sessionUser?.pubkey && !sessionUser.readOnly) setBugOpen(true)
+                else openLogin()
+              }}
+              className="text-xs text-green-500 hover:text-green-300 transition-colors px-2 py-1.5 rounded border border-green-900 hover:border-green-700 inline-flex items-center justify-center gap-1.5"
+              aria-label="Report a bug"
+            >
+              <span aria-hidden>🐛</span>
+              <span>Report a Bug</span>
             </button>
           </div>
 
@@ -170,7 +194,6 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               <SidebarWalletRow
                 status={walletStatus}
                 onConnect={() => setWalletOpen(true)}
-                onDisconnect={() => nwc.disconnect()}
               />
             )}
             <div className="flex items-center gap-2 flex-wrap">
@@ -187,7 +210,17 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 >
                   Logout
                 </button>
-              ) : (
+              ) : null}
+              {canUseWallet && walletStatus?.connected && (
+                <button
+                  onClick={() => disconnectActiveWallet(sessionUser?.pubkey)}
+                  className="text-xs text-neutral-600 hover:text-red-300 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-red-900"
+                  aria-label="Disconnect wallet"
+                >
+                  Disconnect Wallet
+                </button>
+              )}
+              {!sessionUser && (
                 <button
                   onClick={handleLoginClick}
                   className="text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-1 rounded border border-purple-900 hover:border-purple-700"
@@ -268,6 +301,10 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           activeModule={activeModule}
           onModuleChange={onModuleChange}
           onBoost={() => setBoostOpen(true)}
+          onReportBug={() => {
+            if (sessionUser?.pubkey && !sessionUser.readOnly) setBugOpen(true)
+            else openLogin()
+          }}
           onHelp={() => setHelpOpen(true)}
           onLogout={onLogout}
           onLogin={handleLoginClick}
@@ -275,7 +312,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           walletStatus={walletStatus}
           canUseWallet={canUseWallet}
           onConnectWallet={() => setWalletOpen(true)}
-          onDisconnectWallet={() => nwc.disconnect()}
+          onDisconnectWallet={() => disconnectActiveWallet(sessionUser?.pubkey)}
         />
       )}
 
@@ -289,32 +326,24 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
           onClose={() => setWalletOpen(false)}
         />
       )}
+      {bugOpen && <BugReportModal user={sessionUser} onClose={() => setBugOpen(false)} />}
     </div>
   )
 }
 
 /**
  * Compact wallet row for the desktop sidebar foot. Two states:
- *   - connected: green dot + alias (or "Connected"), small Disconnect link
+ *   - connected: green dot + protocol label + alias (or "Connected").
+ *     Disconnect lives next to Logout in the row below.
  *   - not connected: full-width "Connect Wallet" button (purple, matches login)
  */
-function SidebarWalletRow({ status, onConnect, onDisconnect }) {
+function SidebarWalletRow({ status, onConnect }) {
   if (status?.connected) {
     return (
-      <div className="flex items-center gap-2 text-[11px]">
-        <span className="inline-flex items-center gap-1.5 min-w-0 flex-1 text-neutral-300">
-          <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
-          <span className="text-neutral-500 shrink-0">NWC:</span>
-          <span className="truncate">{status.alias || 'Connected'}</span>
-        </span>
-        <button
-          type="button"
-          onClick={onDisconnect}
-          className="text-neutral-600 hover:text-red-300 transition-colors shrink-0"
-          aria-label="Disconnect wallet"
-        >
-          Disconnect
-        </button>
+      <div className="flex items-center gap-1.5 text-[11px] text-neutral-300">
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
+        <span className="text-neutral-500 shrink-0">{status.kind === 'webln' ? 'WebLN:' : 'NWC:'}</span>
+        <span className="truncate">{status.alias || 'Connected'}</span>
       </div>
     )
   }

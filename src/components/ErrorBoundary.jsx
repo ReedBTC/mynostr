@@ -33,6 +33,21 @@ export default class ErrorBoundary extends Component {
     this.setState({ error: null, info: null })
   }
 
+  // Go back one step in browser history. React Router intercepts the
+  // popstate, so this preserves SPA navigation when there's in-app
+  // history — e.g. coming back to a calendar from a broken event view.
+  // For users who deep-linked into the broken page (no in-app history),
+  // history.length is 1 and `back()` is a no-op; fall back to the home
+  // route so they're not stuck staring at the error card.
+  goBack = () => {
+    if (typeof window === 'undefined') return
+    if (window.history.length > 1) {
+      window.history.back()
+    } else {
+      window.location.href = '/'
+    }
+  }
+
   render() {
     if (!this.state.error) return this.props.children
     const { error, info } = this.state
@@ -55,7 +70,14 @@ export default class ErrorBoundary extends Component {
               </pre>
             </details>
           )}
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={this.goBack}
+              className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+            >
+              ← Back
+            </button>
             <button
               type="button"
               onClick={this.reset}

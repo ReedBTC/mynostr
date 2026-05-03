@@ -39,6 +39,7 @@ import ZapModal from '../../../components/ZapModal.jsx'
 import { useMyZapped, useMyZapPending } from '../../../lib/useMyZapped.js'
 import { useMyLiked } from '../../../lib/useMyLiked.js'
 import { publishLike } from '../../../lib/publishLike.js'
+import { useCommentCount, formatCommentCount } from '../../../lib/useCommentCount.js'
 
 export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
   const navigate = useNavigate()
@@ -189,6 +190,19 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
     [parsed?.pubkey],
   )
 
+  // Hooks must run unconditionally on every render — hoisted above the
+  // loading / notFound early returns to satisfy the rules of hooks. The
+  // values themselves are safe to read while parsed is null because each
+  // hook tolerates an empty addressable / undefined eventId.
+  const eventATag = parsed ? `${parsed.kind}:${parsed.pubkey}:${parsed.dTag}` : ''
+  const zapped     = useMyZapped({ eventId: parsed?.id, addressable: eventATag })
+  const zapPending = useMyZapPending({ eventId: parsed?.id, addressable: eventATag })
+  const liked      = useMyLiked({ eventId: parsed?.id, addressable: eventATag })
+  const [liking, setLiking] = useState(false)
+  const commentCount      = useCommentCount({ aTag: eventATag || null })
+  const commentCountLabel = formatCommentCount(commentCount)
+  const commentsRef = useRef(null)
+
   if (loading) {
     return (
       <div className="px-3 sm:px-6 py-4 sm:py-6 max-w-3xl mx-auto">
@@ -217,11 +231,6 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
 
   const hostDisplay = hostProfile?.display_name || hostProfile?.displayName || hostProfile?.name || ''
   const hostLud16 = hostProfile?.lud16 || ''
-  const eventATag = parsed ? `${parsed.kind}:${parsed.pubkey}:${parsed.dTag}` : ''
-  const zapped     = useMyZapped({ eventId: parsed?.id, addressable: eventATag })
-  const zapPending = useMyZapPending({ eventId: parsed?.id, addressable: eventATag })
-  const liked     = useMyLiked({ eventId: parsed?.id, addressable: eventATag })
-  const [liking, setLiking] = useState(false)
   const canLike   = !isOwner && !!sessionUser?.pubkey && !sessionUser.readOnly && !!parsed?.id
   async function handleLike() {
     if (!canLike || liking) return
@@ -326,6 +335,18 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
             currentStatus={myStatus}
             onStatusChange={handleRsvpStatusChange}
           />
+          {/* Comment — scrolls to the inline thread below. Count covers
+              both kind 1 (legacy) and kind 1111 (NIP-22) replies on the
+              event's a-tag, matching what CommentsThread renders. */}
+          <button
+            type="button"
+            onClick={() => commentsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            title="Jump to comments"
+            className="text-xs px-3 py-1.5 rounded-md border border-neutral-700 text-neutral-300 bg-neutral-900 hover:border-neutral-500 hover:text-neutral-100 transition-colors inline-flex items-center gap-1.5"
+          >
+            <span aria-hidden>💬</span>
+            <span>{commentCountLabel || 'Comment'}</span>
+          </button>
           {canLike && (
             <button
               type="button"
@@ -382,7 +403,9 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
         </div>
       )}
 
-      <CommentsThread parsed={parsed} sessionUser={sessionUser} />
+      <div ref={commentsRef} className="scroll-mt-4">
+        <CommentsThread parsed={parsed} sessionUser={sessionUser} />
+      </div>
 
       {zapOpen && hostLud16 && (
         <ZapModal

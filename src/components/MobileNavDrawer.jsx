@@ -15,6 +15,7 @@ export default function MobileNavDrawer({
   activeModule,
   onModuleChange,
   onBoost,
+  onReportBug,
   onHelp,
   onLogout,
   onLogin,
@@ -183,7 +184,7 @@ export default function MobileNavDrawer({
             walletStatus?.connected ? (
               <div className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-neutral-300">
                 <span className="inline-block w-2 h-2 rounded-full bg-green-500 shrink-0" aria-hidden="true" />
-                <span className="text-neutral-500 shrink-0">NWC:</span>
+                <span className="text-neutral-500 shrink-0">{walletStatus.kind === 'webln' ? 'WebLN:' : 'NWC:'}</span>
                 <span className="truncate flex-1">{walletStatus.alias || 'Connected'}</span>
                 <button
                   onClick={() => { onDisconnectWallet?.(); }}
@@ -209,6 +210,13 @@ export default function MobileNavDrawer({
           >
             <span>⚡</span>
             <span>Boost MyNostr</span>
+          </button>
+          <button
+            onClick={() => { onReportBug?.(); onClose() }}
+            className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-green-500 hover:bg-neutral-900 rounded transition-colors"
+          >
+            <span>🐛</span>
+            <span>Report a Bug</span>
           </button>
           {showHelp && (
             <button

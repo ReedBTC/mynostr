@@ -21,6 +21,7 @@ import {
 import { connectAndWait, getNDK, resetNDK } from './lib/ndk.js'
 import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
 import * as nwc from './lib/nwc.js'
+import * as webln from './lib/webln.js'
 import { loadMyZaps, resetMyZaps } from './lib/myZapStore.js'
 import { loadMyLikes, resetMyLikes } from './lib/myReactionStore.js'
 
@@ -113,6 +114,13 @@ export default function App() {
     return () => { cancelled = true }
   }, [sessionUser?.pubkey, sessionUser?.readOnly])
 
+  // No silent WebLN re-enable on mount: if the user revoked the
+  // per-domain permission in their extension settings, calling enable()
+  // would surprise-prompt them out of context. Pair that with the
+  // per-pubkey scoping in webln.js: a stale flag from a previous user
+  // must NOT auto-authorize WebLN on the current session. Reconnect is
+  // explicit via the wallet modal.
+
   // Load the user's outgoing zap history so zap buttons across feeds /
   // articles / marketplace / events render with the "already zapped"
   // styling. Read-only sessions count too — npub-only browsing still
@@ -140,6 +148,7 @@ export default function App() {
     // as the same npub will unlock it again. resetNDK() detaches the signer
     // so the client wouldn't be usable past this point regardless.
     nwc.lockOnLogout()
+    webln.lockOnLogout()
     resetMyZaps()
     resetMyLikes()
     resetNDK()

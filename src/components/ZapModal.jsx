@@ -3,6 +3,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, FALLBACK_RELAYS, signWithTimeout } from '../lib/ndk.js'
 import * as nwc from '../lib/nwc.js'
+import * as webln from '../lib/webln.js'
 import { useWalletStatus } from '../lib/useWalletStatus.js'
 import { markZapped, unmarkZapped, markZapPending, clearZapPending } from '../lib/myZapStore.js'
 import { allocateMsats } from '../lib/zapSplits.js'
@@ -10,6 +11,20 @@ import { payZapSplits } from '../lib/payZapSplits.js'
 import { fetchLnurlMeta, fetchLnurlInvoice } from '../lib/lnurl.js'
 
 const PRESETS = [21, 100, 500, 1000, 5000, 10000]
+// Catch fat-finger paste accidents before any LNURL/NWC round-trip.
+// LNURL minSendable/maxSendable still apply on top of this.
+const MAX_SATS = 5_000_000
+
+// NWC takes precedence when both are connected (NWC is the explicit
+// connect path; WebLN can re-enable silently from the persisted flag).
+function payInvoiceViaActiveWallet(bolt11) {
+  if (nwc.isReady())   return nwc.payInvoice(bolt11)
+  if (webln.isReady()) return webln.payInvoice(bolt11)
+  return Promise.reject(new Error('No wallet connected'))
+}
+function anyWalletReady() {
+  return nwc.isReady() || webln.isReady()
+}
 
 // ── Build and sign NIP-57 zap request (kind 9734) ───────────────────────────
 
@@ -120,18 +135,21 @@ export default function ZapModal({
 
   async function handleGetInvoice() {
     if (!amount || amount <= 0) return
+    if (amount > MAX_SATS) {
+      setError(`Maximum amount: ${MAX_SATS.toLocaleString()} sats`)
+      return
+    }
     setLoading(true)
     setError('')
 
-    // Splits + NWC: the orchestrator runs the whole multi-leg pipeline
-    // (resolve each lud16, sign per-leg zap-requests, fetch invoices,
-    // pay sequentially). Same close-immediately + optimistic mark UX as
-    // a single-recipient NWC zap — the button glows + pulses on the
-    // *target* event's button until every leg has settled. We don't try
-    // to track per-leg state in the UI; partial failures are silent
-    // (best-effort), matching the LB pattern. A total bust (every leg
-    // fails) reverts the optimistic mark.
-    if (hasSplits && nwc.isReady()) {
+    // Splits + connected wallet: the orchestrator runs the whole multi-leg
+    // pipeline (resolve each lud16, sign per-leg zap-requests, fetch
+    // invoices, pay sequentially). Same close-immediately + optimistic
+    // mark UX as a single-recipient zap — the button glows + pulses on
+    // the *target* event's button until every leg has settled. Per-leg
+    // failures are silent (best-effort). A total bust (every leg fails)
+    // reverts the optimistic mark.
+    if (hasSplits && anyWalletReady()) {
       const target = {
         eventId:     effectiveTargetEvent?.id || null,
         addressable: aTag || null,
@@ -200,13 +218,14 @@ export default function ZapModal({
       const { pr } = await fetchLnurlInvoice(info.callback, msats, comment.trim(), zapRequestJson)
       setInvoice(pr)
 
-      // NWC connected — close the modal immediately, optimistically mark
-      // the target zapped (button glows), flip pendingZap (button pulses),
-      // and run payInvoice in the background. When the preimage lands the
-      // pulse stops and the lit-up state stays. If payment fails we revert
-      // the optimistic mark — the user sees the button un-zap itself,
-      // matching the "no half-promised UI" rule we use for likes.
-      if (nwc.isReady()) {
+      // Wallet connected (NWC or WebLN) — close the modal immediately,
+      // optimistically mark the target zapped (button glows), flip
+      // pendingZap (button pulses), and run payInvoice in the background.
+      // When the preimage lands the pulse stops and the lit-up state
+      // stays. If payment fails we revert the optimistic mark — the user
+      // sees the button un-zap itself, matching the "no half-promised
+      // UI" rule we use for likes.
+      if (anyWalletReady()) {
         const target = {
           eventId:     effectiveTargetEvent?.id || null,
           addressable: aTag || null,
@@ -217,13 +236,13 @@ export default function ZapModal({
         onClose()
         ;(async () => {
           const t0 = Date.now()
-          console.info('[mynostr-nwc] zap payInvoice: sending request (background)')
+          console.info('[mynostr-zap] payInvoice: sending request (background)')
           try {
-            await nwc.payInvoice(pr)
-            console.info(`[mynostr-nwc] zap payInvoice: settled in ${Date.now() - t0}ms`)
+            await payInvoiceViaActiveWallet(pr)
+            console.info(`[mynostr-zap] payInvoice: settled in ${Date.now() - t0}ms`)
           } catch (e) {
             const msg = String(e?.message || e)
-            console.warn(`[mynostr-nwc] zap payInvoice failed after ${Date.now() - t0}ms:`, msg)
+            console.warn(`[mynostr-zap] payInvoice failed after ${Date.now() - t0}ms:`, msg)
             unmarkZapped(target)
           } finally {
             clearZapPending(target)
@@ -240,18 +259,14 @@ export default function ZapModal({
     }
   }
 
-  async function handleOpenWallet() {
-    // Try WebLN first (Alby, etc.) — instant pay + confirmation
-    if (window.webln) {
-      try {
-        await window.webln.enable()
-        await window.webln.sendPayment(invoice)
-        recordZapSuccess()
-        return
-      } catch {
-        // User cancelled or WebLN failed — fall through to lightning: URI
-      }
-    }
+  function handleOpenWallet() {
+    // Hand off to the OS / browser's `lightning:` handler. We deliberately
+    // don't probe window.webln here: a user who has WebLN would have
+    // connected it via the wallet modal and we'd never have reached the
+    // QR step. A user who reaches this step (no wallet connected and
+    // wants to pay externally) deserves their `lightning:` handler — not
+    // a silent extension prompt that conflicts with their phone-scan
+    // intent.
     window.open(`lightning:${invoice}`, '_blank')
   }
 
@@ -300,24 +315,37 @@ export default function ZapModal({
                 <input
                   type="number"
                   value={amount}
-                  onChange={e => setAmount(Math.max(1, Number(e.target.value) || 0))}
+                  onChange={e => setAmount(Math.min(MAX_SATS, Math.max(1, Number(e.target.value) || 0)))}
                   min={1}
+                  max={MAX_SATS}
                   className="w-full bg-neutral-800 border border-neutral-700 rounded px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:border-amber-600 placeholder-neutral-600"
                   placeholder="Custom amount in sats"
                 />
               </div>
 
-              {/* Comment */}
+              {/* Comment — auto-resizes up to ~6 rows. LNURL servers cap
+                  via commentAllowed; we keep a generous client-side max
+                  so a long note isn't silently truncated mid-edit. */}
               <div>
                 <label className="block text-xs text-neutral-500 mb-2">Note (optional)</label>
-                <input
-                  type="text"
+                <textarea
                   value={comment}
                   onChange={e => setComment(e.target.value)}
-                  maxLength={144}
-                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:border-neutral-600 placeholder-neutral-600"
+                  maxLength={500}
+                  rows={1}
+                  ref={(el) => {
+                    if (!el) return
+                    el.style.height = 'auto'
+                    el.style.height = `${Math.min(el.scrollHeight, 144)}px`
+                  }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleGetInvoice()
+                    }
+                  }}
+                  className="w-full bg-neutral-800 border border-neutral-700 rounded px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:border-neutral-600 placeholder-neutral-600 resize-none overflow-y-auto"
                   placeholder="Great article!"
-                  onKeyDown={e => e.key === 'Enter' && handleGetInvoice()}
                 />
               </div>
 

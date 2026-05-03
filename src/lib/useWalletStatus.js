@@ -1,15 +1,30 @@
 import { useEffect, useState } from 'react'
 import * as nwc from './nwc.js'
+import * as webln from './webln.js'
 
 /**
- * Subscribe to NWC connect/disconnect events and return the current status.
- * Returns the same shape as nwc.getStatus() — see nwc.js for shapes.
+ * Subscribe to NWC + WebLN connect/disconnect events and return the
+ * active wallet's status. NWC takes precedence when both are connected
+ * (it's the explicit/intentional connect path; WebLN can re-enable
+ * silently from the persisted flag).
  *
- * Re-renders the consuming component on every status change so the wallet
- * dot / alias / Connect button stays in sync without polling.
+ * Status shape: { connected, alias?, kind?: 'nwc' | 'webln' }
  */
+function compute() {
+  const n = nwc.getStatus()
+  if (n.connected) return { ...n, kind: 'nwc' }
+  const w = webln.getStatus()
+  if (w.connected) return { connected: true, alias: w.alias, kind: 'webln' }
+  return { connected: false }
+}
+
 export function useWalletStatus() {
-  const [status, setStatus] = useState(() => nwc.getStatus())
-  useEffect(() => nwc.onChange(setStatus), [])
+  const [status, setStatus] = useState(compute)
+  useEffect(() => {
+    const update = () => setStatus(compute())
+    const offN = nwc.onChange(update)
+    const offW = webln.onChange(update)
+    return () => { offN(); offW() }
+  }, [])
   return status
 }

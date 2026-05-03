@@ -100,31 +100,52 @@ export function useNoteThread(focus) {
 
     ;(async () => {
       try {
-        // Primary: Primal thread_view — one call, pre-indexed.
-        const primal = await fetchThread(rootId)
-        let notes    = [...primal.notes]
+        // Primary: Primal thread_view (pre-indexed, one call) AND NDK
+        // descendants (catches replies Primal hasn't indexed yet — e.g. a
+        // reply the user just published seconds ago) in parallel. Merge
+        // results so neither side's blind spot loses notes.
+        //
+        // Primal is fast but can lag behind brand-new replies; NDK pool
+        // queries broader relays but is slower and lossy. Together they
+        // cover both axes.
+        const ndk = getNDK()
+        const ndkConnect = connectAndWait(ndk, 3000).catch(() => {})
+        const [primal, descSet] = await Promise.all([
+          fetchThread(rootId).catch(() => ({ notes: [], profiles: new Map() })),
+          (async () => {
+            await ndkConnect
+            return withTimeout(
+              ndk.fetchEvents({ kinds: [1], '#e': [rootId] }),
+              4000,
+            ).catch(() => new Set())
+          })(),
+        ])
+
+        const byId = new Map()
+        for (const n of primal.notes) if (n?.id) byId.set(n.id, n)
+        for (const ev of descSet) if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev)
         let profiles = new Map(primal.profiles)
 
-        // The fetched set must at least contain the focus note; if Primal
-        // didn't cough up anything useful, fall back to NDK.
-        const seedMissing = !notes.some(n => n.id === focus.id)
-        if (seedMissing || notes.length === 0) {
+        // If neither Primal nor the NDK #e query gave us the root or focus,
+        // last-resort fetch by ids. Keeps the "deep-link to a focus we've
+        // never seen" case working.
+        const needRoot  = !byId.has(rootId)
+        const needFocus = !byId.has(focus.id)
+        if (needRoot || needFocus) {
           try {
-            const ndk = getNDK()
-            await connectAndWait(ndk, 3000).catch(() => {})
-            // Root + any descendants indexed via #e.
-            const [rootSet, descSet] = await Promise.all([
-              withTimeout(ndk.fetchEvents({ ids: [rootId] }),                    4000).catch(() => new Set()),
-              withTimeout(ndk.fetchEvents({ kinds: [1], '#e': [rootId] }),      4000).catch(() => new Set()),
-            ])
-            const byId = new Map(notes.map(n => [n.id, n]))
-            for (const ev of rootSet) if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev)
-            for (const ev of descSet) if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev)
-            // Always include the focus itself — it's definitely kind 1.
-            if (!byId.has(focus.id)) byId.set(focus.id, focus)
-            notes = Array.from(byId.values())
+            await ndkConnect
+            const ids = []
+            if (needRoot)  ids.push(rootId)
+            if (needFocus && focus.id !== rootId) ids.push(focus.id)
+            if (ids.length) {
+              const set = await withTimeout(ndk.fetchEvents({ ids }), 4000).catch(() => new Set())
+              for (const ev of set) if (ev?.id && !byId.has(ev.id)) byId.set(ev.id, ev)
+            }
           } catch {}
         }
+        // Always include the focus itself — it's definitely kind 1.
+        if (!byId.has(focus.id)) byId.set(focus.id, focus)
+        let notes = Array.from(byId.values())
 
         // Dedup and ensure focus is in the set (it might have been the
         // seed from a feed that Primal's thread_view missed).
@@ -171,3 +192,14 @@ export function useNoteThread(focus) {
 // Ancestor walker that can also be called standalone if a caller needs
 // just the chain (e.g., for scroll-to-focus logic). Exposed for tests.
 export { walkAncestors, buildChildrenMap }
+
+/**
+ * Clear the session thread cache. Called from the publish path so a
+ * just-published reply shows up the next time the user opens the
+ * thread it's part of, instead of returning the stale pre-publish view.
+ * Coarse — clears every thread — but cheap (next visit re-fetches) and
+ * avoids needing to know which rootId the published note belongs to.
+ */
+export function clearThreadCache() {
+  threadCache.clear()
+}

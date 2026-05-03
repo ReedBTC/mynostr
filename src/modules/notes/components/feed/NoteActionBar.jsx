@@ -32,6 +32,7 @@ import { useMyZapped, useMyZapPending } from '../../../../lib/useMyZapped.js'
 import { useMyLiked } from '../../../../lib/useMyLiked.js'
 import { publishLike } from '../../../../lib/publishLike.js'
 import { extractZapSplits } from '../../../../lib/zapSplits.js'
+import { useCommentCount, formatCommentCount } from '../../../../lib/useCommentCount.js'
 
 export default function NoteActionBar({ note, profile }) {
   const isMobile = useIsMobile()
@@ -71,6 +72,10 @@ export default function NoteActionBar({ note, profile }) {
   // refreshed in localStorage for instant cold-load styling.
   const liked = useMyLiked({ eventId: note?.id })
   const [liking, setLiking] = useState(false)
+
+  // ── Comment count ──
+  const commentCount = useCommentCount({ eventId: note?.id })
+  const commentCountLabel = formatCommentCount(commentCount)
 
   // ── Zap ──
   const [zapOpen, setZapOpen] = useState(false)
@@ -282,6 +287,20 @@ export default function NoteActionBar({ note, profile }) {
       )}
 
       <div className="flex items-center gap-1.5 mt-3 pt-2 border-t border-neutral-800">
+        {/* Comment — navigates to the Write module with this note prefilled
+            into the Reply field so the author can write a kind 1 reply.
+            Count is fetched once per note id (cached) and shows the number
+            of replies that already exist. */}
+        <button
+          onClick={() => openInComposer('replyTo')}
+          disabled={!canPublish}
+          title={canPublish ? 'Comment on this note' : 'Sign in to comment'}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 disabled:opacity-40 transition-colors"
+        >
+          <span>💬</span>
+          <span>{commentCountLabel || 'Comment'}</span>
+        </button>
+
         {/* Like */}
         <button
           onClick={handleLike}
@@ -308,17 +327,6 @@ export default function NoteActionBar({ note, profile }) {
           } ${zapPending ? 'animate-pulse' : ''}`}
         >
           ⚡ {zapFetching ? 'Finding…' : zapped ? 'Zapped' : 'Zap'}
-        </button>
-
-        {/* Comment — navigates to the Write module with this note prefilled
-            into the Reply field so the author can write a kind 1 reply. */}
-        <button
-          onClick={() => openInComposer('replyTo')}
-          disabled={!canPublish}
-          title={canPublish ? 'Comment on this note' : 'Sign in to comment'}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 disabled:opacity-40 transition-colors"
-        >
-          💬 Comment
         </button>
 
         {/* Repost */}
