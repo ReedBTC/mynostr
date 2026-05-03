@@ -29,6 +29,11 @@ import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import { useNoteDrafts } from '../../lib/useNoteDrafts.js'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { buildDraftSnapshotFromEvent } from '../../lib/draftFromEvent.js'
+import {
+  cancelScheduled as workerCancelScheduled,
+  getScheduledEntryLocal,
+  MIN_LEAD_SECONDS,
+} from '../../lib/scheduler.js'
 import { validateKind1Event } from '../../lib/noteParser.js'
 
 export default function NotesModule({ user, sessionUser, subtab }) {
@@ -91,6 +96,93 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   } = useNoteDrafts(isOwner ? sessionUser?.pubkey : null)
 
   const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
+
+  // Scheduled-item selection — mutually exclusive with a draft selection.
+  // When a user clicks a scheduled row, the editor swaps to a locked
+  // view of that item. Clicking any draft row clears the scheduled
+  // selection (and vice versa).
+  const [currentScheduledId, setCurrentScheduledId] = useState(null)
+  const [scheduledDraftView, setScheduledDraftView] = useState(null)
+  // ^ synthetic draft (id, snapshot) built from the scheduled event
+  // when one is selected. Carried in state so a localStorage refresh
+  // mid-view doesn't yank the editor's contents.
+
+  const handleSelectScheduled = useCallback(async (eventId) => {
+    if (!sessionUser?.pubkey) return
+    const entry = getScheduledEntryLocal(sessionUser.pubkey, eventId)
+    if (!entry?.event) {
+      // Cache miss — caller should have refreshed the list first.
+      // Bail silently rather than show an empty editor.
+      return
+    }
+    const snap = await buildDraftSnapshotFromEvent(entry.event, sessionUser.pubkey)
+    setScheduledDraftView({
+      id: `scheduled-${eventId}`,
+      snapshot: snap,
+      status: 'idle',
+    })
+    setCurrentScheduledId(eventId)
+    // Don't clear currentDraftId — the underlying draft state is
+    // preserved so clicking back to a draft row restores it
+    // immediately (we just stop rendering it while a scheduled item
+    // is the active selection).
+  }, [sessionUser?.pubkey])
+
+  // Cancel-and-edit: remove the scheduled entry from the worker, build
+  // a fresh real draft seeded with the same content + publishAt, and
+  // select it. If the original publishAt is in the past or too close
+  // to fire, bump it forward to the next valid 15-min slot so the
+  // freshly-editable composer has a sensible default.
+  const handleCancelScheduledAndEdit = useCallback(async () => {
+    if (!currentScheduledId || !sessionUser?.pubkey) return
+    const entry = getScheduledEntryLocal(sessionUser.pubkey, currentScheduledId)
+    try {
+      await workerCancelScheduled(currentScheduledId, sessionUser.pubkey)
+    } catch (e) {
+      // If the worker is down or auth fails, surface in console;
+      // user can retry. Don't drop them out of locked view.
+      console.warn('[scheduler] cancel failed:', e?.message || e)
+      return
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000)
+    const minPublish = nowSec + MIN_LEAD_SECONDS
+    let bumpedPublishAt = entry?.scheduledFor || minPublish
+    if (bumpedPublishAt < minPublish) {
+      // Round forward to next 15-min boundary at least MIN_LEAD ahead.
+      const d = new Date(minPublish * 1000)
+      const m = d.getMinutes()
+      const next15 = Math.ceil(m / 15) * 15
+      if (next15 === 60) {
+        d.setHours(d.getHours() + 1)
+        d.setMinutes(0, 0, 0)
+      } else {
+        d.setMinutes(next15, 0, 0)
+      }
+      bumpedPublishAt = Math.floor(d.getTime() / 1000)
+    }
+
+    // Re-derive a draft snapshot from the original signed event, then
+    // overwrite publishAt with the bumped value (if changed).
+    let snap = null
+    if (entry?.event) {
+      snap = await buildDraftSnapshotFromEvent(entry.event, sessionUser.pubkey)
+      snap.publishAt = bumpedPublishAt
+    }
+    setCurrentScheduledId(null)
+    setScheduledDraftView(null)
+    if (snap) {
+      createDraft({ snapshot: snap })
+      // useNoteDrafts.createDraft selects the new draft automatically.
+    }
+  }, [currentScheduledId, sessionUser?.pubkey, createDraft])
+
+  // When the user clicks a regular draft row, drop the scheduled view.
+  const handleSelectDraft = useCallback((id) => {
+    setCurrentDraftId(id)
+    setCurrentScheduledId(null)
+    setScheduledDraftView(null)
+  }, [setCurrentDraftId])
 
   // Cross-module Comment / Quote deep-link. Any feed can push
   // `{ composerPrefill: { replyTo?, quote? } }` into router state when
@@ -321,7 +413,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
             <DraftsTray
               drafts={drafts}
               currentDraftId={currentDraftId}
-              onSelectDraft={setCurrentDraftId}
+              onSelectDraft={handleSelectDraft}
               onCreateDraft={() => createDraft()}
               onDeleteDraft={deleteDraft}
               onDeleteAllDrafts={deleteAllDrafts}
@@ -330,9 +422,21 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onPublishAll={publishAll}
               onMoveDraft={moveDraft}
               pubkey={sessionUser?.pubkey || ''}
+              currentScheduledId={currentScheduledId}
+              onSelectScheduled={handleSelectScheduled}
             />
           )}
-          {currentDraft && (
+          {scheduledDraftView ? (
+            <NoteComposer
+              key={scheduledDraftView.id}
+              user={user}
+              draft={scheduledDraftView}
+              draftCount={drafts.length}
+              viewingScheduled
+              onCancelScheduled={handleCancelScheduledAndEdit}
+              onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
+            />
+          ) : currentDraft && (
             <NoteComposer
               key={currentDraft.id}
               user={user}
@@ -352,7 +456,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onMobileClose={() => setDraftsMobileOpen(false)}
               drafts={drafts}
               currentDraftId={currentDraftId}
-              onSelectDraft={setCurrentDraftId}
+              onSelectDraft={handleSelectDraft}
               onCreateDraft={() => createDraft()}
               onDeleteDraft={deleteDraft}
               onDeleteAllDrafts={deleteAllDrafts}
@@ -361,6 +465,8 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onPublishAll={publishAll}
               onMoveDraft={moveDraft}
               pubkey={sessionUser?.pubkey || ''}
+              currentScheduledId={currentScheduledId}
+              onSelectScheduled={handleSelectScheduled}
             />
           )}
         </div>

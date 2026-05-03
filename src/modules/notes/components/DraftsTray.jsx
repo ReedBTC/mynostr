@@ -177,6 +177,8 @@ export default function DraftsTray({
   onPublishAll,
   onMoveDraft,
   pubkey = '',
+  currentScheduledId = null,
+  onSelectScheduled,
   isMobileOpen = false,
   onMobileClose,
   isMobile = false,
@@ -316,29 +318,24 @@ export default function DraftsTray({
           />
         ))}
 
-        {/* Scheduled section — only renders when there are pending or
-            failed scheduled notes for this pubkey. Sits below the
-            drafts so the active workflow stays at the top. */}
-        {schedulerEnabled && scheduled.length > 0 && (
-          <div className="mt-3 pt-2 border-t border-neutral-800 space-y-1">
-            <div className="px-2 flex items-center justify-between">
-              <span className="text-[10px] uppercase tracking-wider text-neutral-500 font-medium">
-                Scheduled ({scheduled.length})
-              </span>
-              {scheduleSyncing && (
-                <span className="text-[10px] text-neutral-600">syncing…</span>
-              )}
-            </div>
-            {scheduled.map(item => (
-              <ScheduledRow
-                key={item.eventId}
-                item={item}
-                cancelling={cancellingId === item.eventId}
-                onCancel={() => handleCancelScheduled(item.eventId)}
-              />
-            ))}
-          </div>
-        )}
+        {/* Scheduled rows — same visual list as drafts, styled blue
+            with a clock icon to denote they're queued for future
+            publish. Renders inline below the drafts so users see
+            scheduled notes alongside in-progress ones, not in a
+            separate hidden-feeling section. */}
+        {schedulerEnabled && scheduled.map(item => (
+          <ScheduledRow
+            key={item.eventId}
+            item={item}
+            isCurrent={currentScheduledId === item.eventId}
+            onSelect={() => {
+              onSelectScheduled?.(item.eventId)
+              if (isMobile && onMobileClose) onMobileClose()
+            }}
+            cancelling={cancellingId === item.eventId}
+            onCancel={() => handleCancelScheduled(item.eventId)}
+          />
+        ))}
       </div>
 
       <div className="border-t border-neutral-800 p-2 space-y-1.5">
@@ -475,39 +472,59 @@ export default function DraftsTray({
 }
 
 
-function ScheduledRow({ item, cancelling, onCancel }) {
+function ClockIcon({ className = 'w-3 h-3' }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className={className} aria-hidden>
+      <path fillRule="evenodd" d="M8 15A7 7 0 1 0 8 1a7 7 0 0 0 0 14Zm.75-11a.75.75 0 0 0-1.5 0v4c0 .2.08.39.22.53l2.5 2.5a.75.75 0 1 0 1.06-1.06L8.75 7.69V4Z" clipRule="evenodd" />
+    </svg>
+  )
+}
+
+function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
+  const failed = item.status === 'failed'
   const when = item.scheduledFor
     ? new Date(item.scheduledFor * 1000).toLocaleString(undefined, {
-        month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
       })
-    : ""
-  const failed = item.status === "failed"
-  const preview = (item.content || "").trim().split("\n")[0].slice(0, 60) || "(empty)"
+    : ''
+  const raw = (item.content || '').trim().split('\n')[0] || 'Empty note'
+  const preview = raw.length > 48 ? raw.slice(0, 48) + '…' : raw
+
+  // Three colour states. Failed always wins (red). Otherwise blue,
+  // saturated when this row is the active selection — mirrors the
+  // purple-on-current pattern in DraftRow.
+  const wrapClass = failed
+    ? 'border-red-900/60 bg-red-950/20'
+    : isCurrent
+      ? 'border-blue-500 bg-blue-900/50 ring-1 ring-blue-500/50'
+      : 'border-blue-800/60 bg-blue-950/30 hover:border-blue-700 hover:bg-blue-900/40'
+
   return (
     <div
-      className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs border ${
-        failed
-          ? "border-red-900/60 bg-red-950/20"
-          : "border-neutral-800 bg-neutral-900/40"
-      }`}
+      onClick={onSelect}
+      className={`group flex items-start gap-2 px-2.5 py-2 rounded border transition-colors cursor-pointer ${wrapClass}`}
     >
-      <span className={failed ? "text-red-400" : "text-blue-400"}>
-        {failed ? "⚠" : "🕐"}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-neutral-300">{preview}</div>
-        <div className="text-[10px] text-neutral-500 leading-tight">
+      <ClockIcon className={`w-3 h-3 mt-1 shrink-0 ${failed ? 'text-red-400' : 'text-blue-300'}`} />
+      <div className="flex-1 min-w-0">
+        <p className={`text-xs truncate ${failed ? 'text-red-200' : isCurrent ? 'text-blue-50' : 'text-blue-100'}`}>
+          {preview}
+        </p>
+        <p className={`text-[10px] mt-0.5 ${failed ? 'text-red-400/80' : 'text-blue-300/80'}`}>
           {failed ? `failed after ${item.attempts} attempts` : when}
-        </div>
+        </p>
       </div>
       <button
         type="button"
-        onClick={onCancel}
+        onClick={(e) => { e.stopPropagation(); onCancel() }}
         disabled={cancelling}
-        className="shrink-0 text-[10px] text-neutral-500 hover:text-red-300 disabled:opacity-40 transition-colors px-1"
-        title={failed ? "Remove" : "Cancel"}
+        title={failed ? 'Remove from list' : 'Cancel scheduled publish'}
+        className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 ${
+          failed
+            ? 'text-red-300 border-red-900 hover:bg-red-900/40'
+            : 'text-neutral-300 border-neutral-700 hover:text-red-300 hover:border-red-900 bg-neutral-900/60'
+        }`}
       >
-        {cancelling ? "…" : (failed ? "Remove" : "Cancel")}
+        {cancelling ? '…' : (failed ? 'Remove' : 'Cancel')}
       </button>
     </div>
   )

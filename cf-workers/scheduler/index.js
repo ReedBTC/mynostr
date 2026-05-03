@@ -320,9 +320,12 @@ async function handleList(request, env) {
   }
 
   const result = await env.SCHEDULED_NOTES.list({ prefix: `sched:${pubkey}:` })
-  // Resolve values so the UI can render content + scheduled time +
-  // status without a per-key follow-up. Capped — KV.list returns 1000
-  // keys per page; that's our soft limit per pubkey.
+  // Resolve values so the UI can render + hydrate the editor for
+  // a clicked scheduled item without per-row follow-ups. Returning
+  // the full signed event (not just a preview) is what powers the
+  // "click a scheduled row → composer opens locked with the original
+  // content" UX. Capped — KV.list returns 1000 keys per page; that's
+  // our soft limit per pubkey.
   const items = []
   for (const k of result.keys) {
     const raw = await env.SCHEDULED_NOTES.get(k.name)
@@ -335,8 +338,8 @@ async function handleList(request, env) {
         eventId: parts[3] || parsed.event?.id,
         bucket: parts[2],
         scheduledFor: parsed.event?.created_at,
-        kind: parsed.event?.kind,
-        contentPreview: String(parsed.event?.content || '').slice(0, 200),
+        event: parsed.event,
+        relays: parsed.relays || [],
         attempts: parsed.attempts,
         status: parsed.status,
       })

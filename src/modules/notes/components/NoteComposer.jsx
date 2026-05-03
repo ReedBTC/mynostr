@@ -34,6 +34,18 @@ import TimePicker from '../../events/components/TimePicker.jsx'
 // Default height — roughly a full phone-screen's worth of composing room
 const TEXTAREA_MIN_H = 200
 
+/** Render an HH:MM 24-hour string as 12-hour AM/PM. Inline rather than
+ *  pulled from TimePicker (which doesn't export it) — used only by
+ *  the locked schedule-time display in viewingScheduled mode. */
+function format12h(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || '')
+  if (!m) return hhmm || ''
+  const h = +m[1]
+  const ampm = h >= 12 ? 'PM' : 'AM'
+  const h12 = h % 12 === 0 ? 12 : h % 12
+  return `${h12}:${m[2]} ${ampm}`
+}
+
 /**
  * Draft-driven composer. Parent owns the draft list (useNoteDrafts hook);
  * this component mounts with `draft.snapshot` as initial state, then emits
@@ -50,6 +62,16 @@ export default function NoteComposer({
   onAckPublished,
   onOpenDraftsMobile,
   draftCount = 1,
+  // When viewingScheduled is true, the composer is in inspect-mode for
+  // an already-scheduled note: the editable surface is wrapped in a
+  // <fieldset disabled> (locks every input/button beneath it) and the
+  // publish/schedule action is replaced with a red "Cancel scheduled
+  // note" button. Cancel calls back to the parent which DELETEs from
+  // the worker and rebuilds an editable draft seeded with the same
+  // content + publishAt — the user falls naturally back into a normal
+  // editable composer for that draft.
+  viewingScheduled = false,
+  onCancelScheduled,
 }) {
   const readOnly = !!user?.readOnly
   const isMobile = useIsMobile()
@@ -877,6 +899,34 @@ export default function NoteComposer({
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="max-w-[400px] mx-auto px-4 py-5">
+        {viewingScheduled && (
+          <div className="mb-4 rounded-lg border border-blue-700/60 bg-blue-950/40 px-3 py-3 space-y-2">
+            <p className="text-[11px] text-blue-200 leading-snug">
+              <span className="font-medium">Scheduled.</span> This note is queued
+              to publish at the time below. The fields are locked to keep the
+              signed event intact — to change anything, cancel the schedule first
+              and the composer becomes editable.
+            </p>
+            <button
+              type="button"
+              onClick={() => onCancelScheduled?.()}
+              className="w-full py-2 rounded bg-red-600 hover:bg-red-500 text-sm text-white font-semibold transition-colors"
+            >
+              Cancel Scheduled Note
+            </button>
+          </div>
+        )}
+        {/* Wrap the editable surface in a disabled fieldset when viewing
+            a scheduled item. `disabled` on a fieldset propagates to every
+            form control inside, regardless of nesting depth — cleaner
+            than threading a `disabled` prop through every input. The
+            `contents` display strips the fieldset's default block layout
+            so the wrapped tree renders identically to the non-locked
+            case. */}
+        <fieldset
+          disabled={viewingScheduled}
+          className="contents"
+        >
         {/* Mobile-only drafts chip — desktop gets a persistent left column */}
         {isMobile && onOpenDraftsMobile && (
           <button
@@ -1321,9 +1371,34 @@ export default function NoteComposer({
               </div>
             )}
 
-            {/* Publish / Schedule button + scheduling panel */}
+            {/* Publish / Schedule button + scheduling panel.
+                When viewingScheduled, this block is replaced by an
+                inline display of the locked schedule date+time so the
+                user can see WHEN this is scheduled — the action itself
+                (Cancel) lives in the top banner. */}
             <div className="mt-3">
-              {!readOnly ? (
+              {viewingScheduled ? (
+                <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2.5 space-y-1.5">
+                  <p className="text-[11px] text-neutral-400">Publish at (your local time)</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="date"
+                      value={scheduleDate}
+                      readOnly
+                      className="flex-1 bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-300 cursor-not-allowed"
+                    />
+                    <input
+                      type="text"
+                      value={scheduleTime ? format12h(scheduleTime) : ''}
+                      readOnly
+                      className="w-32 bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-300 cursor-not-allowed text-center"
+                    />
+                  </div>
+                  <p className="text-[10px] text-neutral-600">
+                    Locked. Cancel above to edit.
+                  </p>
+                </div>
+              ) : !readOnly ? (
                 scheduleResult ? (
                   // Success view — composer body is now stale, prompt the
                   // user to clear so a fresh draft replaces it.
@@ -1334,7 +1409,8 @@ export default function NoteComposer({
                       <span className="text-neutral-200">
                         {new Date(scheduleResult.scheduledFor * 1000).toLocaleString()}
                       </span>.
-                      Cancel any time from the Drafts tray's Scheduled section.
+                      It now sits in your drafts list (blue card with a clock).
+                      Cancel from there any time before it fires.
                     </p>
                     <button
                       onClick={() => {
@@ -1459,6 +1535,7 @@ export default function NoteComposer({
             )}
           </>
         )}
+        </fieldset>
       </div>
       {uploadPicker}
     </div>

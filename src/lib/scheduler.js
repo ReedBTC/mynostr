@@ -151,10 +151,24 @@ export async function scheduleNote({ content, tags, publishUnixSec }) {
     addLocal(pubkey, {
       eventId: data.eventId,
       scheduledFor: data.scheduledFor,
-      content: content.slice(0, 200),
+      content,
+      // Stash the full signed event so click-to-hydrate the editor
+      // doesn't need a worker round-trip. This is also what we need
+      // to convert a scheduled item back into an editable draft on
+      // cancel-and-edit.
+      event: ev.rawEvent(),
+      status: 'pending',
     })
   }
   return data
+}
+
+/** Look up a single scheduled entry from the local mirror. Returns null
+ *  if not found locally — caller can fall back to listScheduled() to
+ *  refresh from the worker. */
+export function getScheduledEntryLocal(pubkey, eventId) {
+  if (!pubkey || !eventId) return null
+  return readLocalScheduled(pubkey).find(e => e.eventId === eventId) || null
 }
 
 /**
@@ -172,11 +186,13 @@ export async function listScheduled(pubkey) {
   const data = await res.json()
   const items = Array.isArray(data.scheduled) ? data.scheduled : []
   // Refresh the local cache to match server state — drops any local
-  // entries the server doesn't know about (e.g. cancelled on another device).
+  // entries the server doesn't know about (e.g. cancelled on another
+  // device). Stash the full signed event for click-to-hydrate.
   writeLocalScheduled(pubkey, items.map(it => ({
     eventId: it.eventId,
     scheduledFor: it.scheduledFor,
-    content: it.contentPreview || '',
+    content: it.event?.content || '',
+    event: it.event || null,
     status: it.status,
     attempts: it.attempts,
   })))
