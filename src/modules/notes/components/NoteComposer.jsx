@@ -136,6 +136,33 @@ export default function NoteComposer({
   const [scheduleError, setScheduleError] = useState('')
   const [scheduleResult, setScheduleResult] = useState(null) // { eventId, scheduledFor }
 
+  // Copy menu in the viewingScheduled banner — three-dot button that
+  // exposes nevent / note-id of the signed event so users can share or
+  // reference the scheduled note before it publishes.
+  const [scheduledMenuOpen, setScheduledMenuOpen] = useState(false)
+  const [scheduledCopyFlash, setScheduledCopyFlash] = useState('')
+  const scheduledMenuRef = useRef(null)
+  useEffect(() => {
+    if (!scheduledMenuOpen) return
+    function onDown(e) {
+      if (scheduledMenuRef.current && !scheduledMenuRef.current.contains(e.target)) {
+        setScheduledMenuOpen(false)
+      }
+    }
+    function onKey(e) { if (e.key === 'Escape') setScheduledMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [scheduledMenuOpen])
+  useEffect(() => {
+    if (!scheduledCopyFlash) return
+    const t = setTimeout(() => setScheduledCopyFlash(''), 1500)
+    return () => clearTimeout(t)
+  }, [scheduledCopyFlash])
+
   // Reply / quote threading inputs (text the user types), plus the fetched
   // reply target — needed so we can emit a proper NIP-10 p-tag for the author
   // and preserve the thread's root when replying to a mid-thread note.
@@ -899,40 +926,109 @@ export default function NoteComposer({
   return (
     <div className="flex-1 overflow-y-auto overflow-x-hidden">
       <div className="max-w-[400px] mx-auto px-4 py-5">
-        {viewingScheduled && (
+        {viewingScheduled && (() => {
+          const sourceEvent = draft?.sourceEvent
+          const eventId     = sourceEvent?.id
+          const eventPubkey = sourceEvent?.pubkey
+
+          async function copyText(text, label) {
+            try {
+              await navigator.clipboard.writeText(text)
+              setScheduledCopyFlash(label)
+            } catch {}
+            setScheduledMenuOpen(false)
+          }
+          function copyNevent() {
+            if (!eventId || !eventPubkey) return
+            try {
+              const nevent = nip19.neventEncode({ id: eventId, author: eventPubkey })
+              copyText(`nostr:${nevent}`, 'nevent')
+            } catch {}
+          }
+          function copyNoteId() {
+            if (!eventId) return
+            try {
+              copyText(nip19.noteEncode(eventId), 'note id')
+            } catch {}
+          }
+
+          return (
           <div className="mb-4 rounded-lg border border-blue-700/60 bg-blue-950/40 px-3 py-3 space-y-2">
-            {/* Header row: status text + Write/Preview pill. The pill
-                sits OUTSIDE the disabled fieldset below so the user can
-                still toggle the rendered preview of a locked note. The
-                in-toolbar pill is disabled by the fieldset, but it's
-                fine to leave there — graceful degradation. */}
+            {/* Header row: status text + Write/Preview pill + ⋯ menu.
+                Both pills/menu sit OUTSIDE the disabled fieldset below
+                so they stay clickable on a locked note. The in-toolbar
+                pill is disabled by the fieldset; graceful degradation. */}
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] font-medium text-blue-200">
                 Scheduled · locked
               </span>
-              <div className="inline-flex items-center bg-neutral-900 border border-neutral-800 rounded p-0.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setPreviewMode(false)}
-                  aria-pressed={!previewMode}
-                  className={`px-2.5 py-0.5 text-[11px] rounded transition-colors ${
-                    !previewMode ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
-                  }`}
-                >
-                  Write
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPreviewMode(true)}
-                  aria-pressed={previewMode}
-                  className={`px-2.5 py-0.5 text-[11px] rounded transition-colors ${
-                    previewMode ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
-                  }`}
-                >
-                  Preview
-                </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <div className="inline-flex items-center bg-neutral-900 border border-neutral-800 rounded p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setPreviewMode(false)}
+                    aria-pressed={!previewMode}
+                    className={`px-2.5 py-0.5 text-[11px] rounded transition-colors ${
+                      !previewMode ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
+                    }`}
+                  >
+                    Write
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewMode(true)}
+                    aria-pressed={previewMode}
+                    className={`px-2.5 py-0.5 text-[11px] rounded transition-colors ${
+                      previewMode ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
+                    }`}
+                  >
+                    Preview
+                  </button>
+                </div>
+                {eventId && (
+                  <div className="relative" ref={scheduledMenuRef}>
+                    <button
+                      type="button"
+                      onClick={() => setScheduledMenuOpen(o => !o)}
+                      aria-label="More actions for this scheduled note"
+                      aria-haspopup="menu"
+                      aria-expanded={scheduledMenuOpen}
+                      className="px-1.5 py-1 rounded text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-colors"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                        <circle cx="3" cy="8" r="1.4" />
+                        <circle cx="8" cy="8" r="1.4" />
+                        <circle cx="13" cy="8" r="1.4" />
+                      </svg>
+                    </button>
+                    {scheduledMenuOpen && (
+                      <div
+                        role="menu"
+                        className="absolute right-0 top-full mt-1 z-30 min-w-[160px] bg-neutral-900 border border-neutral-700 rounded shadow-xl py-1"
+                      >
+                        <button
+                          role="menuitem"
+                          onClick={copyNevent}
+                          className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors"
+                        >
+                          Copy nevent
+                        </button>
+                        <button
+                          role="menuitem"
+                          onClick={copyNoteId}
+                          className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors"
+                        >
+                          Copy note id
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
+            {scheduledCopyFlash && (
+              <p className="text-[10px] text-green-400">✓ Copied {scheduledCopyFlash}</p>
+            )}
             <p className="text-[11px] text-blue-200/90 leading-snug">
               This note is queued to publish at the time below. Fields are locked
               to keep the signed event intact — to change anything, cancel the
@@ -946,7 +1042,8 @@ export default function NoteComposer({
               Cancel Scheduled Note
             </button>
           </div>
-        )}
+          )
+        })()}
         {/* Wrap the editable surface in a disabled fieldset when viewing
             a scheduled item. `disabled` on a fieldset propagates to every
             form control inside, regardless of nesting depth — cleaner

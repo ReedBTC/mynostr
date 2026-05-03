@@ -121,6 +121,11 @@ export default function NotesModule({ user, sessionUser, subtab }) {
       id: `scheduled-${eventId}`,
       snapshot: snap,
       status: 'idle',
+      // Carry the signed event through so the composer's locked banner
+      // can encode it as nevent / note id for copy actions. The
+      // synthetic draft's snapshot doesn't preserve sig/id, but the
+      // copy menu needs them.
+      sourceEvent: entry.event,
     })
     setCurrentScheduledId(eventId)
     // Don't clear currentDraftId — the underlying draft state is
