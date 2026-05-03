@@ -17,6 +17,7 @@ import {
   listScheduled,
   cancelScheduled,
   readLocalScheduled,
+  onLocalChange,
 } from '../../../lib/scheduler.js'
 
 function previewText(content) {
@@ -210,14 +211,33 @@ export default function DraftsTray({
     }
   }, [schedulerEnabled, pubkey])
 
-  // Initial fetch + refresh on tab focus so cross-device cancellations
-  // and publish-after-fire transitions stay in sync.
+  // Three sync triggers:
+  //   1. Mount + tab wake (focus / visibilitychange) — covers
+  //      cross-device cancellations and cron publishes that landed
+  //      while the tab was in the background.
+  //   2. onLocalChange subscription — covers same-tab same-session
+  //      mutations (schedule a new note, cancel one) without waiting
+  //      for a focus event. Without this the blue card lags the
+  //      worker's "OK, scheduled" by however long until the user
+  //      blurs and refocuses the tab.
+  //   3. Initial fetch on mount.
   useEffect(() => {
+    if (!schedulerEnabled || !pubkey) return
     refreshScheduled()
-    const onFocus = () => refreshScheduled()
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [refreshScheduled])
+    const onWake = () => refreshScheduled()
+    window.addEventListener('focus', onWake)
+    document.addEventListener('visibilitychange', onWake)
+    const offLocal = onLocalChange(() => {
+      // Local mutation already wrote the new state to localStorage —
+      // just re-read it. No worker round-trip needed for this path.
+      setScheduled(readLocalScheduled(pubkey))
+    })
+    return () => {
+      window.removeEventListener('focus', onWake)
+      document.removeEventListener('visibilitychange', onWake)
+      offLocal()
+    }
+  }, [refreshScheduled, schedulerEnabled, pubkey])
 
   async function handleCancelScheduled(eventId) {
     if (!pubkey || cancellingId) return

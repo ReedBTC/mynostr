@@ -41,6 +41,25 @@ export function isSchedulerConfigured() {
 // Mirror of the worker's view, kept in localStorage so the drafts tray
 // renders fast on cold load. Worker is the source of truth — any
 // inconsistency is reconciled by listScheduled() when the tab gains focus.
+//
+// Pub/sub: any local mutation notifies subscribers so React surfaces
+// (DraftsTray, NotesModule) re-read the mirror immediately rather than
+// waiting for a focus event. Without this, scheduling a new note shows
+// a sluggish "card appears on next refresh" UX, and a cron-published
+// item lingers until the next tab focus.
+
+const localSubscribers = new Set()
+function notifyLocalChange() {
+  for (const fn of localSubscribers) {
+    try { fn() } catch {}
+  }
+}
+
+/** Subscribe to local-mirror mutations. Returns an unsubscribe fn. */
+export function onLocalChange(fn) {
+  localSubscribers.add(fn)
+  return () => localSubscribers.delete(fn)
+}
 
 function storageKey(pubkey) {
   if (!pubkey) return null
@@ -62,6 +81,7 @@ function writeLocalScheduled(pubkey, list) {
   if (!key) return
   try { localStorage.setItem(key, JSON.stringify(list)) }
   catch {}
+  notifyLocalChange()
 }
 
 function addLocal(pubkey, entry) {
@@ -234,6 +254,16 @@ export async function cancelScheduled(eventId, pubkey) {
     headers: { 'Authorization': `Nostr ${authB64}` },
   })
   if (!res.ok) {
+    // 404 means the entry is already gone — most often because cron
+    // just published it (race window between user clicking Cancel
+    // and the next tick) or another device cancelled. Treat as a
+    // success so the local mirror still gets cleaned up and the UI
+    // doesn't strand the user in a "can't cancel a thing that
+    // doesn't exist" loop.
+    if (res.status === 404) {
+      removeLocal(pubkey, eventId)
+      return { ok: true, alreadyGone: true }
+    }
     const errBody = await res.json().catch(() => ({}))
     throw new Error(errBody.error || `Cancel failed (${res.status})`)
   }

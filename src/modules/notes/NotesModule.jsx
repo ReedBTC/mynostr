@@ -32,6 +32,7 @@ import { buildDraftSnapshotFromEvent } from '../../lib/draftFromEvent.js'
 import {
   cancelScheduled as workerCancelScheduled,
   getScheduledEntryLocal,
+  onLocalChange as onSchedulerLocalChange,
   MIN_LEAD_SECONDS,
 } from '../../lib/scheduler.js'
 import { validateKind1Event } from '../../lib/noteParser.js'
@@ -183,6 +184,24 @@ export default function NotesModule({ user, sessionUser, subtab }) {
     setCurrentScheduledId(null)
     setScheduledDraftView(null)
   }, [setCurrentDraftId])
+
+  // Detect when the currently-viewed scheduled item disappears from the
+  // local mirror — happens when cron publishes it (worker deletes the
+  // KV row, next listScheduled() refresh drops the entry locally) or
+  // when another device cancels it. Without this, the composer would
+  // stay stranded in viewingScheduled mode pointing at a synthetic
+  // draft for an event that no longer exists, and clicking Cancel
+  // would error.
+  useEffect(() => {
+    if (!sessionUser?.pubkey || !currentScheduledId) return
+    return onSchedulerLocalChange(() => {
+      const entry = getScheduledEntryLocal(sessionUser.pubkey, currentScheduledId)
+      if (!entry) {
+        setCurrentScheduledId(null)
+        setScheduledDraftView(null)
+      }
+    })
+  }, [sessionUser?.pubkey, currentScheduledId])
 
   // Cross-module Comment / Quote deep-link. Any feed can push
   // `{ composerPrefill: { replyTo?, quote? } }` into router state when
