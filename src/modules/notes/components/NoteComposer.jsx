@@ -870,7 +870,7 @@ export default function NoteComposer({
       return
     }
     if (publishUnixSec > nowSec + MAX_FUTURE_SECONDS) {
-      setScheduleError('Pick a time within 30 days.')
+      setScheduleError('Pick a time within the next year.')
       return
     }
     setScheduling(true)
@@ -901,11 +901,42 @@ export default function NoteComposer({
       <div className="max-w-[400px] mx-auto px-4 py-5">
         {viewingScheduled && (
           <div className="mb-4 rounded-lg border border-blue-700/60 bg-blue-950/40 px-3 py-3 space-y-2">
-            <p className="text-[11px] text-blue-200 leading-snug">
-              <span className="font-medium">Scheduled.</span> This note is queued
-              to publish at the time below. The fields are locked to keep the
-              signed event intact — to change anything, cancel the schedule first
-              and the composer becomes editable.
+            {/* Header row: status text + Write/Preview pill. The pill
+                sits OUTSIDE the disabled fieldset below so the user can
+                still toggle the rendered preview of a locked note. The
+                in-toolbar pill is disabled by the fieldset, but it's
+                fine to leave there — graceful degradation. */}
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-blue-200">
+                Scheduled · locked
+              </span>
+              <div className="inline-flex items-center bg-neutral-900 border border-neutral-800 rounded p-0.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setPreviewMode(false)}
+                  aria-pressed={!previewMode}
+                  className={`px-2.5 py-0.5 text-[11px] rounded transition-colors ${
+                    !previewMode ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
+                  }`}
+                >
+                  Write
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewMode(true)}
+                  aria-pressed={previewMode}
+                  className={`px-2.5 py-0.5 text-[11px] rounded transition-colors ${
+                    previewMode ? 'bg-neutral-800 text-neutral-100' : 'text-neutral-500 hover:text-neutral-300'
+                  }`}
+                >
+                  Preview
+                </button>
+              </div>
+            </div>
+            <p className="text-[11px] text-blue-200/90 leading-snug">
+              This note is queued to publish at the time below. Fields are locked
+              to keep the signed event intact — to change anything, cancel the
+              schedule and the composer becomes editable.
             </p>
             <button
               type="button"
@@ -1414,11 +1445,23 @@ export default function NoteComposer({
                     </p>
                     <button
                       onClick={() => {
-                        setScheduleResult(null)
-                        setScheduleMode(false)
-                        setScheduleDate('')
-                        setScheduleTime('')
-                        handleClear()
+                        // Schedule consumed this draft — delete it
+                        // entirely so the queue doesn't accumulate
+                        // empty residual drafts on each
+                        // schedule + Done. Mirrors the publish-Done
+                        // flow, which also wipes the source draft.
+                        if (onAckPublished) {
+                          onAckPublished()
+                        } else {
+                          // Defensive fallback for callers that don't
+                          // wire onAckPublished — preserves the old
+                          // behavior of clearing in place.
+                          setScheduleResult(null)
+                          setScheduleMode(false)
+                          setScheduleDate('')
+                          setScheduleTime('')
+                          handleClear()
+                        }
                       }}
                       className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-neutral-200 transition-colors"
                     >
@@ -1482,7 +1525,7 @@ export default function NoteComposer({
                           />
                         </div>
                         <p className="text-[10px] text-neutral-600 leading-snug">
-                          Earliest: {MIN_LEAD_SECONDS / 60} min from now. Up to 30 days out.
+                          Earliest: {MIN_LEAD_SECONDS / 60} min from now. Up to a year out.
                           15-minute slots.
                         </p>
                         {scheduleError && (
