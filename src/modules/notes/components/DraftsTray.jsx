@@ -599,7 +599,13 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
           {failed ? `failed after ${item.attempts} attempts` : when}
         </p>
       </div>
-      <div className="relative shrink-0" ref={menuRef} onMouseDown={e => e.stopPropagation()}>
+      <div className="relative shrink-0" ref={menuRef}>
+        {/* No `onMouseDown stopPropagation` on the wrapper — that would
+            block the document-level mousedown listener on OTHER open
+            menus, leaving the previous menu open when the user clicks
+            a new trigger. The trigger + dropdown each stop their own
+            click bubbling, which is enough to keep the row's `onSelect`
+            from firing. */}
         <button
           type="button"
           onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o) }}

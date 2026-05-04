@@ -8,16 +8,31 @@
  * toggles schedule mode when `snapshot.publishAt` is in the future.
  */
 import { formatEventTime } from './eventTypes.js'
-import { MAX_FUTURE_SECONDS } from './scheduler.js'
+import { MIN_LEAD_SECONDS, MAX_FUTURE_SECONDS } from './scheduler.js'
 
-const ONE_HOUR_SEC = 3600
-const ONE_DAY_SEC  = 86400
+const ONE_HOUR_SEC     = 3600
+const ONE_DAY_SEC      = 86400
+const FIFTEEN_MIN_SEC  = 15 * 60
+
+/**
+ * Round UP to the next 15-minute slot on the wall clock. Works in any
+ * IANA timezone because every IANA offset is divisible by 15 minutes
+ * (Nepal +5:45 and Newfoundland −3:30 are still grid-aligned), so
+ * `ceil(unix / 900)` lands on a wall-clock 15-min boundary regardless
+ * of which tz the picker renders in.
+ */
+function ceilTo15MinSlot(unixSec) {
+  return Math.ceil(unixSec / FIFTEEN_MIN_SEC) * FIFTEEN_MIN_SEC
+}
 
 /**
  * Compute the publishAt (unix seconds) for a reminder.
  *
  *   • Default: event.start − 24h
- *   • Floor:   now + 1h  (so we always schedule a meaningful distance out)
+ *   • Floor:   the next 15-min slot ≥ MIN_LEAD_SECONDS from now —
+ *              same rule the manual scheduler uses, so the prefilled
+ *              time always lands cleanly on a TimePicker slot rather
+ *              than off-grid (e.g. 1:03 PM → 1:30 PM, 2:59 PM → 3:15 PM).
  *   • Skip:    event is <1h away → return null so the composer opens
  *              with schedule UNCHECKED; user can publish immediately or
  *              manually schedule a tighter window.
@@ -26,10 +41,12 @@ const ONE_DAY_SEC  = 86400
  */
 export function computeReminderPublishAt(parsed, nowSec = Math.floor(Date.now() / 1000)) {
   if (!parsed || !Number.isFinite(parsed.startUnix)) return null
-  const oneHourFromNow = nowSec + ONE_HOUR_SEC
-  if (parsed.startUnix < oneHourFromNow) return null
+  if (parsed.startUnix < nowSec + ONE_HOUR_SEC) return null
   const dayBefore = parsed.startUnix - ONE_DAY_SEC
-  const candidate = Math.max(dayBefore, oneHourFromNow)
+  const minSlot   = ceilTo15MinSlot(nowSec + MIN_LEAD_SECONDS)
+  // Snap the final candidate too, so an off-grid event time (e.g. an
+  // event at 5:03 PM) still produces a grid-aligned reminder time.
+  const candidate = ceilTo15MinSlot(Math.max(dayBefore, minSlot))
   if (candidate > nowSec + MAX_FUTURE_SECONDS) return null
   return candidate
 }
