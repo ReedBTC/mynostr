@@ -96,6 +96,27 @@ async function waitForExtension(maxMs = 2000) {
   return !!window.nostr
 }
 
+// Tracks any in-flight `signer.blockUntilReady()` call from restoreSession
+// so the LoginScreen's manual login can wait for it to settle before
+// firing its own getPublicKey. Two parallel getPublicKey calls into the
+// same browser extension confuse the message channel — the popup's
+// approval gets routed to whichever signer the extension picks first,
+// and the other call hangs forever (NDKNip07Signer.blockUntilReady has
+// no abort path; if window.nostr.getPublicKey() never resolves, neither
+// does it). The classic symptom: page loads, restoreSession hits its
+// timeout, LoginScreen renders, user clicks Login, "Approve in your
+// extension…" hangs the full ceiling and times out — until the user
+// refreshes and the auto-restore succeeds on a now-warm extension.
+//
+// This holds the *underlying* promise (not the timeout-wrapped one) so
+// the manual login can wait for the actual extension response, even if
+// restoreSession already gave up and returned null.
+let inflightExtensionAuth = null
+
+export function getInflightExtensionAuth() {
+  return inflightExtensionAuth
+}
+
 /**
  * Restore a saved session. Returns the hydrated user object on success,
  * null on failure (caller should then show the login screen).
@@ -116,7 +137,22 @@ export async function restoreSession(record) {
     try {
       const signer = new NDKNip07Signer()
       ndk.signer = signer
-      await withTimeout(signer.blockUntilReady(), 10000, '__timeout__')
+      // Hold the underlying promise (not the timeout-wrapped one) on a
+      // module-level ref so manual login can serialize behind it. Cleared
+      // when the underlying call eventually settles — even if our timeout
+      // already fired and we returned null.
+      const ready = signer.blockUntilReady()
+      inflightExtensionAuth = ready
+      ready.finally(() => {
+        if (inflightExtensionAuth === ready) inflightExtensionAuth = null
+      })
+      // 30s ceiling (was 10s). Cold extensions — especially after a deploy
+      // or fresh page load — frequently take 10-20s to wake their service
+      // worker and respond. The old 10s misfired often, dumping users
+      // onto LoginScreen even when the extension would have answered if
+      // given another second or two. Manual login still has its own 60s
+      // ceiling for the user-driven case.
+      await withTimeout(ready, 30000, '__timeout__')
       const ndkUser = await signer.user()
       // Extension account may have changed since we saved — bail so the
       // login screen can re-auth as whoever the extension is currently set to.

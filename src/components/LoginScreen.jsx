@@ -20,6 +20,7 @@ import {
   buildNpubRecord,
   buildNip46Record,
   fetchUserProfile,
+  getInflightExtensionAuth,
 } from '../lib/sessionPersistence.js'
 
 // Mobile NIP-46 flows need to survive tab reloads and WebSocket suspensions
@@ -250,6 +251,29 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       setLoading(false)
       setLoadingStep('')
       return
+    }
+    // If the boot-time restoreSession's getPublicKey() is still pending
+    // in the extension, wait for it to settle (or cap out) before firing
+    // our own. Two parallel calls into the same extension get tangled
+    // in the message channel — the popup's response routes to whichever
+    // signer the extension picks, leaving the other call hung at the
+    // 60s ceiling. The `finally` cleanup in sessionPersistence clears
+    // the ref the moment the underlying promise resolves, so this is
+    // a no-op in the common (already-restored or never-restored) case.
+    const inflight = getInflightExtensionAuth()
+    if (inflight) {
+      setLoadingStep('Waiting for prior session check…')
+      // 30s race-cap matches restoreSession's own ceiling. If the prior
+      // call truly hangs forever (extension's IPC channel broken), our
+      // own attempt almost certainly hangs too — but we shouldn't pin
+      // the user behind a defunct request indefinitely.
+      try {
+        await Promise.race([
+          inflight.catch(() => {}),
+          new Promise(resolve => setTimeout(resolve, 30000)),
+        ])
+      } catch {}
+      if (token.aborted) { setLoading(false); setLoadingStep(''); return }
     }
     try {
       resetNDK()
