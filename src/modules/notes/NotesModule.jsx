@@ -258,11 +258,16 @@ export default function NotesModule({ user, sessionUser, subtab }) {
     })
   }, [sessionUser?.pubkey, currentScheduledId])
 
-  // Cross-module Comment / Quote deep-link. Any feed can push
-  // `{ composerPrefill: { replyTo?, quote? } }` into router state when
-  // navigating here; we open a NEW draft (not replace current) seeded
-  // with the prefill, route to the Write tab, and strip the state from
-  // history so back/forward doesn't replay the prefill.
+  // Cross-module Comment / Quote / Reminder deep-link. Any feed can push
+  // `{ composerPrefill: { replyTo?, quote?, content?, publishAt? } }` into
+  // router state when navigating here; we open a NEW draft (not replace
+  // current) seeded with the prefill, route to the Write tab, and strip
+  // the state from history so back/forward doesn't replay the prefill.
+  //
+  // `publishAt` is read by NoteComposer's auto-toggle effect on mount —
+  // when it's a future unix-second timestamp, the composer auto-enables
+  // schedule mode and populates the date/time fields. Used by the events
+  // module's "Schedule reminder" flow.
   //
   // Single navigate is load-bearing: an earlier two-call dance
   // (setModuleTab + a follow-up pathname/state-clear) raced against
@@ -274,11 +279,13 @@ export default function NotesModule({ user, sessionUser, subtab }) {
     if (!pending) return
     if (!isOwner) return
     if (!npub) return
-    const { replyTo, quote } = pending
+    const { replyTo, quote, content, publishAt } = pending
     createDraft({
       snapshot: {
         ...(replyTo && { replyToInput: replyTo }),
         ...(quote && { quoteInput: quote }),
+        ...(content && { content }),
+        ...(Number.isFinite(publishAt) && publishAt > 0 && { publishAt }),
       },
     })
     navigate(`/${npub}/notes/write`, { replace: true, state: null })

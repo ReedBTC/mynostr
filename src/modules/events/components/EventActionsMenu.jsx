@@ -9,6 +9,9 @@
  * Sections (each conditional on its props):
  *   • Copy naddr        — addressable identifier for replaceable kinds
  *   • Copy share link   — mynostr URL on the author's npub
+ *   • Schedule reminder — logged-in viewers; opens the notes composer
+ *                         pre-filled with a quoted naddr + scheduled
+ *                         24h before the event start
  *   • Load in editor    — owner-only; seeds the composer via
  *                         localStorage and navigates to /events/write
  *   • Export JSON       — clean spec-compliant kind 31922/31923 file
@@ -25,6 +28,8 @@ import { copyToClipboard, titleToSlug } from '../../../lib/utils.js'
 import { formToEventTemplate, eventToForm } from '../../../lib/eventForm.js'
 import { deleteCalendarEvent } from '../../../lib/eventPublish.js'
 import { downloadEventIcs } from '../../../lib/ics.js'
+import { isSchedulerConfigured } from '../../../lib/scheduler.js'
+import { isFutureEvent } from '../../../lib/eventTypes.js'
 import AddToCalendarModal from './AddToCalendarModal.jsx'
 
 export default function EventActionsMenu({
@@ -35,6 +40,7 @@ export default function EventActionsMenu({
   isOwner = false,
   sessionUser = null,      // gates the "Save to calendar" item to logged-in users
   onLoadInEditor,          // optional — owner-only; ({ snapshot, naddr })
+  onScheduleReminder,      // optional — logged-in only; (parsed) → void
   onDeleted,               // optional — fires after a successful kind-5
 }) {
   const [copied, setCopied] = useState(null) // 'naddr' | 'url' | null
@@ -232,6 +238,16 @@ export default function EventActionsMenu({
       )}
 
       {(isOwner && onLoadInEditor) || parsed ? <div className="border-t border-neutral-700" /> : null}
+
+      {parsed && sessionUser?.pubkey && !sessionUser?.readOnly &&
+       onScheduleReminder && isSchedulerConfigured() && isFutureEvent(parsed) && (
+        <button
+          onClick={() => { onScheduleReminder(parsed); onClose?.() }}
+          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+        >
+          Schedule reminder…
+        </button>
+      )}
 
       {parsed && sessionUser?.pubkey && (
         <button

@@ -24,6 +24,7 @@ import { useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { isSafeUrl } from '../../../lib/utils.js'
 import { dateBits, formatEventTime } from '../../../lib/eventTypes.js'
+import { buildReminderPrefill } from '../../../lib/eventReminder.js'
 import EventActionsMenu from './EventActionsMenu.jsx'
 
 export default function EventCard({ parsed, summary, sessionUser, onDeleted }) {
@@ -67,6 +68,18 @@ export default function EventCard({ parsed, summary, sessionUser, onDeleted }) {
       // through to the navigate so the user lands on the composer.
     }
     navigate(`/${sessionUser.npub}/events/write`)
+  }
+
+  // "Schedule reminder" — opens the notes composer with a quoted naddr,
+  // pre-populated body, and the schedule toggle pre-checked at
+  // event.start − 24h (when the event is far enough out). Mirrors
+  // EventDetail's handler — composerPrefill flows through router state
+  // and NotesModule does the createDraft + nav to /notes/write.
+  function handleScheduleReminder(p) {
+    if (!sessionUser?.pubkey || !sessionUser?.npub) return
+    const prefill = buildReminderPrefill(p)
+    if (!prefill) return
+    navigate(`/${sessionUser.npub}/notes/write`, { state: { composerPrefill: prefill } })
   }
 
   return (
@@ -142,6 +155,7 @@ export default function EventCard({ parsed, summary, sessionUser, onDeleted }) {
           isOwner={isOwner}
           sessionUser={sessionUser}
           onLoadInEditor={isOwner ? handleLoadInEditor : null}
+          onScheduleReminder={handleScheduleReminder}
           onDeleted={onDeleted ? () => onDeleted(parsed) : undefined}
         />
       </div>

@@ -34,6 +34,7 @@ import {
 } from '../../../lib/eventTypes.js'
 import RsvpButtons from './RsvpButtons.jsx'
 import EventActionsMenu from './EventActionsMenu.jsx'
+import { buildReminderPrefill } from '../../../lib/eventReminder.js'
 import CommentsThread from './CommentsThread.jsx'
 import ZapModal from '../../../components/ZapModal.jsx'
 import { useMyZapped, useMyZapPending } from '../../../lib/useMyZapped.js'
@@ -110,6 +111,18 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
       // composer instead of staring at an unresponsive menu item.
     }
     navigate(`/${sessionUser.npub}/events/write`)
+  }, [navigate, sessionUser])
+
+  // "Schedule reminder" — opens the notes composer with a quoted naddr,
+  // a pre-populated body, and (when the event is far enough out) the
+  // schedule toggle pre-checked at event.start − 24h. The composer's
+  // existing auto-toggle on `snapshot.publishAt` does the schedule-mode
+  // hydration; we just hand it the prefill via router state.
+  const handleScheduleReminder = useCallback((p) => {
+    if (!sessionUser?.pubkey || !sessionUser?.npub) return
+    const prefill = buildReminderPrefill(p)
+    if (!prefill) return
+    navigate(`/${sessionUser.npub}/notes/write`, { state: { composerPrefill: prefill } })
   }, [navigate, sessionUser])
 
   const handleDeleted = useCallback(() => {
@@ -260,6 +273,7 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
         isOwner={isOwner}
         sessionUser={sessionUser}
         onLoadInEditor={isOwner ? handleLoadInEditor : null}
+        onScheduleReminder={handleScheduleReminder}
         onDeleted={handleDeleted}
       />
       {parsed.image && isSafeUrl(parsed.image) && (
