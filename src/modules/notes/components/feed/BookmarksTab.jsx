@@ -28,6 +28,8 @@
  * only renders the owner's public items.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
@@ -152,6 +154,80 @@ export default function BookmarksTab({ user, isOwner }) {
   // ── Owner: category chip state ──────────────────────────────────────
   const [activeCategoryId, setActiveCategoryId] = useState(null)
 
+  // ── URL ↔ active list sync ──────────────────────────────────────────
+  // ?list=<dTag> on the URL filters down to one bookmark list, e.g.
+  //   /<npub>/notes/bookmarks?list=favorite-articles
+  // BechResolver also redirects mynostr.app/<naddr1...> for kind 30003
+  // / 30001 here so a friend can open a shared link directly.
+  //
+  // Cold-mount guard: read the URL once on mount, then let user clicks
+  // own the param. Without the guard, every category change would
+  // round-trip through searchParams and feel laggy.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const coldMountAppliedRef = useRef(false)
+  useEffect(() => {
+    if (coldMountAppliedRef.current) return
+    if (!categories?.length) return
+    coldMountAppliedRef.current = true
+    const fromUrl = searchParams.get('list')
+    if (!fromUrl) return
+    // Validate against the loaded categories — silently drop a stale
+    // URL param rather than render an empty chip.
+    const match = categories.find(c => c.id === fromUrl)
+    if (match) setActiveCategoryId(fromUrl)
+  }, [categories, searchParams])
+
+  useEffect(() => {
+    if (!coldMountAppliedRef.current) return
+    const cur = searchParams.get('list') || ''
+    const next = activeCategoryId && activeCategoryId !== NOTE_PRIMARY_CATEGORY_ID
+      ? activeCategoryId
+      : ''
+    if (cur === next) return
+    const params = new URLSearchParams(searchParams)
+    if (next) params.set('list', next)
+    else params.delete('list')
+    setSearchParams(params, { replace: true })
+  }, [activeCategoryId, searchParams, setSearchParams])
+
+  // ── Share-this-list ──────────────────────────────────────────────────
+  // Encodes the active category as an naddr so a recipient gets the
+  // canonical kind/pubkey/dTag triple — the URL survives renames of
+  // the human-readable list title.
+  const [shareCopied, setShareCopied] = useState(false)
+  useEffect(() => {
+    if (!shareCopied) return
+    const t = setTimeout(() => setShareCopied(false), 1500)
+    return () => clearTimeout(t)
+  }, [shareCopied])
+
+  const activeCategory = activeCategoryId
+    ? (categories || []).find(c => c.id === activeCategoryId)
+    : null
+  const canShareActiveCategory = !!(
+    activeCategory &&
+    activeCategoryId !== NOTE_PRIMARY_CATEGORY_ID &&
+    pubkey
+  )
+
+  const handleShareCategory = useCallback(async () => {
+    if (!canShareActiveCategory) return
+    try {
+      const naddr = nip19.naddrEncode({
+        kind: activeCategory.sourceKind || 30003,
+        pubkey,
+        identifier: activeCategoryId,
+      })
+      const url = `${window.location.origin}/${naddr}`
+      await navigator.clipboard.writeText(url)
+      setShareCopied(true)
+    } catch {
+      // Clipboard can fail (insecure context, permissions). Silently
+      // bail — the user can still grab the URL from the address bar
+      // since it already encodes the list filter via ?list=.
+    }
+  }, [canShareActiveCategory, activeCategory, pubkey, activeCategoryId])
+
   // Status for the active bulk action. One op at a time so a single holder
   // is enough — each button reads `.action` to decide whether to show its
   // spinner, and `.error` parks the last failure so the user sees the
@@ -224,7 +300,7 @@ export default function BookmarksTab({ user, isOwner }) {
     setActiveCategoryId(firstVisible ? firstVisible.id : categories[0].id)
   }, [isOwner, categories, activeCategoryId, hiddenIds])
 
-  const activeCategory = categories.find(c => c.id === activeCategoryId) || null
+  // (activeCategory declared earlier alongside the share-this-list logic)
 
   // Owner items carry an addedAt (kind 30003 has per-item timestamps in
   // our JSON content extension; kind 10003 uses the list event's
@@ -496,6 +572,22 @@ export default function BookmarksTab({ user, isOwner }) {
         privacyView={privacyView}
         pubkey={pubkey}
       />
+
+      {canShareActiveCategory && (
+        <div className="max-w-xl mx-auto w-full px-4 pt-1 pb-2 flex items-center justify-end gap-2 text-[11px]">
+          <button
+            type="button"
+            onClick={handleShareCategory}
+            title="Copy a shareable link to this list"
+            className="text-neutral-500 hover:text-neutral-200 transition-colors inline-flex items-center gap-1"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+              <path d="M11 2.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm-3.85 4.35-2.3 1.3a2.5 2.5 0 1 0 0 1.7l2.3 1.3a2.5 2.5 0 1 0 .25-.85l-2.42-1.36a2.51 2.51 0 0 0 0-.43l2.42-1.36a2.55 2.55 0 0 1-.25-.3ZM4 8.5a1 1 0 1 1 0 0Zm7 4a1 1 0 1 1 0 0Z" />
+            </svg>
+            <span>{shareCopied ? '✓ Link copied' : 'Share this list'}</span>
+          </button>
+        </div>
+      )}
 
       {canShowBulkBar && (
         <div className="max-w-xl mx-auto w-full px-4 py-2 border-b border-neutral-800 flex items-center gap-2 text-xs">

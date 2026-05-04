@@ -103,6 +103,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 else openLogin()
               }}
               className="text-xs text-green-500 hover:text-green-300 transition-colors px-2 py-1.5 rounded border border-green-900 hover:border-green-700 inline-flex items-center justify-center gap-1.5"
+              title="Apologies — alpha testing in progress"
               aria-label="Report a bug"
             >
               <span aria-hidden>🐛</span>

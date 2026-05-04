@@ -376,6 +376,17 @@ function BechResolver() {
       // the drawer if the listing is in the visible feed.
       return <Navigate to={`/${authorNpub}/marketplace?listing=${identifier}`} replace />
     }
+    if (kind === 30003 || kind === 30001) {
+      // NIP-51 bookmark sets — drop the recipient on the author's
+      // bookmarks tab with the list filter pre-applied. BookmarksTab
+      // reads ?list=<dTag> on cold mount and snaps the chip bar to
+      // that list, so a friend lands looking at exactly the list
+      // the sender intended.
+      return <Navigate
+        to={`/${authorNpub}/notes/bookmarks?list=${encodeURIComponent(dTag)}`}
+        replace
+      />
+    }
     // Unknown kind — best-effort: send to the author's notes feed so
     // the visitor lands on a real surface they can explore from.
     return <Navigate to={`/${authorNpub}/${DEFAULT_MODULE}`} replace />

@@ -218,6 +218,7 @@ export default function MobileNavDrawer({
           </button>
           <button
             onClick={() => { onReportBug?.(); onClose() }}
+            title="Apologies — alpha testing in progress"
             className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-green-500 hover:bg-neutral-900 rounded transition-colors"
           >
             <span>🐛</span>
