@@ -21,21 +21,12 @@ import { uploadToBlossom } from '../../../lib/blossom.js'
 import {
   emptyEventForm,
   getUserTimezone,
+  COMMON_TZIDS,
+  buildTzDropdownList,
 } from '../../../lib/eventForm.js'
 import TimePicker from './TimePicker.jsx'
 import LocationAutocomplete from './LocationAutocomplete.jsx'
 import LinkExistingEventModal from './LinkExistingEventModal.jsx'
-
-// Common IANA tzids hoisted to the top of the dropdown so users in
-// the most common zones don't have to scroll. The user's own resolved
-// tz lives at the very top.
-const COMMON_TZIDS = [
-  'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York',
-  'America/Toronto', 'America/Mexico_City', 'America/Sao_Paulo', 'Europe/London',
-  'Europe/Amsterdam', 'Europe/Berlin', 'Europe/Madrid', 'Europe/Athens',
-  'Africa/Johannesburg', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Bangkok',
-  'Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Australia/Sydney', 'UTC',
-]
 
 // Match the cap used by CollectionEditModal and the Sell composer's
 // photo upload. Blossom servers may also enforce; the client check is
@@ -193,12 +184,7 @@ export default function EventComposer({
 
   const userTz = getUserTimezone()
   const tzKnown = COMMON_TZIDS.includes(form.tzid) || form.tzid === userTz
-  const tzList = []
-  const seen = new Set()
-  for (const tz of [userTz, ...COMMON_TZIDS]) {
-    if (!tz || seen.has(tz)) continue
-    seen.add(tz); tzList.push(tz)
-  }
+  const tzList = buildTzDropdownList(userTz)
 
   const publishing = draft.status === 'publishing'
   const published  = draft.status === 'published'

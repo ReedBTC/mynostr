@@ -18,7 +18,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 const SLOT_MINUTES = 15
 
-export default function TimePicker({ value, onChange, disabled = false, className = '' }) {
+export default function TimePicker({
+  value,
+  onChange,
+  disabled = false,
+  className = '',
+  // Optional per-slot disable predicate. When supplied, slots for which
+  // it returns true render greyed-out and unclickable. Used by the notes
+  // scheduler to dim past-time slots when the picked date is today.
+  isSlotDisabled,
+}) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
   const listRef = useRef(null)
@@ -92,20 +101,29 @@ export default function TimePicker({ value, onChange, disabled = false, classNam
           onTouchStart={e => e.stopPropagation()}
         >
           {slots.map(slot => {
-            const active = slot.value === value
+            const active   = slot.value === value
+            const slotOff  = !!isSlotDisabled?.(slot.value)
             return (
               <button
                 key={slot.value}
                 type="button"
                 role="option"
                 aria-selected={active}
+                aria-disabled={slotOff || undefined}
+                disabled={slotOff}
                 data-active={active ? 'true' : undefined}
-                onClick={() => { onChange(slot.value); setOpen(false) }}
+                onClick={() => {
+                  if (slotOff) return
+                  onChange(slot.value)
+                  setOpen(false)
+                }}
                 className={
                   'w-full text-left px-3 py-2 transition-colors ' +
-                  (active
-                    ? 'bg-purple-600/30 text-purple-100'
-                    : 'text-neutral-200 hover:bg-neutral-800')
+                  (slotOff
+                    ? 'text-neutral-600 cursor-not-allowed'
+                    : active
+                      ? 'bg-purple-600/30 text-purple-100'
+                      : 'text-neutral-200 hover:bg-neutral-800')
                 }
               >
                 {slot.label}

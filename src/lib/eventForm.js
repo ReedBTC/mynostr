@@ -28,6 +28,33 @@ export function getUserTimezone() {
   }
 }
 
+// Common IANA tzids hoisted to the top of the dropdown so users in
+// the most common zones don't have to scroll. The user's own resolved
+// tz is prepended at render time. Shared between the events composer
+// and the notes scheduler.
+export const COMMON_TZIDS = [
+  'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York',
+  'America/Toronto', 'America/Mexico_City', 'America/Sao_Paulo', 'Europe/London',
+  'Europe/Amsterdam', 'Europe/Berlin', 'Europe/Madrid', 'Europe/Athens',
+  'Africa/Johannesburg', 'Asia/Dubai', 'Asia/Kolkata', 'Asia/Bangkok',
+  'Asia/Singapore', 'Asia/Hong_Kong', 'Asia/Tokyo', 'Australia/Sydney', 'UTC',
+]
+
+/**
+ * Build the dropdown list: user's local tz first (deduped), then the
+ * common ones. Returned as a flat string[] — caller renders <option>s.
+ */
+export function buildTzDropdownList(userTz = getUserTimezone()) {
+  const out = []
+  const seen = new Set()
+  for (const tz of [userTz, ...COMMON_TZIDS]) {
+    if (!tz || seen.has(tz)) continue
+    seen.add(tz)
+    out.push(tz)
+  }
+  return out
+}
+
 export function emptyEventForm() {
   return {
     dTag:        '',

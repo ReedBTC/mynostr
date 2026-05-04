@@ -29,6 +29,13 @@ import {
   MIN_LEAD_SECONDS,
   MAX_FUTURE_SECONDS,
 } from '../../../lib/scheduler.js'
+import {
+  getUserTimezone,
+  COMMON_TZIDS,
+  buildTzDropdownList,
+  localDatetimeToUnixInTz,
+  unixToLocalInTz,
+} from '../../../lib/eventForm.js'
 import TimePicker from '../../events/components/TimePicker.jsx'
 
 // Default height — roughly a full phone-screen's worth of composing room
@@ -132,6 +139,15 @@ export default function NoteComposer({
   // scheduleTime is "HH:MM" 24-hour (TimePicker's I/O).
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTime, setScheduleTime] = useState('')
+  // IANA tz id the wall-clock above is interpreted in. Defaults to the
+  // browser's resolved zone, but event-reminder prefill seeds it from
+  // the event's start_tzid so "24h before the event" reads naturally
+  // in the same tz the event itself is in. Switching tz preserves the
+  // wall-clock (matches EventComposer behaviour) — the absolute publish
+  // moment changes accordingly.
+  const [scheduleTzid, setScheduleTzid] = useState(
+    initial.scheduleTzid || getUserTimezone()
+  )
   const [scheduling, setScheduling]     = useState(false)
   const [scheduleError, setScheduleError] = useState('')
   const [scheduleResult, setScheduleResult] = useState(null) // { eventId, scheduledFor }
@@ -242,10 +258,11 @@ export default function NoteComposer({
     if (snap.publishAt && Number.isFinite(snap.publishAt)
         && snap.publishAt > Math.floor(Date.now() / 1000) + 60) {
       setScheduleMode(true)
-      const d = new Date(snap.publishAt * 1000)
-      const pad = (n) => String(n).padStart(2, '0')
-      setScheduleDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
-      setScheduleTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
+      const tz = snap.scheduleTzid || getUserTimezone()
+      setScheduleTzid(tz)
+      const wall = unixToLocalInTz(snap.publishAt, tz)
+      setScheduleDate(wall.date)
+      setScheduleTime(wall.time)
     }
   }, [user?.pubkey])
 
@@ -809,6 +826,51 @@ export default function NoteComposer({
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
   }, [])
 
+  // Live ticking clock used to grey out past-time slots and warn when
+  // the picked time slips into the past while the user is still on the
+  // page. 30s cadence is plenty for a 15-min lead floor — a finer tick
+  // would just thrash renders without changing the UX.
+  const [nowTick, setNowTick] = useState(() => Date.now())
+  useEffect(() => {
+    if (!scheduleMode) return
+    const t = setInterval(() => setNowTick(Date.now()), 30_000)
+    return () => clearInterval(t)
+  }, [scheduleMode])
+
+  // Wall-time floor for the chosen date in the chosen tz.
+  //   • Selected date is BEFORE today-in-tz → '24:00' (every slot disabled)
+  //   • Selected date is AFTER  today-in-tz → null    (every slot enabled)
+  //   • Same day → return the wall-time of (now + MIN_LEAD) in tz, or '24:00'
+  //     when the floor has rolled into the next day (it's late enough that
+  //     no slot today is still ≥15 min out).
+  const minTimeForSelectedDate = useMemo(() => {
+    if (!scheduleDate || !scheduleTzid) return null
+    const minUnix = Math.floor(nowTick / 1000) + MIN_LEAD_SECONDS
+    const minWall = unixToLocalInTz(minUnix, scheduleTzid)
+    if (!minWall.date) return null
+    if (scheduleDate < minWall.date) return '24:00'
+    if (scheduleDate > minWall.date) return null
+    return minWall.time
+  }, [scheduleDate, scheduleTzid, nowTick])
+
+  // Predicate handed to TimePicker. String compare on "HH:MM" works
+  // because both sides are zero-padded — no Date math per slot.
+  const isScheduleSlotDisabled = useMemo(() => {
+    if (!minTimeForSelectedDate) return undefined
+    return (hhmm) => hhmm < minTimeForSelectedDate
+  }, [minTimeForSelectedDate])
+
+  // Resolve the currently-picked wall-clock to a unix instant in the
+  // chosen tz, so we can show the live "this time has passed" banner
+  // and disable SCHEDULE without making the user click and bounce off
+  // the server-side error.
+  const scheduledTooSoon = useMemo(() => {
+    if (!scheduleMode || !scheduleDate || !scheduleTime || !scheduleTzid) return false
+    const picked = localDatetimeToUnixInTz(`${scheduleDate}T${scheduleTime}`, scheduleTzid)
+    if (!Number.isFinite(picked)) return false
+    return picked < Math.floor(nowTick / 1000) + MIN_LEAD_SECONDS
+  }, [scheduleMode, scheduleDate, scheduleTime, scheduleTzid, nowTick])
+
   // Seed both fields the moment the user toggles "Schedule for later"
   // on, so they see a sensible default rather than empty inputs.
   useEffect(() => {
@@ -819,19 +881,24 @@ export default function NoteComposer({
     }
   }, [scheduleMode, scheduleDate, scheduleTime, defaultScheduleLocal])
 
-  // Auto-enable Schedule mode when the draft was hydrated from an
-  // imported event whose created_at is in the future (set by
-  // buildDraftSnapshotFromEvent). Runs once per draft mount because
+  // Auto-enable Schedule mode when the draft was hydrated with a future
+  // publishAt — set either by buildDraftSnapshotFromEvent (imported kind
+  // 1 with future created_at) or by composerPrefill from the events
+  // module's "Schedule reminder" flow. Runs once per draft mount because
   // the parent gives this component a `key={draft.id}`.
+  //
+  // The tz the wall-clock is rendered in: prefilled tzid (event reminders
+  // pass the event's start_tzid so the schedule UI matches the event)
+  // → falls back to userTz on cold drafts. scheduleTzid is already
+  // seeded above in useState, so we just need to read it back here.
   useEffect(() => {
     const pa = initial.publishAt
     if (!pa || !Number.isFinite(pa)) return
     if (pa <= Math.floor(Date.now() / 1000) + 60) return
     setScheduleMode(true)
-    const d = new Date(pa * 1000)
-    const pad = (n) => String(n).padStart(2, '0')
-    setScheduleDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
-    setScheduleTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
+    const wall = unixToLocalInTz(pa, scheduleTzid)
+    setScheduleDate(wall.date)
+    setScheduleTime(wall.time)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -855,7 +922,8 @@ export default function NoteComposer({
     quoteTarget: null,
     relayOverride,
     publishAt: initial.publishAt || null,
-  }), [content, zapSplits, userZapPct, manualTags, mentions, replyToInput, quoteInput, relayOverride, initial.publishAt])
+    scheduleTzid,
+  }), [content, zapSplits, userZapPct, manualTags, mentions, replyToInput, quoteInput, relayOverride, initial.publishAt, scheduleTzid])
 
   // Export current note as a kind 1 JSON file. Includes a
   // `_mynostr_form` sidecar with the full snapshot — relayOverride,
@@ -902,15 +970,19 @@ export default function NoteComposer({
       setScheduleError('Pick a publish date and time first.')
       return
     }
+    if (!scheduleTzid) {
+      setScheduleError('Pick a timezone.')
+      return
+    }
     if (!publishable) {
       setScheduleError('Note is empty or has unresolved fields.')
       return
     }
-    // Combine date + time into a local-tz Date. The string form
-    // `YYYY-MM-DDTHH:MM` is parsed as local time by Date — same shape
-    // the previous datetime-local input emitted, so server-side
-    // semantics don't change.
-    const publishUnixSec = Math.floor(new Date(`${scheduleDate}T${scheduleTime}`).getTime() / 1000)
+    // Interpret the wall-clock in the user-chosen tz (defaults to
+    // browser-local). Two-pass tz arithmetic in localDatetimeToUnixInTz
+    // handles DST boundaries correctly.
+    const tz = scheduleTzid || getUserTimezone()
+    const publishUnixSec = localDatetimeToUnixInTz(`${scheduleDate}T${scheduleTime}`, tz)
     if (!Number.isFinite(publishUnixSec) || publishUnixSec <= 0) {
       setScheduleError('Invalid date/time.')
       return
@@ -937,7 +1009,7 @@ export default function NoteComposer({
     } finally {
       setScheduling(false)
     }
-  }, [scheduleDate, scheduleTime, publishable])
+  }, [scheduleDate, scheduleTime, scheduleTzid, publishable])
 
   // Ref-wrap the callback so identity changes in the parent don't thrash
   // this effect — only real snapshot/publishable changes should emit.
@@ -1540,7 +1612,7 @@ export default function NoteComposer({
             <div className="mt-3">
               {viewingScheduled ? (
                 <div className="rounded border border-neutral-800 bg-neutral-950 px-3 py-2.5 space-y-1.5">
-                  <p className="text-[11px] text-neutral-400">Publish at (your local time)</p>
+                  <p className="text-[11px] text-neutral-400">Publish at</p>
                   <div className="flex gap-2">
                     <input
                       type="date"
@@ -1555,6 +1627,9 @@ export default function NoteComposer({
                       className="w-32 bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-300 cursor-not-allowed text-center"
                     />
                   </div>
+                  <p className="text-[10px] text-neutral-500">
+                    Timezone: <span className="text-neutral-300">{scheduleTzid || getUserTimezone()}</span>
+                  </p>
                   <p className="text-[10px] text-neutral-600">
                     Locked. Cancel above to edit.
                   </p>
@@ -1607,7 +1682,8 @@ export default function NoteComposer({
                         !content.trim() ||
                         zapSplitOver100 ||
                         hasInvalidReply ||
-                        hasInvalidQuote
+                        hasInvalidQuote ||
+                        (scheduleMode && scheduledTooSoon)
                       }
                       className={`w-full py-3 sm:py-2 disabled:bg-neutral-700 disabled:text-neutral-500 rounded-lg text-sm text-white font-semibold transition-colors ${
                         scheduleMode
@@ -1635,10 +1711,16 @@ export default function NoteComposer({
                       </label>
                     )}
 
-                    {scheduleMode && (
+                    {scheduleMode && (() => {
+                      const userTz = getUserTimezone()
+                      const tzKnown = !scheduleTzid
+                        || COMMON_TZIDS.includes(scheduleTzid)
+                        || scheduleTzid === userTz
+                      const tzList = buildTzDropdownList(userTz)
+                      return (
                       <div className="mt-2 rounded border border-neutral-800 bg-neutral-950 px-3 py-2.5 space-y-1.5">
                         <label className="block text-[11px] text-neutral-400">
-                          Publish at (your local time)
+                          Publish at
                         </label>
                         <div className="flex gap-2">
                           <input
@@ -1651,9 +1733,45 @@ export default function NoteComposer({
                           <TimePicker
                             value={scheduleTime}
                             onChange={v => { setScheduleTime(v); setScheduleError('') }}
+                            isSlotDisabled={isScheduleSlotDisabled}
                             className="w-32"
                           />
                         </div>
+                        {scheduledTooSoon && (
+                          <p className="text-[11px] text-amber-400 leading-snug">
+                            This time has slipped into the past. Pick a time at
+                            least {MIN_LEAD_SECONDS / 60} minutes from now.
+                          </p>
+                        )}
+                        <label className="block text-[11px] text-neutral-400 pt-1">
+                          Timezone
+                        </label>
+                        <select
+                          value={tzKnown ? scheduleTzid : '__custom__'}
+                          onChange={e => {
+                            if (e.target.value !== '__custom__') {
+                              setScheduleTzid(e.target.value)
+                            } else {
+                              setScheduleTzid('')
+                            }
+                            setScheduleError('')
+                          }}
+                          className="w-full bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-100 focus:outline-none focus:border-purple-600"
+                        >
+                          {tzList.map(tz => (
+                            <option key={tz} value={tz}>{tz}</option>
+                          ))}
+                          <option value="__custom__">Other (paste IANA id)…</option>
+                        </select>
+                        {!tzKnown && (
+                          <input
+                            type="text"
+                            value={scheduleTzid}
+                            onChange={e => { setScheduleTzid(e.target.value); setScheduleError('') }}
+                            placeholder="IANA tzid e.g. Africa/Cairo"
+                            className="w-full bg-neutral-900 border border-neutral-700 rounded-md px-3 py-1.5 text-sm text-neutral-100 focus:outline-none focus:border-purple-600"
+                          />
+                        )}
                         <p className="text-[10px] text-neutral-600 leading-snug">
                           Earliest: {MIN_LEAD_SECONDS / 60} min from now. Up to a year out.
                           15-minute slots.
@@ -1668,7 +1786,8 @@ export default function NoteComposer({
                           <p className="text-[11px] text-red-400">{scheduleError}</p>
                         )}
                       </div>
-                    )}
+                      )
+                    })()}
 
                     {zapSplitOver100 && (
                       <p className="mt-2 text-[11px] text-red-400">

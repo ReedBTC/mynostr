@@ -259,15 +259,18 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   }, [sessionUser?.pubkey, currentScheduledId])
 
   // Cross-module Comment / Quote / Reminder deep-link. Any feed can push
-  // `{ composerPrefill: { replyTo?, quote?, content?, publishAt? } }` into
-  // router state when navigating here; we open a NEW draft (not replace
-  // current) seeded with the prefill, route to the Write tab, and strip
-  // the state from history so back/forward doesn't replay the prefill.
+  // `{ composerPrefill: { replyTo?, quote?, content?, publishAt?, tzid? } }`
+  // into router state when navigating here; we open a NEW draft (not
+  // replace current) seeded with the prefill, route to the Write tab,
+  // and strip the state from history so back/forward doesn't replay
+  // the prefill.
   //
   // `publishAt` is read by NoteComposer's auto-toggle effect on mount —
   // when it's a future unix-second timestamp, the composer auto-enables
-  // schedule mode and populates the date/time fields. Used by the events
-  // module's "Schedule reminder" flow.
+  // schedule mode and populates the date/time fields. `tzid` seeds the
+  // composer's timezone selector so event-reminder prefill displays the
+  // schedule in the event's own timezone (matches the reminder body's
+  // "starts at <event tz time>" framing).
   //
   // Single navigate is load-bearing: an earlier two-call dance
   // (setModuleTab + a follow-up pathname/state-clear) raced against
@@ -279,13 +282,14 @@ export default function NotesModule({ user, sessionUser, subtab }) {
     if (!pending) return
     if (!isOwner) return
     if (!npub) return
-    const { replyTo, quote, content, publishAt } = pending
+    const { replyTo, quote, content, publishAt, tzid } = pending
     createDraft({
       snapshot: {
         ...(replyTo && { replyToInput: replyTo }),
         ...(quote && { quoteInput: quote }),
         ...(content && { content }),
         ...(Number.isFinite(publishAt) && publishAt > 0 && { publishAt }),
+        ...(tzid && { scheduleTzid: tzid }),
       },
     })
     navigate(`/${npub}/notes/write`, { replace: true, state: null })

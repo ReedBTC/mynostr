@@ -30,6 +30,10 @@ const DEFAULT_SNAPSHOT = {
   quoteTarget: null,
   relayOverride: { enabled: false, relays: [] },
   publishAt: null,
+  // null → composer falls back to browser-local on hydrate. Event-
+  // reminder prefill seeds an explicit IANA tz so the schedule UI
+  // shows the same zone the event itself is in.
+  scheduleTzid: null,
 }
 
 // Shape of each draft. Keep raw form-state under `snapshot` so the composer

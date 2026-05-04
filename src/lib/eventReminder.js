@@ -58,13 +58,21 @@ export function buildReminderBody(parsed) {
  * Build the full prefill payload for NotesModule's composerPrefill state.
  * Returns null if the event lacks an naddr (no quote possible) — caller
  * should hide the menu item in that case.
+ *
+ * Time-based events forward their start_tzid as `tzid` so the composer's
+ * timezone selector reads the event's own zone — keeps the schedule UI
+ * aligned with the reminder body's "starts at <event tz time>" framing.
+ * Date-based (kind 31922) events have no timezone, so the composer falls
+ * back to browser-local.
  */
 export function buildReminderPrefill(parsed) {
   if (!parsed?.naddr) return null
   const publishAt = computeReminderPublishAt(parsed)
+  const tzid = (!parsed.isDateBased && parsed.startTzid) ? parsed.startTzid : null
   return {
     quote:   parsed.naddr,
     content: buildReminderBody(parsed),
     ...(publishAt && { publishAt }),
+    ...(tzid && { tzid }),
   }
 }
