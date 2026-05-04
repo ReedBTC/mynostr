@@ -49,6 +49,15 @@ const RELAY_OK_TIMEOUT_MS = 4_000
 // prolific power users — typical kind 10002 lists are 5-15.
 const MAX_RELAYS_PER_EVENT = 24
 
+// Workers free-tier subrequest cap is 50 per request. Each event the
+// cron processes costs 1 (KV.get) + up to MAX_RELAYS_PER_EVENT (WS
+// publishes) + 1 (KV.put or .delete) = 26 worst case. Plus the
+// initial KV.list at 1. Budget the cron's total subrequests at 40 so
+// excess events spill over to the next tick rather than silently
+// failing when the runtime cuts us off mid-publish. Bump if/when we
+// move to a paid plan (1000 subreq/req).
+const MAX_TICK_SUBREQ_BUDGET = 40
+
 // Max KV value size we'll write (60 KB — KV's hard limit is 25 MB but
 // we don't want to be storing huge bodies; nostr events are small).
 const MAX_VALUE_SIZE_BYTES = 60 * 1024
@@ -75,6 +84,11 @@ function corsHeaders(request, env) {
 
 function hexToBytes(hex) {
   if (typeof hex !== 'string' || hex.length % 2) throw new Error('bad hex')
+  // Reject non-hex chars explicitly. parseInt() returns NaN on garbage,
+  // which silently becomes 0 in Uint8Array assignment — that produced
+  // signature bytes that schnorr.verify would fail-closed on but with
+  // a confusing error path. Better to reject up front.
+  if (!/^[0-9a-fA-F]+$/.test(hex)) throw new Error('bad hex')
   const out = new Uint8Array(hex.length / 2)
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
@@ -394,12 +408,29 @@ async function handleCron(env) {
   // to a per-bucket secondary index.
   const { keys } = await env.SCHEDULED_NOTES.list({ prefix: 'sched:' })
 
+  // Track subrequests used this tick. Starts at 1 for the KV.list
+  // above. Each event costs 1 (KV.get) + relayCount (WS) + 1 (KV op)
+  // = 2 + relayCount. We stop the loop when the worst-case cost of
+  // the NEXT event (2 + MAX_RELAYS_PER_EVENT) would exceed the
+  // budget, so we never overrun the runtime cap mid-publish.
+  let subreqUsed = 1
+  const worstCasePerEvent = 2 + MAX_RELAYS_PER_EVENT
+
   let published = 0
   let failedFinal = 0
   let stillPending = 0
   let skipped = 0
+  let deferred = 0
 
   for (const { name } of keys) {
+    // Budget guard — if even the worst-case next event won't fit,
+    // stop now. Remaining due events stay 'pending' (no attempts
+    // increment) and get picked up by the next tick.
+    if (subreqUsed + worstCasePerEvent > MAX_TICK_SUBREQ_BUDGET) {
+      deferred++
+      continue   // count remaining due events, don't break, so log is honest
+    }
+
     // sched:{pubkey}:{bucket}:{eventId}
     const parts = name.split(':')
     if (parts.length !== 4) { skipped++; continue }
@@ -407,17 +438,21 @@ async function handleCron(env) {
     if (!bucketIsAtOrBefore(bucket, nowBucket)) { skipped++; continue }   // not yet due
 
     const raw = await env.SCHEDULED_NOTES.get(name)
+    subreqUsed += 1
     if (!raw) { skipped++; continue }
     let parsed
     try { parsed = JSON.parse(raw) } catch { skipped++; continue }
 
     if (parsed.status === 'failed') { skipped++; continue }   // already gave up; UI will surface
 
+    const relayCount = (parsed.relays || []).length
     const okCount = await publishToRelays(parsed.event, parsed.relays || [])
+    subreqUsed += relayCount
 
     if (okCount > 0) {
       // At least one relay accepted — call it published, drop from KV.
       await env.SCHEDULED_NOTES.delete(name)
+      subreqUsed += 1
       published++
       console.log(`[scheduler] published ${parsed.event.id.slice(0, 12)}… to ${okCount}/${parsed.relays.length} relays`)
     } else {
@@ -429,6 +464,7 @@ async function handleCron(env) {
       const eventTime = parsed.event?.created_at || nowSec
       const expirationTtl = Math.max(60, (eventTime - nowSec) + 7 * 86400)
       await env.SCHEDULED_NOTES.put(name, updated, { expirationTtl })
+      subreqUsed += 1
       if (newStatus === 'failed') {
         failedFinal++
         console.warn(`[scheduler] giving up on ${parsed.event.id.slice(0, 12)}… after ${attempts} attempts`)
@@ -439,7 +475,7 @@ async function handleCron(env) {
     }
   }
 
-  console.log(`[scheduler] tick ${nowBucket}: published=${published} failedFinal=${failedFinal} stillPending=${stillPending} skipped=${skipped}`)
+  console.log(`[scheduler] tick ${nowBucket}: published=${published} failedFinal=${failedFinal} stillPending=${stillPending} skipped=${skipped} deferred=${deferred} subreq=${subreqUsed}/${MAX_TICK_SUBREQ_BUDGET}`)
 }
 
 // ─── WS publish (one event → N relays) ───────────────────────────────────────

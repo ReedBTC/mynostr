@@ -14,7 +14,7 @@
  * The Write pane is always mounted (hidden via CSS) so the draft list +
  * in-memory composer state survive a detour through the other tabs.
  */
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import ShareButton from '../../components/ShareButton.jsx'
 import NoteComposer from './components/NoteComposer.jsx'
@@ -108,6 +108,29 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   // when one is selected. Carried in state so a localStorage refresh
   // mid-view doesn't yank the editor's contents.
 
+  // Bumped per call so a slower-resolving earlier select doesn't land
+  // its setState after a faster-resolving later one. Without this,
+  // rapid card-clicks could leave the editor showing the first
+  // clicked card's content while the drafts list visually highlights
+  // a later card.
+  const selectScheduledSeqRef = useRef(0)
+
+  // Transient notice strip rendered above the composer. Two kinds:
+  //   - 'cancelled' (green) — fired after a successful Cancel click
+  //   - 'published' (amber) — fired when the cron just fired a note
+  //                           the user happened to be viewing.
+  // Auto-clears after a few seconds. The cancellingFromUiRef
+  // distinguishes "user cancelled" from "cron published" — both look
+  // identical to the local-mirror subscriber (entry just disappears),
+  // so we mark the in-flight UI cancel and the subscriber checks the
+  // mark before deciding which notice to show.
+  const [notice, setNotice] = useState(null)
+  const cancellingFromUiRef = useRef(null)
+  useEffect(() => {
+    if (!notice) return
+    const t = setTimeout(() => setNotice(null), 3000)
+    return () => clearTimeout(t)
+  }, [notice])
   const handleSelectScheduled = useCallback(async (eventId) => {
     if (!sessionUser?.pubkey) return
     const entry = getScheduledEntryLocal(sessionUser.pubkey, eventId)
@@ -116,7 +139,9 @@ export default function NotesModule({ user, sessionUser, subtab }) {
       // Bail silently rather than show an empty editor.
       return
     }
+    const seq = ++selectScheduledSeqRef.current
     const snap = await buildDraftSnapshotFromEvent(entry.event, sessionUser.pubkey)
+    if (seq !== selectScheduledSeqRef.current) return   // superseded
     setScheduledDraftView({
       id: `scheduled-${eventId}`,
       snapshot: snap,
@@ -142,13 +167,20 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   const handleCancelScheduledAndEdit = useCallback(async () => {
     if (!currentScheduledId || !sessionUser?.pubkey) return
     const entry = getScheduledEntryLocal(sessionUser.pubkey, currentScheduledId)
+    // Mark this id as a UI-driven cancel before the network call so the
+    // local-mirror subscriber doesn't fire the wrong "your note just
+    // published" notice when removeLocal lands.
+    cancellingFromUiRef.current = currentScheduledId
     try {
       await workerCancelScheduled(currentScheduledId, sessionUser.pubkey)
     } catch (e) {
-      // If the worker is down or auth fails, surface in console;
-      // user can retry. Don't drop them out of locked view.
+      cancellingFromUiRef.current = null
       console.warn('[scheduler] cancel failed:', e?.message || e)
-      return
+      // Re-throw so the locked-banner Cancel button surfaces the
+      // failure inline instead of silently no-op'ing — the prior
+      // silent-return behavior was the root cause of "I clicked
+      // Cancel but my note went out anyway" reports.
+      throw e
     }
 
     const nowSec = Math.floor(Date.now() / 1000)
@@ -177,10 +209,15 @@ export default function NotesModule({ user, sessionUser, subtab }) {
     }
     setCurrentScheduledId(null)
     setScheduledDraftView(null)
+    cancellingFromUiRef.current = null
     if (snap) {
       createDraft({ snapshot: snap })
       // useNoteDrafts.createDraft selects the new draft automatically.
     }
+    setNotice({
+      kind: 'cancelled',
+      text: 'Scheduled note cancelled — edit and reschedule, or publish now.',
+    })
   }, [currentScheduledId, sessionUser?.pubkey, createDraft])
 
   // When the user clicks a regular draft row, drop the scheduled view.
@@ -197,13 +234,26 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   // stay stranded in viewingScheduled mode pointing at a synthetic
   // draft for an event that no longer exists, and clicking Cancel
   // would error.
+  //
+  // Differentiate cron-publish from user-cancel via cancellingFromUiRef
+  // — set by handleCancelScheduledAndEdit before its network call, so
+  // when removeLocal fires this subscriber we know which case we're
+  // in. Cron-publish gets an amber "your note just published" notice;
+  // user-cancel gets the green notice from handleCancel itself.
   useEffect(() => {
     if (!sessionUser?.pubkey || !currentScheduledId) return
     return onSchedulerLocalChange(() => {
       const entry = getScheduledEntryLocal(sessionUser.pubkey, currentScheduledId)
       if (!entry) {
+        const wasOurCancel = cancellingFromUiRef.current === currentScheduledId
         setCurrentScheduledId(null)
         setScheduledDraftView(null)
+        if (!wasOurCancel) {
+          setNotice({
+            kind: 'published',
+            text: 'Your scheduled note just published.',
+          })
+        }
       }
     })
   }, [sessionUser?.pubkey, currentScheduledId])
@@ -450,28 +500,48 @@ export default function NotesModule({ user, sessionUser, subtab }) {
               onSelectScheduled={handleSelectScheduled}
             />
           )}
-          {scheduledDraftView ? (
-            <NoteComposer
-              key={scheduledDraftView.id}
-              user={user}
-              draft={scheduledDraftView}
-              draftCount={drafts.length}
-              viewingScheduled
-              onCancelScheduled={handleCancelScheduledAndEdit}
-              onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
-            />
-          ) : currentDraft && (
-            <NoteComposer
-              key={currentDraft.id}
-              user={user}
-              draft={currentDraft}
-              draftCount={drafts.length}
-              onSnapshotChange={(patch) => handleSnapshotChange(currentDraft.id, patch)}
-              onPublish={() => publishOne(currentDraft.id)}
-              onClear={() => clearDraft(currentDraft.id)}
-              onAckPublished={() => deleteDraft(currentDraft.id)}
-              onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
-            />
+          {/* Wrap composer in a flex column so the transient notice
+              strip can sit above it without breaking the desktop
+              drafts/composer side-by-side layout. */}
+          {(scheduledDraftView || currentDraft) && (
+            <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+              {notice && (
+                <div
+                  className={`px-4 py-2 text-[11px] text-center border-b transition-opacity ${
+                    notice.kind === 'published'
+                      ? 'bg-amber-950/30 border-amber-800/60 text-amber-300'
+                      : 'bg-green-950/30 border-green-800/60 text-green-300'
+                  }`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {notice.text}
+                </div>
+              )}
+              {scheduledDraftView ? (
+                <NoteComposer
+                  key={scheduledDraftView.id}
+                  user={user}
+                  draft={scheduledDraftView}
+                  draftCount={drafts.length}
+                  viewingScheduled
+                  onCancelScheduled={handleCancelScheduledAndEdit}
+                  onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
+                />
+              ) : (
+                <NoteComposer
+                  key={currentDraft.id}
+                  user={user}
+                  draft={currentDraft}
+                  draftCount={drafts.length}
+                  onSnapshotChange={(patch) => handleSnapshotChange(currentDraft.id, patch)}
+                  onPublish={() => publishOne(currentDraft.id)}
+                  onClear={() => clearDraft(currentDraft.id)}
+                  onAckPublished={() => deleteDraft(currentDraft.id)}
+                  onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
+                />
+              )}
+            </div>
           )}
           {isMobile && (
             <DraftsTray

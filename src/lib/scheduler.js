@@ -26,6 +26,10 @@ export const MIN_LEAD_SECONDS = 900
 // 1 year — must match the worker's MAX_FUTURE_SECONDS.
 export const MAX_FUTURE_SECONDS = 365 * 24 * 3600
 
+// Bound every worker round-trip so a misbehaving / unreachable worker
+// can't wedge the UI on "Scheduling…" / "Loading…" forever.
+const FETCH_TIMEOUT_MS = 10_000
+
 const STORAGE_PREFIX = 'mynostr_scheduled_'
 
 function workerUrl() {
@@ -153,15 +157,24 @@ export async function scheduleNote({ content, tags, publishUnixSec }) {
 
   const relays = await resolveOutboxRelays()
 
-  const res = await fetch(`${workerUrl()}/schedule`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      event: ev.rawEvent(),
-      publishAt: publishUnixSec,
-      relays,
-    }),
-  })
+  let res
+  try {
+    res = await fetch(`${workerUrl()}/schedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event: ev.rawEvent(),
+        publishAt: publishUnixSec,
+        relays,
+      }),
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+  } catch (e) {
+    if (e?.name === 'TimeoutError') {
+      throw new Error('Scheduler didn\'t respond. Try again in a moment.')
+    }
+    throw e
+  }
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}))
     throw new Error(errBody.error || `Scheduler returned ${res.status}`)
@@ -198,7 +211,16 @@ export function getScheduledEntryLocal(pubkey, eventId) {
  */
 export async function listScheduled(pubkey) {
   if (!pubkey || !/^[0-9a-f]{64}$/.test(pubkey)) return []
-  const res = await fetch(`${workerUrl()}/scheduled?pubkey=${pubkey}`)
+  let res
+  try {
+    res = await fetch(`${workerUrl()}/scheduled?pubkey=${pubkey}`, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+  } catch (e) {
+    // Timeout or network error — fall back to local cache so the
+    // tray still shows what we know.
+    return readLocalScheduled(pubkey)
+  }
   if (!res.ok) {
     // Network error or worker down — fall back to local cache so the
     // tray still shows something.
@@ -247,13 +269,27 @@ export async function cancelScheduled(eventId, pubkey) {
   ]
   await signWithTimeout(auth)
   const authJson = JSON.stringify(auth.rawEvent())
-  // Web btoa on Unicode → first encode UTF-8 manually.
-  const authB64 = btoa(unescape(encodeURIComponent(authJson)))
+  // Web btoa() expects a Latin-1 binary string. JSON of a NIP-98 event
+  // typically only contains ASCII, but defensive UTF-8 → btoa-safe via
+  // TextEncoder + per-byte mapping. Replaces the deprecated
+  // unescape(encodeURIComponent(...)) trick.
+  const authB64 = btoa(
+    String.fromCharCode(...new TextEncoder().encode(authJson)),
+  )
 
-  const res = await fetch(url, {
-    method: 'DELETE',
-    headers: { 'Authorization': `Nostr ${authB64}` },
-  })
+  let res
+  try {
+    res = await fetch(url, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Nostr ${authB64}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    })
+  } catch (e) {
+    if (e?.name === 'TimeoutError') {
+      throw new Error('Scheduler didn\'t respond. Try again in a moment.')
+    }
+    throw e
+  }
   if (!res.ok) {
     // 404 means the entry is already gone — most often because cron
     // just published it (race window between user clicking Cancel

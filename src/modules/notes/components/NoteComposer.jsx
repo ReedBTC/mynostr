@@ -141,6 +141,30 @@ export default function NoteComposer({
   // reference the scheduled note before it publishes.
   const [scheduledMenuOpen, setScheduledMenuOpen] = useState(false)
   const [scheduledCopyFlash, setScheduledCopyFlash] = useState('')
+
+  // Cancel-scheduled state: pending while the worker DELETE is in
+  // flight, error string when the network call throws (parent re-
+  // throws on failure). Surfaced inline in the locked banner so a
+  // failed cancel doesn't silently no-op the way it used to —
+  // root cause of "I clicked Cancel but my note went out anyway".
+  const [cancellingScheduled, setCancellingScheduled] = useState(false)
+  const [cancelScheduledError, setCancelScheduledError] = useState('')
+  async function handleCancelScheduledClick() {
+    if (cancellingScheduled) return
+    setCancellingScheduled(true)
+    setCancelScheduledError('')
+    try {
+      await onCancelScheduled?.()
+      // On success, the parent transitions us to a fresh editable draft
+      // and this component remounts on a different key. The pending
+      // state below is moot — but we clear it defensively in case the
+      // remount path changes in the future.
+    } catch (e) {
+      setCancelScheduledError(e?.message || 'Cancel failed — try again.')
+    } finally {
+      setCancellingScheduled(false)
+    }
+  }
   const scheduledMenuRef = useRef(null)
   useEffect(() => {
     if (!scheduledMenuOpen) return
@@ -1036,24 +1060,33 @@ export default function NoteComposer({
             </p>
             <button
               type="button"
-              onClick={() => onCancelScheduled?.()}
-              className="w-full py-2 rounded bg-red-600 hover:bg-red-500 text-sm text-white font-semibold transition-colors"
+              onClick={handleCancelScheduledClick}
+              disabled={cancellingScheduled}
+              className="w-full py-2 rounded bg-red-600 hover:bg-red-500 disabled:bg-red-900 disabled:cursor-not-allowed text-sm text-white font-semibold transition-colors"
             >
-              Cancel Scheduled Note
+              {cancellingScheduled ? 'Cancelling…' : 'Cancel Scheduled Note'}
             </button>
+            {cancelScheduledError && (
+              <p className="text-[11px] text-red-300 leading-snug">
+                {cancelScheduledError}
+              </p>
+            )}
           </div>
           )
         })()}
         {/* Wrap the editable surface in a disabled fieldset when viewing
             a scheduled item. `disabled` on a fieldset propagates to every
             form control inside, regardless of nesting depth — cleaner
-            than threading a `disabled` prop through every input. The
-            `contents` display strips the fieldset's default block layout
-            so the wrapped tree renders identically to the non-locked
-            case. */}
+            than threading a `disabled` prop through every input.
+            Standard block rendering (no `display: contents`): older
+            browsers had buggy disabled-propagation when fieldset used
+            display:contents. Tailwind's preflight zeroes out the
+            fieldset's default border/padding so it doesn't visually
+            affect layout, but it stays as a normal block container
+            which is what every browser handles correctly. */}
         <fieldset
           disabled={viewingScheduled}
-          className="contents"
+          className="min-w-0"
         >
         {/* Mobile-only drafts chip — desktop gets a persistent left column */}
         {isMobile && onOpenDraftsMobile && (
@@ -1624,6 +1657,12 @@ export default function NoteComposer({
                         <p className="text-[10px] text-neutral-600 leading-snug">
                           Earliest: {MIN_LEAD_SECONDS / 60} min from now. Up to a year out.
                           15-minute slots.
+                        </p>
+                        <p className="text-[10px] text-amber-600/80 leading-snug">
+                          Heads up: scheduled notes sit on the scheduling worker
+                          in plaintext. Anyone with your pubkey can read what's
+                          queued before it publishes. Don't schedule anything
+                          you wouldn't want public early.
                         </p>
                         {scheduleError && (
                           <p className="text-[11px] text-red-400">{scheduleError}</p>
