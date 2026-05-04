@@ -12,6 +12,7 @@
  * confirmation modal before iterating through every draft with text.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { nip19 } from 'nostr-tools'
 import {
   isSchedulerConfigured,
   listScheduled,
@@ -518,6 +519,72 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
       ? 'border-blue-500 bg-blue-900/50 ring-1 ring-blue-500/50'
       : 'border-blue-800/60 bg-blue-950/30 hover:border-blue-700 hover:bg-blue-900/40'
 
+  // Three-dot menu state. Replaces the prior always-visible Cancel
+  // button — that button hogged real estate on mobile (no hover) and
+  // pushed the row preview into truncation. The menu collapses every
+  // row action behind a single ⋯ icon.
+  //
+  // `copied` flips the matching item's label to "✓ Copied!" briefly,
+  // mirroring the locked-banner copy pattern in NoteComposer.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [copied, setCopied] = useState(null) // 'nevent' | 'note' | null
+  const menuRef = useRef(null)
+  const copyTimerRef = useRef(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    function onDown(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuOpen(false)
+      }
+    }
+    function onKey(e) { if (e.key === 'Escape') setMenuOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('touchstart', onDown, { passive: true })
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('touchstart', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
+
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+  }, [])
+
+  const eventId     = item.eventId || item.event?.id || ''
+  const eventPubkey = item.event?.pubkey || ''
+
+  async function copyText(text, label) {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(label)
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+      copyTimerRef.current = setTimeout(() => {
+        setCopied(null)
+        setMenuOpen(false)
+      }, 1200)
+    } catch {
+      // Clipboard can fail in cross-origin iframes / insecure contexts —
+      // close the menu silently rather than leaving it stuck open.
+      setMenuOpen(false)
+    }
+  }
+  function copyNevent() {
+    if (!eventId || !eventPubkey) return
+    try {
+      const nevent = nip19.neventEncode({ id: eventId, author: eventPubkey })
+      copyText(`nostr:${nevent}`, 'nevent')
+    } catch {}
+  }
+  function copyNoteId() {
+    if (!eventId) return
+    try {
+      copyText(nip19.noteEncode(eventId), 'note')
+    } catch {}
+  }
+
   return (
     <div
       onClick={onSelect}
@@ -532,19 +599,61 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
           {failed ? `failed after ${item.attempts} attempts` : when}
         </p>
       </div>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); onCancel() }}
-        disabled={cancelling}
-        title={failed ? 'Remove from list' : 'Cancel scheduled publish'}
-        className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 ${
-          failed
-            ? 'text-red-300 border-red-900 hover:bg-red-900/40'
-            : 'text-neutral-300 border-neutral-700 hover:text-red-300 hover:border-red-900 bg-neutral-900/60'
-        }`}
-      >
-        {cancelling ? '…' : (failed ? 'Remove' : 'Cancel')}
-      </button>
+      <div className="relative shrink-0" ref={menuRef} onMouseDown={e => e.stopPropagation()}>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o) }}
+          aria-label="Scheduled note actions"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className={`p-1 rounded transition-colors ${
+            failed
+              ? 'text-red-300/70 hover:text-red-200 hover:bg-red-900/40'
+              : 'text-blue-300/70 hover:text-blue-100 hover:bg-blue-900/40'
+          }`}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+            <circle cx="3" cy="8" r="1.4" />
+            <circle cx="8" cy="8" r="1.4" />
+            <circle cx="13" cy="8" r="1.4" />
+          </svg>
+        </button>
+        {menuOpen && (
+          <div
+            role="menu"
+            onClick={e => e.stopPropagation()}
+            className="absolute right-0 top-full mt-1 z-30 min-w-[160px] bg-neutral-900 border border-neutral-700 rounded shadow-xl py-1"
+          >
+            {eventId && eventPubkey && (
+              <button
+                role="menuitem"
+                onClick={copyNevent}
+                className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors"
+              >
+                {copied === 'nevent' ? '✓ Copied!' : 'Copy nevent'}
+              </button>
+            )}
+            {eventId && (
+              <button
+                role="menuitem"
+                onClick={copyNoteId}
+                className="w-full text-left px-3 py-1.5 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors"
+              >
+                {copied === 'note' ? '✓ Copied!' : 'Copy note id'}
+              </button>
+            )}
+            {(eventId || eventPubkey) && <div className="border-t border-neutral-800 my-1" />}
+            <button
+              role="menuitem"
+              onClick={() => { setMenuOpen(false); onCancel() }}
+              disabled={cancelling}
+              className="w-full text-left px-3 py-1.5 text-xs text-red-400 hover:bg-red-950/40 transition-colors disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              {cancelling ? '…' : (failed ? 'Remove from list' : 'Cancel scheduled publish')}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
