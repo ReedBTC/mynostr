@@ -6,9 +6,10 @@
  * Mobile: bottom sheet opened from a "Drafts (N)" chip in the
  * composer top action row.
  *
- * Each row shows: title (or "Untitled event"), date subline, hero
- * thumbnail, status dot, trash button (two-click confirm), reorder
- * arrows (publish-queue order matches array order).
+ * Each row shows: title (or "Untitled event"), date subline, status
+ * dot, trash button (two-click confirm), reorder arrows (publish-queue
+ * order matches array order). No thumbnail — the 36px image was eating
+ * real estate that the title + date line read better without.
  *
  * Footer actions:
  *   • Multi-JSON Import — drop in any number of kind 31922/31923 JSON files
@@ -21,7 +22,6 @@
  * actions that belong next to the editor.
  */
 import { useEffect, useRef, useState } from 'react'
-import { isSafeUrl } from '../../../lib/utils.js'
 
 // Local mirror of NIP-52 kinds we accept as event coords; tray-internal
 // only, kept here to avoid pulling more imports than necessary.
@@ -142,7 +142,6 @@ function DraftRow({ draft, isCurrent, index, total, onSelect, onDelete, onMove }
     )
   }
 
-  const cover = draft.snapshot?.image
   const dateStr = previewDate(draft.snapshot)
 
   return (
@@ -170,20 +169,6 @@ function DraftRow({ draft, isCurrent, index, total, onSelect, onDelete, onMove }
           aria-label="Move down in publish queue"
           className="text-neutral-400 hover:text-neutral-100 disabled:opacity-30 disabled:pointer-events-none px-2 py-1 md:px-1.5 md:py-0.5 leading-none text-sm"
         >▼</button>
-      </div>
-
-      {/* Thumbnail */}
-      <div className="w-9 h-9 rounded bg-neutral-800 border border-neutral-700 flex-shrink-0 overflow-hidden flex items-center justify-center text-neutral-600 text-sm">
-        {cover && isSafeUrl(cover) ? (
-          <img
-            src={cover}
-            alt=""
-            className="w-full h-full object-cover"
-            onError={e => { e.currentTarget.style.display = 'none' }}
-          />
-        ) : (
-          <span aria-hidden>📅</span>
-        )}
       </div>
 
       <div className="flex-1 min-w-0">
