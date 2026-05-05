@@ -7,6 +7,25 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>MyNostr</title>
     <meta name="description" content="Your personal Nostr portal — publish, search, archive, and analyze your notes." />
+    <!--
+      Open Graph + Twitter defaults for the homepage and any unmatched
+      route (e.g., /login, /help, deep links to undeployed routes). The
+      Pages Function strips and replaces these on shareable entity URLs
+      (articles, notes, profiles), so they don't conflict with per-entity
+      meta — they're the static fallback for everything else.
+    -->
+    <meta property="og:title" content="MyNostr — Your personal Nostr portal" />
+    <meta property="og:description" content="Publish, search, archive, and analyze your Nostr activity." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://mynostr.app" />
+    <meta property="og:site_name" content="MyNostr" />
+    <meta property="og:image" content="https://mynostr.app/og-default.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="MyNostr — Your personal Nostr portal" />
+    <meta name="twitter:description" content="Publish, search, archive, and analyze your Nostr activity." />
+    <meta name="twitter:image" content="https://mynostr.app/og-default.jpg" />
   </head>
   <body class="bg-neutral-950">
     <div id="root"></div>

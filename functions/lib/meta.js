@@ -24,6 +24,9 @@ const ARTICLE_DESC_MAX = 200
 // platforms (Slack, Discord) will show a shorter preview, but that's
 // preferable to the narrow case looking like a wall of text.
 const NOTE_DESC_MAX = 80
+// Profiles — bio (about field) is similar density to a note. Match
+// the note cap so unfurls feel consistent in length.
+const PROFILE_DESC_MAX = 160
 
 function tagValue(event, name) {
   const t = event?.tags?.find(t => t[0] === name)
@@ -105,6 +108,79 @@ export function renderArticleMeta(event, profile, canonicalUrl) {
 
   return {
     title: ogTitleTrimmed,
+    description,
+    headTags: tagLines.join('\n    ') + '\n    ' + ldScript,
+  }
+}
+
+export function renderProfileMeta(profile, npub, canonicalUrl) {
+  // Profile may be near-empty when the relay race didn't return a kind 0
+  // (new accounts, lost events). We still render something useful — the
+  // alternative is falling through to the homepage OG, which doesn't
+  // identify the profile as a profile.
+  const name = profileName(profile) || 'Nostr Profile'
+  const nip05 = (profile?.nip05 || '').trim()
+  const handle = nip05 ? `${name} (${nip05})` : name
+  const title = truncate(`${handle} on ${SITE_NAME}`, TITLE_MAX)
+  const description = truncate(profile?.about || '', PROFILE_DESC_MAX)
+
+  // Banner is wider, better-suited to og:image's 1.91:1 ideal than the
+  // square profile picture. Prefer banner → picture (square card) →
+  // default fallback.
+  const banner  = profile?.banner
+  const picture = profile?.picture
+  let image, cardType, declareDimensions = false
+  if (isSafeImageUrl(banner)) {
+    image = banner
+    cardType = 'summary_large_image'
+  } else if (isSafeImageUrl(picture)) {
+    image = picture
+    cardType = 'summary'
+  } else {
+    image = DEFAULT_OG_IMAGE
+    cardType = 'summary_large_image'
+    declareDimensions = true
+  }
+
+  const profileUrl = npub ? `${SITE_URL}/${npub}` : canonicalUrl
+
+  const tagLines = [
+    `<meta property="og:type" content="profile" />`,
+    `<meta property="og:site_name" content="${SITE_NAME}" />`,
+    `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`,
+    `<meta property="og:title" content="${escapeHtml(title)}" />`,
+    `<meta property="og:description" content="${escapeHtml(description)}" />`,
+    `<meta property="og:image" content="${escapeHtml(image)}" />`,
+    declareDimensions && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    declareDimensions && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    profile?.name && `<meta property="profile:username" content="${escapeHtml(profile.name)}" />`,
+    `<meta name="twitter:card" content="${cardType}" />`,
+    `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
+    `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
+    `<meta name="twitter:image" content="${escapeHtml(image)}" />`,
+  ].filter(Boolean)
+
+  // schema.org/ProfilePage with embedded Person — Google uses this for
+  // people-search results and knowledge-panel surfacing.
+  const person = {
+    '@type': 'Person',
+    name,
+    url: profileUrl,
+  }
+  if (description) person.description = description
+  if (isSafeImageUrl(picture)) person.image = picture
+  if (nip05) person.alternateName = nip05
+  if (isSafeImageUrl(profile?.website)) person.sameAs = [profile.website]
+
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'ProfilePage',
+    mainEntity: person,
+  }
+  const ldScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
+
+  return {
+    title,
     description,
     headTags: tagLines.join('\n    ') + '\n    ' + ldScript,
   }

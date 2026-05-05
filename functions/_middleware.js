@@ -12,7 +12,7 @@
 
 import { nip19 } from 'nostr-tools'
 import { raceRelays } from './lib/relays.js'
-import { renderArticleMeta, renderNoteMeta } from './lib/meta.js'
+import { renderArticleMeta, renderNoteMeta, renderProfileMeta } from './lib/meta.js'
 
 const SITE_ORIGIN = 'https://mynostr.app'
 const CACHE_TTL_SECONDS = 3600
@@ -20,7 +20,7 @@ const CACHE_TTL_SECONDS = 3600
 // templates change so old previews don't linger for the TTL window after
 // a deploy. Keys live under a synthetic origin so the bump is transparent
 // to the request URL itself.
-const CACHE_VERSION = 'v3'
+const CACHE_VERSION = 'v4'
 
 export async function onRequest(context) {
   const { request, next } = context
@@ -84,30 +84,28 @@ export async function onRequest(context) {
 
 // ── URL → entity detection ──────────────────────────────────────────────────
 //
-// Phase 1: articles (kind 30023) and notes (kind 1) only. Other entity
-// kinds return null and the request passes through to static HTML.
+// Phase 2: articles (kind 30023), notes (kind 1), profiles (kind 0).
+// Events / listings / other naddr kinds still pass through.
 //
 // Recognized URL shapes (both bech32-shortform and canonical app URLs):
 //   /naddr1...                              — article, IF kind === 30023
-//   /nevent1...                             — note
-//   /note1...                               — note
+//   /nevent1..., /note1...                  — note
+//   /npub1..., /nprofile1...                — profile
 //   /<npub>/articles?article=<naddr>        — article (canonical)
 //   /<npub>/notes/<nevent|note>             — note (canonical)
+//   /<npub>/...                             — profile (catch-all for any
+//                                             other route under an npub)
 //
 function detectEntity(url) {
   const path = url.pathname
   const search = url.searchParams
 
-  // Bech32 single-segment routes (BechResolver targets).
+  // ── Bech32 single-segment routes (BechResolver targets) ──
   const naddrPath = /^\/(naddr1[a-z0-9]+)\/?$/i.exec(path)
   if (naddrPath) {
     const decoded = safeDecode(naddrPath[1])
     if (decoded?.type === 'naddr' && decoded.data.kind === 30023) {
-      return {
-        kind: 30023,
-        pubkey: decoded.data.pubkey,
-        dTag: decoded.data.identifier,
-      }
+      return { kind: 30023, pubkey: decoded.data.pubkey, dTag: decoded.data.identifier }
     }
     return null
   }
@@ -124,33 +122,61 @@ function detectEntity(url) {
     return null
   }
 
-  // Canonical article share URL: /<npub>/articles?article=<naddr>.
-  // Trailing /<subtab> (mine, collection, search) is allowed.
-  const articleRoute = /^\/(npub1[a-z0-9]+)\/articles(?:\/[a-z]+)?\/?$/i.exec(path)
-  if (articleRoute) {
-    const naddrParam = search.get('article')
-    if (!naddrParam) return null
-    const decoded = safeDecode(naddrParam)
-    if (decoded?.type === 'naddr' && decoded.data.kind === 30023) {
-      return {
-        kind: 30023,
-        pubkey: decoded.data.pubkey,
-        dTag: decoded.data.identifier,
-      }
-    }
+  const npubBech = /^\/(npub1[a-z0-9]+)\/?$/i.exec(path)
+  if (npubBech) {
+    const decoded = safeDecode(npubBech[1])
+    if (decoded?.type === 'npub') return { kind: 0, pubkey: decoded.data }
     return null
   }
 
-  // Canonical note detail URL: /<npub>/notes/<nevent|note>.
-  const noteDetail = /^\/(npub1[a-z0-9]+)\/notes\/(nevent1[a-z0-9]+|note1[a-z0-9]+)\/?$/i.exec(path)
-  if (noteDetail) {
-    const decoded = safeDecode(noteDetail[2])
-    if (decoded?.type === 'nevent') {
-      return { kind: 1, eventId: decoded.data.id, pubkey: decoded.data.author || null }
+  const nprofileBech = /^\/(nprofile1[a-z0-9]+)\/?$/i.exec(path)
+  if (nprofileBech) {
+    const decoded = safeDecode(nprofileBech[1])
+    if (decoded?.type === 'nprofile') return { kind: 0, pubkey: decoded.data.pubkey }
+    return null
+  }
+
+  // ── Canonical app URLs starting with /<npub>/... ──
+  // The npub catch-all sits at the end so article/note detail patterns
+  // get first refusal. Anything else under /<npub>/ falls through to a
+  // profile share — landing on /<npub>/notes shouldn't unfurl with
+  // generic homepage meta.
+  const npubPrefix = /^\/(npub1[a-z0-9]+)(\/.*)?$/i.exec(path)
+  if (npubPrefix) {
+    const npubStr = npubPrefix[1]
+    const rest = npubPrefix[2] || ''
+
+    // Article share: /<npub>/articles[/<subtab>]?article=<naddr>
+    const articleSegment = /^\/articles(?:\/[a-z]+)?\/?$/i.test(rest)
+    if (articleSegment) {
+      const naddrParam = search.get('article')
+      if (naddrParam) {
+        const decoded = safeDecode(naddrParam)
+        if (decoded?.type === 'naddr' && decoded.data.kind === 30023) {
+          return { kind: 30023, pubkey: decoded.data.pubkey, dTag: decoded.data.identifier }
+        }
+      }
+      // No ?article= param → falls through to profile catch-all below.
     }
-    if (decoded?.type === 'note') {
-      return { kind: 1, eventId: decoded.data, pubkey: null }
+
+    // Note detail: /<npub>/notes/<nevent|note>
+    const noteDetail = /^\/notes\/(nevent1[a-z0-9]+|note1[a-z0-9]+)\/?$/i.exec(rest)
+    if (noteDetail) {
+      const decoded = safeDecode(noteDetail[1])
+      if (decoded?.type === 'nevent') {
+        return { kind: 1, eventId: decoded.data.id, pubkey: decoded.data.author || null }
+      }
+      if (decoded?.type === 'note') {
+        return { kind: 1, eventId: decoded.data, pubkey: null }
+      }
+      return null
     }
+
+    // Profile catch-all — bare /<npub>, /<npub>/notes, /<npub>/articles,
+    // /<npub>/events, etc. Any module surface someone shares should
+    // unfurl as the user's profile (rather than the homepage).
+    const decoded = safeDecode(npubStr)
+    if (decoded?.type === 'npub') return { kind: 0, pubkey: decoded.data }
     return null
   }
 
@@ -166,6 +192,27 @@ function safeDecode(bech) {
 async function fetchAndRender(detection, requestUrl) {
   const { kind, pubkey, dTag, eventId } = detection
 
+  // ── Profile (kind 0) ──
+  // Single fetch. Profile-not-found is allowed to render — degraded card
+  // beats falling through to the homepage OG, which doesn't identify
+  // the share as a profile at all.
+  if (kind === 0) {
+    if (!pubkey) return null
+    const profileEvent = await raceRelays({ kinds: [0], authors: [pubkey], limit: 1 })
+    let profile = { pubkey }
+    if (profileEvent) {
+      try {
+        profile = { ...JSON.parse(profileEvent.content), pubkey }
+      } catch {}
+    }
+    let npub = ''
+    try { npub = nip19.npubEncode(pubkey) } catch {}
+    profile.npub = npub
+    const canonicalUrl = npub ? `${SITE_ORIGIN}/${npub}` : requestUrl
+    return renderProfileMeta(profile, npub, canonicalUrl)
+  }
+
+  // ── Articles + notes ──
   // Build the event filter. For articles we have (pubkey, d-tag) → exact
   // match. For notes by id we have the event id directly. If the note
   // arrived via `note1...` (no author hint), we still fetch by id and
@@ -227,6 +274,12 @@ async function transformAndMaterialize(originalResponse, meta) {
   // HTMLRewriter is the canonical CF Pages way to mutate streamed HTML.
   // We materialize the body to text afterwards so the response can be
   // cloned for cache.put — Cache API can't store a single-use stream.
+  //
+  // Strip the static OG/Twitter/JSON-LD tags that index.html bakes in
+  // for the homepage default — otherwise an entity URL would end up
+  // with two og:title tags, two og:image tags, etc. Most unfurlers do
+  // last-wins, but a few (LinkedIn historically) take the first match;
+  // safer to remove and re-emit cleanly.
   const transformed = new HTMLRewriter()
     .on('title', {
       element(el) { el.setInnerContent(meta.title) },
@@ -234,6 +287,11 @@ async function transformAndMaterialize(originalResponse, meta) {
     .on('meta[name="description"]', {
       element(el) { el.setAttribute('content', meta.description) },
     })
+    .on('meta[property^="og:"]',      { element(el) { el.remove() } })
+    .on('meta[property^="article:"]', { element(el) { el.remove() } })
+    .on('meta[property^="profile:"]', { element(el) { el.remove() } })
+    .on('meta[name^="twitter:"]',     { element(el) { el.remove() } })
+    .on('script[type="application/ld+json"]', { element(el) { el.remove() } })
     .on('head', {
       element(el) { el.append('\n    ' + meta.headTags + '\n  ', { html: true }) },
     })
