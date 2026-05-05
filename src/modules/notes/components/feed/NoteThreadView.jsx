@@ -29,9 +29,14 @@ import { useEffect, useRef } from 'react'
 import NoteCard from './NoteCard.jsx'
 import { useNoteThread } from '../../../../lib/useNoteThread.js'
 
-// Indent cap — too much and deep threads overflow mobile width.
-const MAX_DEPTH = 6
-const INDENT_PX = 14
+// Indent cap — kept tight so deep threads (popular notes routinely hit
+// 10+ reply levels) don't crush the cards into uselessly narrow strips,
+// especially on mobile. Max visual indent caps at MAX_DEPTH * INDENT_PX
+// + the padding gap (≈ 38px total at depth ≥ 4); deeper replies stack
+// at that same indent. The border-l renders at every depth so the
+// nesting structure stays legible even when the indent is capped.
+const MAX_DEPTH = 4
+const INDENT_PX = 8
 
 function DescendantTree({ parentId, childrenByParent, profiles, onNoteClick, depth }) {
   // Hard stop — if malformed data somehow creates a reply cycle (A → B → A),
@@ -46,7 +51,7 @@ function DescendantTree({ parentId, childrenByParent, profiles, onNoteClick, dep
       {kids.map(k => (
         <li
           key={k.id}
-          className={depth > 0 ? 'border-l border-neutral-800 pl-2.5' : ''}
+          className={depth > 0 ? 'border-l border-neutral-800 pl-1.5' : ''}
           style={depth > 0 ? { marginLeft: `${clampedDepth * INDENT_PX}px` } : undefined}
         >
           <NoteCard
