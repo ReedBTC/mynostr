@@ -566,6 +566,23 @@ const KIND_ZAP_EVENT = 10000129
  * fetch them here. Top-N zapper/recipient lists are also out of scope —
  * bring them back when there's a UI consuming them.
  */
+/**
+ * Fetch raw zap events for a single Nostr event, ordered by amount desc.
+ * Uses Primal's `event_zaps_by_satszapped` op which returns:
+ *   - kind 9735 zap receipts (with embedded zap request in `description`)
+ *   - kind 0 profiles for senders (lets the caller skip a follow-up profile fetch)
+ *   - kind 10000129 ZAP_EVENT synthetics (we ignore these — kind 9735 has
+ *     everything we need for displaying the zap comment + amount)
+ *
+ * Returns the raw event array — caller is responsible for filtering /
+ * parsing. Throws on transport / timeout error so the caller can fall
+ * back to a relay subscription.
+ */
+export async function fetchEventZapEvents(eventId, { limit = 200, timeoutMs = 4000 } = {}) {
+  if (!eventId) return []
+  return await query('event_zaps_by_satszapped', { event_id: eventId, limit }, timeoutMs)
+}
+
 export async function fetchUserZapAggregates(pubkey, { limit = 1000 } = {}) {
   if (!pubkey) return null
 

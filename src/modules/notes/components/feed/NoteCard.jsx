@@ -22,6 +22,7 @@ import { nip19 } from 'nostr-tools'
 import NotePreview from '../NotePreview.jsx'
 import NoteActionsMenu from './NoteActionsMenu.jsx'
 import NoteActionBar from './NoteActionBar.jsx'
+import ZapMessagesSection from './ZapMessagesSection.jsx'
 import { isSafeUrl } from '../../../../lib/utils.js'
 import { extractZapSplits } from '../../../../lib/zapSplits.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
@@ -242,6 +243,8 @@ export default function NoteCard({
           {expanded ? 'Show less' : 'Show more'}
         </button>
       )}
+
+      <ZapMessagesSection noteId={note?.id} />
 
       <NoteActionBar note={note} profile={profile} />
     </article>
