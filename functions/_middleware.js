@@ -23,7 +23,7 @@ const CACHE_TTL_SECONDS = 3600
 // templates change so old previews don't linger for the TTL window after
 // a deploy. Keys live under a synthetic origin so the bump is transparent
 // to the request URL itself.
-const CACHE_VERSION = 'v7'
+const CACHE_VERSION = 'v8'
 
 export async function onRequest(context) {
   const { request, next } = context
