@@ -356,12 +356,10 @@ function BechResolver() {
     if (!authorNpub) return <InvalidNpubScreen />
 
     if (kind === 30023) {
-      // Articles' DiscoverView reads ?article=<naddr> on cold mount
-      // (with the cold-mount guard preventing the strip) so the
-      // recipient lands on the author's articles feed AND, once we
-      // wire the seed-from-URL path, the specific article opens
-      // automatically. For now the URL is preserved; clicking the
-      // matching article in the feed opens the reader.
+      // Articles' DiscoverView reads ?article=<naddr> on cold mount,
+      // seeds its pending-naddr pipeline, and opens the reader once
+      // the author's feed loads (with a direct (pubkey, d-tag) fetch
+      // fallback if the article is older than the feed window).
       return <Navigate to={`/${authorNpub}/articles?article=${identifier}`} replace />
     }
     if (kind === 31922 || kind === 31923) {

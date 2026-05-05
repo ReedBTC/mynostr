@@ -330,6 +330,29 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
     pickSearchAuthor(author)
   }
 
+  // Cold-mount seed from ?article=<naddr>. BechResolver redirects shared
+  // naddr links to /<authorNpub>/articles?article=<naddr>; without this seed
+  // the recipient just lands on the author's feed with no article opened.
+  // Reuses the same pendingArticleDTagRef pipeline as the Search-paste flow:
+  // once the author's articles load (via requestedAuthor → authorFilter →
+  // loadAuthorArticles), the consume-pending effect below matches by d-tag
+  // and opens the reader (with a direct (pubkey, d-tag) fallback fetch if
+  // the article is older than the top-100 feed window).
+  const articleSeedConsumedRef = useRef(false)
+  useEffect(() => {
+    if (articleSeedConsumedRef.current) return
+    articleSeedConsumedRef.current = true
+    const naddr = searchParams.get('article')
+    if (!naddr) return
+    try {
+      const decoded = nip19.decode(naddr)
+      if (decoded.type !== 'naddr') return
+      const { kind, pubkey: authorPk, identifier: dTag } = decoded.data
+      if (kind !== 30023 || !authorPk || !dTag) return
+      pendingArticleDTagRef.current = { pubkey: authorPk, dTag }
+    } catch {}
+  }, [searchParams])
+
   // ── Accept externally-requested author (from "My Articles" tab) ──────────
   // Does NOT persist — the pinned-to-viewed-user state shouldn't pollute the
   // Search Authors tab's last-searched memory.
