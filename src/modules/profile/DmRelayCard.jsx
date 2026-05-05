@@ -315,6 +315,9 @@ export default function DmRelayCard({ pubkey }) {
           </button>
         </div>
       )}
+      {isOwner && !inEdit && !loading && pubkey && (
+        <DmRelayTipsCard pubkey={pubkey} />
+      )}
 
       {loading ? (
         <div className="p-4 space-y-2">
@@ -352,6 +355,63 @@ export default function DmRelayCard({ pubkey }) {
 
       <DmRelayFAQ />
       {copier.modalElement}
+    </div>
+  )
+}
+
+/**
+ * DmRelayTipsCard — TL;DR for picking DM relays. Owner-only, starts
+ * open with an up-arrow to collapse to just the title. Collapse state
+ * persists per-pubkey in localStorage so different logins start fresh.
+ * Parallel to RelayCard's RelayTipsCard but with NIP-17-specific
+ * guidance: pick few, dedicated, gift-wrap-friendly relays rather than
+ * reusing the main outbox.
+ */
+function DmRelayTipsCard({ pubkey }) {
+  const storageKey = `mynostr_dm_relay_tips_collapsed_${pubkey}`
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(storageKey) === '1' } catch { return false }
+  })
+  function toggle() {
+    setCollapsed(c => {
+      const next = !c
+      try { localStorage.setItem(storageKey, next ? '1' : '0') } catch {}
+      return next
+    })
+  }
+  return (
+    <div className="text-[11px] text-neutral-300 bg-purple-950/15 border-b border-purple-900/40 leading-relaxed">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-purple-950/25 transition-colors focus:outline-none focus:ring-1 focus:ring-purple-600"
+      >
+        <span className="text-purple-200 font-semibold">Tips for picking DM relays</span>
+        <span className={`text-purple-300/70 text-[10px] transition-transform ${collapsed ? '' : 'rotate-180'}`}>
+          ▼
+        </span>
+      </button>
+      {!collapsed && (
+        <ul className="list-disc pl-8 pr-4 pb-2.5 space-y-0.5 text-neutral-400">
+          <li>
+            <span className="text-neutral-200">1–2 relays is enough</span> — keep
+            this list separate from your main outbox.
+          </li>
+          <li>
+            Pick relays that explicitly support <span className="text-neutral-200">NIP-17 gift-wraps</span>{' '}
+            (e.g., <span className="text-neutral-200">inbox.lol</span>,{' '}
+            <span className="text-neutral-200">auth.nostr1.com</span>,{' '}
+            <span className="text-neutral-200">relay.0xchat.com</span>).
+          </li>
+          <li>
+            Big public relays vary on kind-1059 — some accept, some rate-limit,
+            some opt out. A dedicated DM relay is more predictable; if you
+            do reuse a general-purpose one, send yourself a test DM to confirm
+            it lands.
+          </li>
+        </ul>
+      )}
     </div>
   )
 }

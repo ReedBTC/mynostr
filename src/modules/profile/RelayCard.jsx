@@ -307,6 +307,9 @@ export default function RelayCard({ pubkey }) {
       {source === 'kind3' && !inEdit && !loading && (
         <UpgradeBanner onUpgrade={enterEdit} />
       )}
+      {isOwner && !inEdit && !loading && sessionUser?.pubkey && (
+        <RelayTipsCard pubkey={sessionUser.pubkey} />
+      )}
       {saveNotice && (
         <div className="px-4 py-2 text-[11px] text-green-300 bg-green-950/30 border-b border-green-900/60 flex items-center justify-between gap-3">
           <span>{saveNotice.msg}</span>
@@ -377,6 +380,65 @@ function UpgradeBanner({ onUpgrade }) {
       >
         Upgrade →
       </button>
+    </div>
+  )
+}
+
+/**
+ * RelayTipsCard — TL;DR for editing your own relay list. Owner-only,
+ * starts open with an up-arrow to collapse to just the title.
+ * Collapse state persists per-pubkey in localStorage so a user who
+ * dismissed it stays dismissed across sessions, but a different login
+ * starts fresh. Sits below the header + UpgradeBanner so the legacy-
+ * kind-3 nudge is still the first thing the user sees in that case.
+ */
+function RelayTipsCard({ pubkey }) {
+  const storageKey = `mynostr_relay_tips_collapsed_${pubkey}`
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(storageKey) === '1' } catch { return false }
+  })
+  function toggle() {
+    setCollapsed(c => {
+      const next = !c
+      try { localStorage.setItem(storageKey, next ? '1' : '0') } catch {}
+      return next
+    })
+  }
+  return (
+    <div className="text-[11px] text-neutral-300 bg-purple-950/15 border-b border-purple-900/40 leading-relaxed">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-purple-950/25 transition-colors focus:outline-none focus:ring-1 focus:ring-purple-600"
+      >
+        <span className="text-purple-200 font-semibold">Tips for a healthy relay list</span>
+        <span className={`text-purple-300/70 text-[10px] transition-transform ${collapsed ? '' : 'rotate-180'}`}>
+          ▼
+        </span>
+      </button>
+      {!collapsed && (
+        <ul className="list-disc pl-8 pr-4 pb-2.5 space-y-0.5 text-neutral-400">
+          <li>
+            Aim for{' '}
+            <span className="text-neutral-200">3–5 write</span> and{' '}
+            <span className="text-neutral-200">5–10 read</span> relays.
+          </li>
+          <li>
+            Mix operators — pair a big one (e.g.,{' '}
+            <span className="text-neutral-200">relay.primal.net</span>,{' '}
+            <span className="text-neutral-200">relay.damus.io</span>) with a smaller
+            community or paid one (e.g.,{' '}
+            <span className="text-neutral-200">nostr.wine</span>,{' '}
+            <span className="text-neutral-200">nos.lol</span>, your own).
+          </li>
+          <li>
+            Include a <span className="text-neutral-200">paid relay</span> for
+            spam resistance and one with <span className="text-neutral-200">NIP-50 search</span>{' '}
+            so you can search your own history later.
+          </li>
+        </ul>
+      )}
     </div>
   )
 }
