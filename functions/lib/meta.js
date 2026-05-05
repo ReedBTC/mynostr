@@ -408,6 +408,17 @@ function formatPrice(priceTag) {
   return currency ? `${amount} ${currency}` : amount
 }
 
+// Common ISO 4217 codes — used to gate JSON-LD offers since Google's
+// Product rich-result validator rejects non-ISO codes (SATS, BTC). For
+// non-ISO listings we still render the OG card with the human-readable
+// price, but skip the structured offers block rather than emit invalid
+// markup. This is a strict subset; expand as needed.
+const ISO_4217 = new Set([
+  'USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'SEK', 'NZD',
+  'MXN', 'SGD', 'HKD', 'NOK', 'KRW', 'TRY', 'INR', 'RUB', 'BRL', 'ZAR',
+  'PLN', 'THB', 'IDR', 'MYR', 'PHP', 'CZK', 'HUF', 'ILS', 'AED', 'SAR',
+])
+
 function firstImageTag(event) {
   // NIP-99 allows multiple ["image", url] tags. Use the first that's safe.
   const tags = event?.tags || []
@@ -457,19 +468,34 @@ export function renderListingMeta(event, profile, canonicalUrl) {
     `<meta name="twitter:image" content="${escapeHtml(image)}" />`,
   ].filter(Boolean)
 
-  // schema.org/Product + Offer. Non-ISO currencies (SATS, BTC) won't
-  // qualify for Google's product rich-results, but the OG card still
-  // works — the JSON-LD just becomes informational.
-  const offer = {
-    '@type': 'Offer',
-  }
-  if (priceTag?.[1]) offer.price = priceTag[1]
-  if (priceTag?.[2]) offer.priceCurrency = priceTag[2]
-  // Default availability — NIP-99 has a "status" tag but it's not
-  // universally populated. Don't fabricate when missing.
+  // schema.org/Product. Offer block is conditional — Google's validator
+  // rejects non-ISO 4217 currencies as a critical error, so SATS/BTC
+  // listings get Product without offers. The OG card still shows the
+  // human-readable price ("5000 sats") for the unfurl preview; we just
+  // don't claim structured price data Google can't validate.
+  //
+  // shippingDetails + hasMerchantReturnPolicy are optional warnings we
+  // accept — NIP-99 doesn't carry structured shipping/return data, and
+  // fabricating "free shipping" or "no returns" defaults would
+  // misrepresent sellers whose actual policies vary per listing.
+  const currencyCode = String(priceTag?.[2] || '').trim().toUpperCase()
+  const isoCurrency = ISO_4217.has(currencyCode)
   const status = tagValue(event, 'status')
+
+  const offer = { '@type': 'Offer' }
+  if (isoCurrency && priceTag?.[1]) {
+    offer.price = priceTag[1]
+    offer.priceCurrency = currencyCode
+  }
   if (status === 'sold')   offer.availability = 'https://schema.org/SoldOut'
   if (status === 'active') offer.availability = 'https://schema.org/InStock'
+  if (authorName) {
+    offer.seller = {
+      '@type': 'Person',
+      name: authorName,
+      url: profile?.npub ? `${SITE_URL}/${profile.npub}` : SITE_URL,
+    }
+  }
 
   const jsonLd = {
     '@context': 'https://schema.org',
@@ -477,11 +503,13 @@ export function renderListingMeta(event, profile, canonicalUrl) {
     name: rawTitle,
     description,
     image: [image],
-    offers: offer,
   }
-  if (authorName) {
-    jsonLd.brand = { '@type': 'Brand', name: authorName }
-  }
+  // Include offers only when there's substantive data (price, status,
+  // or seller) — an Offer with just @type fails validation and adds
+  // nothing for unfurl rendering.
+  const hasOfferData = offer.price || offer.availability || offer.seller
+  if (hasOfferData) jsonLd.offers = offer
+
   const ldScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
 
   return {
