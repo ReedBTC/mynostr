@@ -9,16 +9,21 @@ import {
 
 const SITE_NAME = 'MyNostr'
 const SITE_URL = 'https://mynostr.app'
-const DEFAULT_OG_IMAGE = 'https://mynostr.app/og-default.png'
+// JPG, not PNG — the 1200×630 PNG was 892 KB, over WhatsApp's 600 KB cap
+// for og:image (image got dropped from the unfurl entirely). The JPG
+// equivalent is ~370 KB, fits comfortably under every platform's limit,
+// and is visually indistinguishable for a branded card.
+const DEFAULT_OG_IMAGE = 'https://mynostr.app/og-default.jpg'
 const DEFAULT_OG_IMAGE_W = 1200
 const DEFAULT_OG_IMAGE_H = 630
 
 const TITLE_MAX = 60
 const ARTICLE_DESC_MAX = 200
-// Notes get a tighter cap — 200 chars rendered as ~6 visual lines below
-// the image on iMessage/Signal, burying the title. 140 lands closer to
-// the 2-line target most platforms allocate to og:description.
-const NOTE_DESC_MAX = 140
+// Notes get a tight cap — 140 chars rendered as 4 visual lines below
+// the image on iMessage; 80 lands closer to the 2-line target. Wider
+// platforms (Slack, Discord) will show a shorter preview, but that's
+// preferable to the narrow case looking like a wall of text.
+const NOTE_DESC_MAX = 80
 
 function tagValue(event, name) {
   const t = event?.tags?.find(t => t[0] === name)
