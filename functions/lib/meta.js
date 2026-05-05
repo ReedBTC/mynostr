@@ -4,16 +4,21 @@
 // to worry about injection here.
 
 import {
-  escapeHtml, isSafeImageUrl, truncate,
-  stripNoteContent, extractFirstImage,
+  escapeHtml, isSafeImageUrl, truncate, stripNoteContent,
 } from './sanitize.js'
 
 const SITE_NAME = 'MyNostr'
 const SITE_URL = 'https://mynostr.app'
 const DEFAULT_OG_IMAGE = 'https://mynostr.app/og-default.png'
+const DEFAULT_OG_IMAGE_W = 1200
+const DEFAULT_OG_IMAGE_H = 630
 
 const TITLE_MAX = 60
-const DESC_MAX = 200
+const ARTICLE_DESC_MAX = 200
+// Notes get a tighter cap — 200 chars rendered as ~6 visual lines below
+// the image on iMessage/Signal, burying the title. 140 lands closer to
+// the 2-line target most platforms allocate to og:description.
+const NOTE_DESC_MAX = 140
 
 function tagValue(event, name) {
   const t = event?.tags?.find(t => t[0] === name)
@@ -35,10 +40,11 @@ export function renderArticleMeta(event, profile, canonicalUrl) {
   const title = truncate(rawTitle, TITLE_MAX)
   const description = truncate(
     tagValue(event, 'summary') || stripNoteContent(event.content || ''),
-    DESC_MAX,
+    ARTICLE_DESC_MAX,
   )
   const imageRaw = tagValue(event, 'image')
   const image = isSafeImageUrl(imageRaw) ? imageRaw : DEFAULT_OG_IMAGE
+  const usingDefaultImage = image === DEFAULT_OG_IMAGE
 
   const publishedAtUnix = parseInt(tagValue(event, 'published_at') || '', 10)
   const isoDate = Number.isFinite(publishedAtUnix) && publishedAtUnix > 0
@@ -57,6 +63,11 @@ export function renderArticleMeta(event, profile, canonicalUrl) {
     `<meta property="og:title" content="${escapeHtml(ogTitleTrimmed)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
+    // Image dimensions help validators allocate preview space and
+    // suppress "missing dimensions" warnings. Only safe to declare for
+    // the curated default; custom article cover images are unknown size.
+    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
     `<meta property="article:published_time" content="${escapeHtml(isoDate)}" />`,
     authorName && `<meta property="article:author" content="${escapeHtml(authorName)}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
@@ -98,23 +109,30 @@ export function renderNoteMeta(event, profile, canonicalUrl) {
   const authorName = profileName(profile)
   const rawTitle = authorName ? `Note by ${authorName} on ${SITE_NAME}` : `Note on ${SITE_NAME}`
   const title = truncate(rawTitle, TITLE_MAX)
-  const description = truncate(stripNoteContent(event.content || ''), DESC_MAX)
+  const description = truncate(stripNoteContent(event.content || ''), NOTE_DESC_MAX)
 
-  const inlineImage = extractFirstImage(event.content || '')
-  const hasInlineImage = isSafeImageUrl(inlineImage)
-  const image = hasInlineImage ? inlineImage : DEFAULT_OG_IMAGE
-  // Big card only when the note actually has a visual; otherwise the
-  // small `summary` card looks better with the static fallback image.
-  const cardType = hasInlineImage ? 'summary_large_image' : 'summary'
+  // Inline-image extraction was unreliable: notes with non-standard
+  // aspect ratios (a 20:9 portrait broke iMessage layout, blanked Signal,
+  // failed opengraph.xyz) gave inconsistent unfurls across platforms.
+  // Without a CDN transformer to normalize dimensions, the curated
+  // default image is the only thing we can guarantee renders correctly
+  // everywhere — and it does (validated on iMessage, Pixel SMS, and
+  // Signal mobile + desktop).
+  const image = DEFAULT_OG_IMAGE
 
   const tagLines = [
-    `<meta property="og:type" content="article" />`,
+    // og:type=website (not article) — strict validators flag the article
+    // type when article:published_time + article:author aren't supplied,
+    // and they don't fit kind-1 notes naturally.
+    `<meta property="og:type" content="website" />`,
     `<meta property="og:site_name" content="${SITE_NAME}" />`,
     `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`,
     `<meta property="og:title" content="${escapeHtml(title)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
-    `<meta name="twitter:card" content="${cardType}" />`,
+    `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
     `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
     `<meta name="twitter:image" content="${escapeHtml(image)}" />`,

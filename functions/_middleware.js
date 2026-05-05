@@ -16,6 +16,11 @@ import { renderArticleMeta, renderNoteMeta } from './lib/meta.js'
 
 const SITE_ORIGIN = 'https://mynostr.app'
 const CACHE_TTL_SECONDS = 3600
+// Bump to invalidate every existing cached entry. Use this when meta-tag
+// templates change so old previews don't linger for the TTL window after
+// a deploy. Keys live under a synthetic origin so the bump is transparent
+// to the request URL itself.
+const CACHE_VERSION = 'v2'
 
 export async function onRequest(context) {
   const { request, next } = context
@@ -43,7 +48,10 @@ export async function onRequest(context) {
   // edited article's preview can be stale for up to an hour; unfurlers
   // typically grab once per share so this is acceptable.
   const cache = caches.default
-  const cacheKey = new Request(url.toString(), { method: 'GET' })
+  const cacheKey = new Request(
+    `https://og-cache.mynostr.app/${CACHE_VERSION}${url.pathname}${url.search}`,
+    { method: 'GET' },
+  )
   try {
     const cached = await cache.match(cacheKey)
     if (cached) return cached
