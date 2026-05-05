@@ -4,7 +4,7 @@
 // to worry about injection here.
 
 import {
-  escapeHtml, isSafeImageUrl, truncate, stripNoteContent,
+  escapeHtml, isSafeImageUrl, proxyImage, truncate, stripNoteContent,
 } from './sanitize.js'
 
 const SITE_NAME = 'MyNostr'
@@ -55,8 +55,11 @@ export function renderArticleMeta(event, profile, canonicalUrl) {
     ARTICLE_DESC_MAX,
   )
   const imageRaw = tagValue(event, 'image')
-  const image = isSafeImageUrl(imageRaw) ? imageRaw : DEFAULT_OG_IMAGE
-  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+  // Always proxy user-supplied images so size + aspect ratio are
+  // normalized for unfurlers — output is consistent 1200×630 JPG.
+  const image = isSafeImageUrl(imageRaw)
+    ? proxyImage(imageRaw, DEFAULT_OG_IMAGE_W, DEFAULT_OG_IMAGE_H)
+    : DEFAULT_OG_IMAGE
 
   const publishedAtUnix = parseInt(tagValue(event, 'published_at') || '', 10)
   const isoDate = Number.isFinite(publishedAtUnix) && publishedAtUnix > 0
@@ -75,11 +78,10 @@ export function renderArticleMeta(event, profile, canonicalUrl) {
     `<meta property="og:title" content="${escapeHtml(ogTitleTrimmed)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
-    // Image dimensions help validators allocate preview space and
-    // suppress "missing dimensions" warnings. Only safe to declare for
-    // the curated default; custom article cover images are unknown size.
-    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
-    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    // Always-known dimensions now: proxied images are forced to
+    // 1200×630, default image is also 1200×630.
+    `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
     `<meta property="article:published_time" content="${escapeHtml(isoDate)}" />`,
     authorName && `<meta property="article:author" content="${escapeHtml(authorName)}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
@@ -130,20 +132,27 @@ export function renderProfileMeta(profile, npub, canonicalUrl) {
 
   // Banner is wider, better-suited to og:image's 1.91:1 ideal than the
   // square profile picture. Prefer banner → picture (square card) →
-  // default fallback.
+  // default fallback. All user-supplied images get proxied through
+  // wsrv.nl so a 5 MB upload becomes a 200 KB JPG that unfurls
+  // consistently — the original cause of "profile didn't load" failures.
   const banner  = profile?.banner
   const picture = profile?.picture
-  let image, cardType, declareDimensions = false
+  let image, cardType, imageW, imageH
   if (isSafeImageUrl(banner)) {
-    image = banner
+    image = proxyImage(banner, DEFAULT_OG_IMAGE_W, DEFAULT_OG_IMAGE_H)
     cardType = 'summary_large_image'
+    imageW = DEFAULT_OG_IMAGE_W
+    imageH = DEFAULT_OG_IMAGE_H
   } else if (isSafeImageUrl(picture)) {
-    image = picture
+    image = proxyImage(picture, 400, 400)
     cardType = 'summary'
+    imageW = 400
+    imageH = 400
   } else {
     image = DEFAULT_OG_IMAGE
     cardType = 'summary_large_image'
-    declareDimensions = true
+    imageW = DEFAULT_OG_IMAGE_W
+    imageH = DEFAULT_OG_IMAGE_H
   }
 
   const profileUrl = npub ? `${SITE_URL}/${npub}` : canonicalUrl
@@ -155,8 +164,8 @@ export function renderProfileMeta(profile, npub, canonicalUrl) {
     `<meta property="og:title" content="${escapeHtml(title)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
-    declareDimensions && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
-    declareDimensions && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta property="og:image:width" content="${imageW}" />`,
+    `<meta property="og:image:height" content="${imageH}" />`,
     profile?.name && `<meta property="profile:username" content="${escapeHtml(profile.name)}" />`,
     `<meta name="twitter:card" content="${cardType}" />`,
     `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
@@ -172,7 +181,9 @@ export function renderProfileMeta(profile, npub, canonicalUrl) {
     url: profileUrl,
   }
   if (description) person.description = description
-  if (isSafeImageUrl(picture)) person.image = picture
+  // schema.org/Person prefers a square image — feed the proxied 400×400
+  // so Google's people-search surfaces don't pull a multi-megabyte raw.
+  if (isSafeImageUrl(picture)) person.image = proxyImage(picture, 400, 400)
   if (nip05) person.alternateName = nip05
   if (isSafeImageUrl(profile?.website)) person.sameAs = [profile.website]
 
@@ -290,8 +301,9 @@ export function renderEventMeta(event, profile, canonicalUrl) {
     EVENT_DESC_MAX,
   )
   const imageRaw = tagValue(event, 'image')
-  const image = isSafeImageUrl(imageRaw) ? imageRaw : DEFAULT_OG_IMAGE
-  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+  const image = isSafeImageUrl(imageRaw)
+    ? proxyImage(imageRaw, DEFAULT_OG_IMAGE_W, DEFAULT_OG_IMAGE_H)
+    : DEFAULT_OG_IMAGE
 
   const location = tagValue(event, 'location')
   const authorName = profileName(profile)
@@ -307,8 +319,8 @@ export function renderEventMeta(event, profile, canonicalUrl) {
     `<meta property="og:title" content="${escapeHtml(title)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
-    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
-    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
     `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
@@ -356,8 +368,9 @@ export function renderCalendarMeta(event, profile, canonicalUrl) {
     EVENT_DESC_MAX,
   )
   const imageRaw = tagValue(event, 'image')
-  const image = isSafeImageUrl(imageRaw) ? imageRaw : DEFAULT_OG_IMAGE
-  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+  const image = isSafeImageUrl(imageRaw)
+    ? proxyImage(imageRaw, DEFAULT_OG_IMAGE_W, DEFAULT_OG_IMAGE_H)
+    : DEFAULT_OG_IMAGE
 
   const tagLines = [
     `<meta property="og:type" content="website" />`,
@@ -366,8 +379,8 @@ export function renderCalendarMeta(event, profile, canonicalUrl) {
     `<meta property="og:title" content="${escapeHtml(title)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
-    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
-    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
     `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
@@ -418,8 +431,9 @@ export function renderListingMeta(event, profile, canonicalUrl) {
     LISTING_DESC_MAX,
   )
   const imageRaw = firstImageTag(event)
-  const image = imageRaw || DEFAULT_OG_IMAGE
-  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+  const image = imageRaw
+    ? proxyImage(imageRaw, DEFAULT_OG_IMAGE_W, DEFAULT_OG_IMAGE_H)
+    : DEFAULT_OG_IMAGE
 
   const authorName = profileName(profile)
 
@@ -433,8 +447,8 @@ export function renderListingMeta(event, profile, canonicalUrl) {
     `<meta property="og:title" content="${escapeHtml(title)}" />`,
     `<meta property="og:description" content="${escapeHtml(description)}" />`,
     `<meta property="og:image" content="${escapeHtml(image)}" />`,
-    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
-    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
     priceTag?.[1] && `<meta property="product:price:amount" content="${escapeHtml(priceTag[1])}" />`,
     priceTag?.[2] && `<meta property="product:price:currency" content="${escapeHtml(priceTag[2])}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,

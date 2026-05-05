@@ -29,6 +29,33 @@ export function isSafeImageUrl(url) {
   }
 }
 
+// Wrap a user-supplied image URL through wsrv.nl's free image proxy to
+// normalize size + format. Solves the "user uploaded a 5MB profile pic"
+// and "20:9 portrait broke iMessage" problems in one stroke — output is
+// always JPG at the specified dimensions, well under any platform's
+// og:image size cap.
+//
+// `cover` crops to fit exactly w×h, which is what every social unfurler
+// expects (1200×630 ratio for landscape, 1:1 for square). Quality 85
+// keeps file size in the 100–300 KB range on typical avatars/banners.
+//
+// wsrv.nl is the rebranded images.weserv.nl service — same backend,
+// running since 2007, used widely in production. Worst-case outage
+// degrades just the user-image previews; mynostr.app stays up because
+// the worker serves the meta tags from its own cache regardless.
+export function proxyImage(url, w = 1200, h = 630) {
+  if (!isSafeImageUrl(url)) return ''
+  const params = new URLSearchParams({
+    url,
+    w: String(w),
+    h: String(h),
+    fit: 'cover',
+    output: 'jpg',
+    q: '85',
+  })
+  return `https://wsrv.nl/?${params.toString()}`
+}
+
 export function truncate(str, max) {
   if (!str) return ''
   const s = String(str).replace(/\s+/g, ' ').trim()
