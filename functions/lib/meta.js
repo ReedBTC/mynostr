@@ -27,6 +27,10 @@ const NOTE_DESC_MAX = 80
 // Profiles — bio (about field) is similar density to a note. Match
 // the note cap so unfurls feel consistent in length.
 const PROFILE_DESC_MAX = 160
+// Events / listings have curated descriptions and benefit from a bit
+// more room than a note (people read these to decide if they care).
+const EVENT_DESC_MAX = 200
+const LISTING_DESC_MAX = 200
 
 function tagValue(event, name) {
   const t = event?.tags?.find(t => t[0] === name)
@@ -223,5 +227,252 @@ export function renderNoteMeta(event, profile, canonicalUrl) {
     title,
     description,
     headTags: tagLines.join('\n    '),
+  }
+}
+
+// ── Date helpers (events) ────────────────────────────────────────────────
+//
+// 31923 (time-based): start tag is a unix timestamp (string).
+// 31922 (date-based, all-day): start tag is YYYY-MM-DD.
+//
+// Workers' Intl support is patchy across compat dates — formatting
+// manually with a fixed month list dodges locale-data surprises.
+
+const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
+function parseEventStart(startTag, kind) {
+  if (!startTag) return null
+  if (kind === 31923) {
+    const ts = parseInt(startTag, 10)
+    if (Number.isFinite(ts) && ts > 0) return new Date(ts * 1000)
+    return null
+  }
+  if (kind === 31922) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(startTag)) {
+      return new Date(`${startTag}T00:00:00Z`)
+    }
+  }
+  return null
+}
+
+function formatEventDate(date) {
+  if (!date) return ''
+  return `${MONTHS_SHORT[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}`
+}
+
+function formatEventStartIso(startTag, kind) {
+  if (!startTag) return ''
+  if (kind === 31923) {
+    const ts = parseInt(startTag, 10)
+    if (Number.isFinite(ts) && ts > 0) return new Date(ts * 1000).toISOString()
+    return ''
+  }
+  if (kind === 31922) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(startTag)) return startTag
+  }
+  return ''
+}
+
+export function renderEventMeta(event, profile, canonicalUrl) {
+  const kind = event.kind
+  const rawTitle = tagValue(event, 'title') || 'Event'
+  const startTag = tagValue(event, 'start')
+  const endTag = tagValue(event, 'end')
+  const startDate = parseEventStart(startTag, kind)
+  const dateStr = formatEventDate(startDate)
+  // Date in the title gives the unfurl an at-a-glance "when" without
+  // needing the user to read the description.
+  const titleWithDate = dateStr ? `${rawTitle} · ${dateStr}` : rawTitle
+  const title = truncate(titleWithDate, TITLE_MAX)
+
+  const description = truncate(
+    tagValue(event, 'summary') || event.content || '',
+    EVENT_DESC_MAX,
+  )
+  const imageRaw = tagValue(event, 'image')
+  const image = isSafeImageUrl(imageRaw) ? imageRaw : DEFAULT_OG_IMAGE
+  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+
+  const location = tagValue(event, 'location')
+  const authorName = profileName(profile)
+
+  const tagLines = [
+    // og:type=article over the proposed og:type=event — `event` exists
+    // in the Open Graph spec but is poorly supported (most unfurlers
+    // ignore the type or render nothing); article is the universal
+    // fallback that gives a rich card on every platform tested.
+    `<meta property="og:type" content="article" />`,
+    `<meta property="og:site_name" content="${SITE_NAME}" />`,
+    `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`,
+    `<meta property="og:title" content="${escapeHtml(title)}" />`,
+    `<meta property="og:description" content="${escapeHtml(description)}" />`,
+    `<meta property="og:image" content="${escapeHtml(image)}" />`,
+    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
+    `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
+    `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
+    `<meta name="twitter:image" content="${escapeHtml(image)}" />`,
+  ].filter(Boolean)
+
+  // schema.org/Event — feeds Google's events surfaces when present.
+  const startIso = formatEventStartIso(startTag, kind)
+  const endIso = formatEventStartIso(endTag, kind)
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Event',
+    name: rawTitle,
+    description,
+    image: [image],
+  }
+  if (startIso) jsonLd.startDate = startIso
+  if (endIso)   jsonLd.endDate   = endIso
+  if (location) jsonLd.location  = { '@type': 'Place', name: location }
+  if (authorName) {
+    jsonLd.organizer = {
+      '@type': 'Person',
+      name: authorName,
+      url: profile?.npub ? `${SITE_URL}/${profile.npub}` : SITE_URL,
+    }
+  }
+  // schema.org/Event requires an `eventStatus` and `eventAttendanceMode`
+  // for full validity, but Nostr events don't carry those. Omitting is
+  // valid — it just means the card won't qualify for Google's full
+  // events rich-result; basic Event metadata still flows through.
+  const ldScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
+
+  return {
+    title,
+    description,
+    headTags: tagLines.join('\n    ') + '\n    ' + ldScript,
+  }
+}
+
+export function renderCalendarMeta(event, profile, canonicalUrl) {
+  const rawTitle = tagValue(event, 'title') || 'Calendar'
+  const title = truncate(`${rawTitle} calendar on ${SITE_NAME}`, TITLE_MAX)
+  const description = truncate(
+    tagValue(event, 'summary') || event.content || '',
+    EVENT_DESC_MAX,
+  )
+  const imageRaw = tagValue(event, 'image')
+  const image = isSafeImageUrl(imageRaw) ? imageRaw : DEFAULT_OG_IMAGE
+  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+
+  const tagLines = [
+    `<meta property="og:type" content="website" />`,
+    `<meta property="og:site_name" content="${SITE_NAME}" />`,
+    `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`,
+    `<meta property="og:title" content="${escapeHtml(title)}" />`,
+    `<meta property="og:description" content="${escapeHtml(description)}" />`,
+    `<meta property="og:image" content="${escapeHtml(image)}" />`,
+    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
+    `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
+    `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
+    `<meta name="twitter:image" content="${escapeHtml(image)}" />`,
+  ].filter(Boolean)
+
+  return {
+    title,
+    description,
+    headTags: tagLines.join('\n    '),
+  }
+}
+
+// ── Listing helpers (kind 30402) ─────────────────────────────────────────
+
+function formatPrice(priceTag) {
+  // priceTag = ["price", "<amount>", "<currency>"] (currency optional)
+  if (!priceTag || priceTag.length < 2) return ''
+  const amount = String(priceTag[1] || '').trim()
+  if (!amount) return ''
+  const currency = String(priceTag[2] || '').trim().toUpperCase()
+  if (currency === 'USD') return `$${amount}`
+  if (currency === 'EUR') return `€${amount}`
+  if (currency === 'SATS' || currency === 'SAT') return `${amount} sats`
+  return currency ? `${amount} ${currency}` : amount
+}
+
+function firstImageTag(event) {
+  // NIP-99 allows multiple ["image", url] tags. Use the first that's safe.
+  const tags = event?.tags || []
+  for (const t of tags) {
+    if (t?.[0] === 'image' && isSafeImageUrl(t[1])) return t[1]
+  }
+  return ''
+}
+
+export function renderListingMeta(event, profile, canonicalUrl) {
+  const rawTitle = tagValue(event, 'title') || 'Listing'
+  const priceTag = (event.tags || []).find(t => t?.[0] === 'price')
+  const priceStr = formatPrice(priceTag)
+  // Price in the title is the strongest signal in an unfurl — "Item · $20"
+  // outperforms "Item" by a wide margin in click-through.
+  const titleWithPrice = priceStr ? `${rawTitle} · ${priceStr}` : rawTitle
+  const title = truncate(titleWithPrice, TITLE_MAX)
+
+  const description = truncate(
+    tagValue(event, 'summary') || event.content || '',
+    LISTING_DESC_MAX,
+  )
+  const imageRaw = firstImageTag(event)
+  const image = imageRaw || DEFAULT_OG_IMAGE
+  const usingDefaultImage = image === DEFAULT_OG_IMAGE
+
+  const authorName = profileName(profile)
+
+  const tagLines = [
+    // og:type=product is well-supported (Facebook, LinkedIn, Discord all
+    // give it a "shopping" affordance; iMessage/Signal treat it as
+    // article/website). Better than article for a listing.
+    `<meta property="og:type" content="product" />`,
+    `<meta property="og:site_name" content="${SITE_NAME}" />`,
+    `<meta property="og:url" content="${escapeHtml(canonicalUrl)}" />`,
+    `<meta property="og:title" content="${escapeHtml(title)}" />`,
+    `<meta property="og:description" content="${escapeHtml(description)}" />`,
+    `<meta property="og:image" content="${escapeHtml(image)}" />`,
+    usingDefaultImage && `<meta property="og:image:width" content="${DEFAULT_OG_IMAGE_W}" />`,
+    usingDefaultImage && `<meta property="og:image:height" content="${DEFAULT_OG_IMAGE_H}" />`,
+    priceTag?.[1] && `<meta property="product:price:amount" content="${escapeHtml(priceTag[1])}" />`,
+    priceTag?.[2] && `<meta property="product:price:currency" content="${escapeHtml(priceTag[2])}" />`,
+    `<meta name="twitter:card" content="summary_large_image" />`,
+    `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
+    `<meta name="twitter:description" content="${escapeHtml(description)}" />`,
+    `<meta name="twitter:image" content="${escapeHtml(image)}" />`,
+  ].filter(Boolean)
+
+  // schema.org/Product + Offer. Non-ISO currencies (SATS, BTC) won't
+  // qualify for Google's product rich-results, but the OG card still
+  // works — the JSON-LD just becomes informational.
+  const offer = {
+    '@type': 'Offer',
+  }
+  if (priceTag?.[1]) offer.price = priceTag[1]
+  if (priceTag?.[2]) offer.priceCurrency = priceTag[2]
+  // Default availability — NIP-99 has a "status" tag but it's not
+  // universally populated. Don't fabricate when missing.
+  const status = tagValue(event, 'status')
+  if (status === 'sold')   offer.availability = 'https://schema.org/SoldOut'
+  if (status === 'active') offer.availability = 'https://schema.org/InStock'
+
+  const jsonLd = {
+    '@context': 'https://schema.org',
+    '@type': 'Product',
+    name: rawTitle,
+    description,
+    image: [image],
+    offers: offer,
+  }
+  if (authorName) {
+    jsonLd.brand = { '@type': 'Brand', name: authorName }
+  }
+  const ldScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
+
+  return {
+    title,
+    description,
+    headTags: tagLines.join('\n    ') + '\n    ' + ldScript,
   }
 }

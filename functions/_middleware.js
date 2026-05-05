@@ -12,7 +12,10 @@
 
 import { nip19 } from 'nostr-tools'
 import { raceRelays } from './lib/relays.js'
-import { renderArticleMeta, renderNoteMeta, renderProfileMeta } from './lib/meta.js'
+import {
+  renderArticleMeta, renderNoteMeta, renderProfileMeta,
+  renderEventMeta, renderCalendarMeta, renderListingMeta,
+} from './lib/meta.js'
 
 const SITE_ORIGIN = 'https://mynostr.app'
 const CACHE_TTL_SECONDS = 3600
@@ -20,7 +23,7 @@ const CACHE_TTL_SECONDS = 3600
 // templates change so old previews don't linger for the TTL window after
 // a deploy. Keys live under a synthetic origin so the bump is transparent
 // to the request URL itself.
-const CACHE_VERSION = 'v4'
+const CACHE_VERSION = 'v5'
 
 export async function onRequest(context) {
   const { request, next } = context
@@ -104,8 +107,11 @@ function detectEntity(url) {
   const naddrPath = /^\/(naddr1[a-z0-9]+)\/?$/i.exec(path)
   if (naddrPath) {
     const decoded = safeDecode(naddrPath[1])
-    if (decoded?.type === 'naddr' && decoded.data.kind === 30023) {
-      return { kind: 30023, pubkey: decoded.data.pubkey, dTag: decoded.data.identifier }
+    if (decoded?.type === 'naddr') {
+      const k = decoded.data.kind
+      if (k === 30023 || k === 31922 || k === 31923 || k === 31924 || k === 30402) {
+        return { kind: k, pubkey: decoded.data.pubkey, dTag: decoded.data.identifier }
+      }
     }
     return null
   }
@@ -172,6 +178,47 @@ function detectEntity(url) {
       return null
     }
 
+    // Event detail: /<npub>/events/<naddr>. Falls through to profile
+    // catch-all on malformed naddr — better than null since the user
+    // shared a /<npub>/... URL and a profile card is still useful.
+    const eventDetail = /^\/events\/(naddr1[a-z0-9]+)\/?$/i.exec(rest)
+    if (eventDetail) {
+      const decoded = safeDecode(eventDetail[1])
+      if (decoded?.type === 'naddr') {
+        const k = decoded.data.kind
+        if (k === 31922 || k === 31923 || k === 31924) {
+          return { kind: k, pubkey: decoded.data.pubkey, dTag: decoded.data.identifier }
+        }
+      }
+      // Falls through to profile catch-all
+    }
+
+    // Calendar detail: /<npub>/events/cal-<dTag>. The "cal-" prefix is
+    // a routing marker the SPA uses to distinguish calendar shares from
+    // event shares; pubkey comes from the npub in the URL.
+    const calendarDetail = /^\/events\/cal-(.+?)\/?$/i.exec(rest)
+    if (calendarDetail) {
+      const dTag = decodeURIComponent(calendarDetail[1])
+      const decoded = safeDecode(npubStr)
+      if (decoded?.type === 'npub' && dTag) {
+        return { kind: 31924, pubkey: decoded.data, dTag }
+      }
+      // Falls through to profile catch-all
+    }
+
+    // Marketplace listing: /<npub>/marketplace?listing=<naddr>
+    const marketplaceSegment = /^\/marketplace\/?$/i.test(rest)
+    if (marketplaceSegment) {
+      const naddrParam = search.get('listing')
+      if (naddrParam) {
+        const decoded = safeDecode(naddrParam)
+        if (decoded?.type === 'naddr' && decoded.data.kind === 30402) {
+          return { kind: 30402, pubkey: decoded.data.pubkey, dTag: decoded.data.identifier }
+        }
+      }
+      // No ?listing= or malformed → falls through to profile catch-all.
+    }
+
     // Profile catch-all — bare /<npub>, /<npub>/notes, /<npub>/articles,
     // /<npub>/events, etc. Any module surface someone shares should
     // unfurl as the user's profile (rather than the homepage).
@@ -212,15 +259,13 @@ async function fetchAndRender(detection, requestUrl) {
     return renderProfileMeta(profile, npub, canonicalUrl)
   }
 
-  // ── Articles + notes ──
-  // Build the event filter. For articles we have (pubkey, d-tag) → exact
-  // match. For notes by id we have the event id directly. If the note
-  // arrived via `note1...` (no author hint), we still fetch by id and
-  // pick up the author from the returned event.
+  // ── Articles, notes, events, calendars, listings ──
+  // Build the event filter. Replaceables (30023, 31922/3/4, 30402) all
+  // share the (kind, author, d-tag) lookup pattern. Notes are by id.
   let filter
-  if (kind === 30023) {
+  if (kind === 30023 || kind === 31922 || kind === 31923 || kind === 31924 || kind === 30402) {
     if (!pubkey || !dTag) return null
-    filter = { kinds: [30023], authors: [pubkey], '#d': [dTag], limit: 1 }
+    filter = { kinds: [kind], authors: [pubkey], '#d': [dTag], limit: 1 }
   } else if (kind === 1 && eventId) {
     filter = { ids: [eventId], limit: 1 }
   } else {
@@ -251,20 +296,23 @@ async function fetchAndRender(detection, requestUrl) {
     } catch {}
   }
 
-  // Build the canonical share URL we'll use for og:url. For articles the
-  // canonical form is the bech32 naddr (stable across npub changes). For
-  // notes we mirror whatever the request URL was — that's what the user
-  // shared, and unfurlers should see it back.
+  // Build the canonical share URL we'll use for og:url. For replaceables
+  // the canonical form is the bech32 naddr (stable across npub changes).
+  // For notes we mirror whatever the request URL was — that's what the
+  // user shared, and unfurlers should see it back.
   let canonicalUrl = requestUrl
-  if (kind === 30023) {
+  if (kind === 30023 || kind === 31922 || kind === 31923 || kind === 31924 || kind === 30402) {
     try {
-      const naddr = nip19.naddrEncode({ kind: 30023, pubkey, identifier: dTag })
+      const naddr = nip19.naddrEncode({ kind, pubkey, identifier: dTag })
       canonicalUrl = `${SITE_ORIGIN}/${naddr}`
     } catch {}
   }
 
   if (kind === 30023) return renderArticleMeta(event, profile, canonicalUrl)
   if (kind === 1)     return renderNoteMeta(event, profile, canonicalUrl)
+  if (kind === 31922 || kind === 31923) return renderEventMeta(event, profile, canonicalUrl)
+  if (kind === 31924) return renderCalendarMeta(event, profile, canonicalUrl)
+  if (kind === 30402) return renderListingMeta(event, profile, canonicalUrl)
   return null
 }
 
