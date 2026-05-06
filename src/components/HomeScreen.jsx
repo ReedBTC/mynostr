@@ -152,6 +152,28 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
           </p>
         </div>
 
+        {/* ── Mobile-first Login CTA ────────────────────────────────
+             Before the search bar on mobile only — the login button
+             buried in the Session CTA at the bottom of the page is the
+             #1 thing people want from the homepage on first visit, and
+             on phones it's below the fold (search + featured grid sit
+             above it). On desktop the original bottom CTA stays put;
+             the search bar is the natural primary action there. */}
+        {!sessionUser && isMobile && (
+          <div className="md:hidden">
+            <button
+              type="button"
+              onClick={openLogin}
+              className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 text-white font-medium transition-colors"
+            >
+              Log in
+            </button>
+            <p className="text-[11px] text-neutral-600 text-center mt-1.5">
+              Extension, nsec, bunker, or generate a new key.
+            </p>
+          </div>
+        )}
+
         {/* ── User search ──────────────────────────────────────────── */}
         <div className="space-y-2">
           <label className="block text-[11px] uppercase tracking-wide text-neutral-500">

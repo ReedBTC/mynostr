@@ -113,6 +113,11 @@ export default function LoginScreen({ onLogin, embedded = false }) {
   // Retry to start a fresh URI + fresh approval.
   const [qrStuckPrompt, setQrStuckPrompt] = useState(false)
   const qrStuckTimerRef = useRef(null)
+  // Seconds elapsed since the QR/signer flow started waiting. Drives
+  // the progressive reassurance copy ("Connecting…" → "Still working…")
+  // so the user sees ongoing progress rather than wondering if it
+  // froze. Reset to 0 whenever a fresh wait begins.
+  const [qrWaitingSeconds, setQrWaitingSeconds] = useState(0)
   // Token for the extension-detection poll so a competing login flow can abort it.
   const extPollTokenRef = useRef({ aborted: true })
 
@@ -154,6 +159,17 @@ export default function LoginScreen({ onLogin, embedded = false }) {
     }
   }, [isMobile]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Tick the elapsed-seconds counter while a QR/signer wait is active.
+  // Only purpose is the progressive reassurance copy below the spinner;
+  // not used for any timing/cancellation logic — those have their own
+  // refs/timers. Resets to 0 on every fresh wait.
+  useEffect(() => {
+    if (!qrWaiting) { setQrWaitingSeconds(0); return }
+    setQrWaitingSeconds(0)
+    const id = setInterval(() => setQrWaitingSeconds(s => s + 1), 1000)
+    return () => clearInterval(id)
+  }, [qrWaiting])
+
   // Mobile NIP-46 recovery. Background tabs on iOS Safari / Chrome iOS
   // get their WebSockets killed within ~30s. The bunker's reply (kind
   // 24133) is ephemeral so any reply that arrived while we were
@@ -180,13 +196,14 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       // Stage 2 — arm the stuck-prompt timer. Clear any prior timer so
       // multiple bg/fg cycles don't pile up.
       if (qrStuckTimerRef.current) clearTimeout(qrStuckTimerRef.current)
-      // 5s on mobile, 10s desktop. When the user comes back from the
-      // signer app and the handshake didn't land, it's almost always
-      // because the OS killed the WebSocket while they were tabbed
-      // away. Faster prompt on mobile = faster path to "fresh URI,
-      // try again" recovery. Desktop has no tab-kill issue, so
-      // longer is fine.
-      const stuckPromptMs = isMobile ? 5000 : 10000
+      // 15s on mobile, 20s desktop. Shorter values were misleading users
+      // into restarting an in-progress Amber handshake — Amber's
+      // bunker-reply round-trip routinely takes 8–15s on slower mobile
+      // networks. The earlier "Try again" prompt fired before legitimate
+      // approvals had time to land. Progressive in-flight status (see
+      // qrWaitingSeconds counter below) reassures during the wait so
+      // the long threshold doesn't feel like nothing's happening.
+      const stuckPromptMs = isMobile ? 15000 : 20000
       qrStuckTimerRef.current = setTimeout(() => {
         qrStuckTimerRef.current = null
         // Only prompt if we're STILL waiting — handshake may have
@@ -535,6 +552,32 @@ export default function LoginScreen({ onLogin, embedded = false }) {
     }
   }
 
+  // Hard reset of the QR/signer flow — used by the "Try again"
+  // affordances after an error or stuck-prompt. Drops any cached
+  // pending nostrconnect URI so the next startQrFlow generates a
+  // fresh one (reusing a stale URI is what often caused the second
+  // tap to do nothing — the bunker may have already replied to the
+  // old URI's reply event, dropped at the relay before we could
+  // resubscribe).
+  function retryQrFlow() {
+    if (qrSignerRef.current) {
+      try { qrSignerRef.current.abort?.() } catch {}
+      try { qrSignerRef.current.close?.() } catch {}
+      qrSignerRef.current = null
+    }
+    qrResubscribeBusRef.current = null
+    if (qrStuckTimerRef.current) {
+      clearTimeout(qrStuckTimerRef.current)
+      qrStuckTimerRef.current = null
+    }
+    setQrStuckPrompt(false)
+    setQrUri(null)
+    setQrWaiting(false)
+    setError('')
+    clearPendingNip46()
+    startQrFlow()
+  }
+
   function cancelQrFlow() {
     if (qrSignerRef.current) {
       try { qrSignerRef.current.abort?.() } catch {}
@@ -730,6 +773,13 @@ export default function LoginScreen({ onLogin, embedded = false }) {
     </div>
   )
 
+  // After the QR/signer flow rejects, the qrUri lingers but the
+  // underlying subscription is dead — re-tapping Open in Signer App
+  // would reopen Amber against a stale URI the bunker may have already
+  // replied to (and dropped at the relay before we could resubscribe).
+  // This flag swaps the button for a Try-again that regenerates the URI.
+  const qrErrored = !qrWaiting && !!qrUri && !!error && error.startsWith('QR login failed:')
+
   const NostrConnectSection = () => (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -766,8 +816,20 @@ export default function LoginScreen({ onLogin, embedded = false }) {
               gesture). A button + JS-driven location change is silently
               no-op'd on those platforms. We render a visually-identical
               disabled button as a placeholder while the URI is being
-              generated. */}
-          {qrUri ? (
+              generated.
+              After a flow error the URI is stale (the bunker may have
+              already replied to the dropped subscription), so we swap
+              the anchor for a Try-again button that regenerates a
+              fresh URI before re-launching. */}
+          {qrErrored ? (
+            <button
+              type="button"
+              onClick={retryQrFlow}
+              className="w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 text-white font-medium transition-colors"
+            >
+              Try again
+            </button>
+          ) : qrUri ? (
             <a
               href={qrUri}
               className={`w-full py-3 px-4 rounded-lg bg-purple-700 hover:bg-purple-600 text-white font-medium transition-colors flex items-center justify-center gap-2 ${loading ? 'pointer-events-none opacity-40' : ''}`}
@@ -798,9 +860,18 @@ export default function LoginScreen({ onLogin, embedded = false }) {
             </button>
           )}
           {qrWaiting && qrUri && !qrStuckPrompt && (
-            <div className="flex items-center justify-center gap-2 text-xs text-neutral-500">
-              <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-              Waiting for signer...
+            <div className="flex flex-col items-center gap-1 text-xs text-neutral-500">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
+                <span>
+                  {qrWaitingSeconds < 5
+                    ? 'Waiting for signer…'
+                    : qrWaitingSeconds < 12
+                      ? 'Connecting…'
+                      : 'Still working — Amber\'s reply can take a bit.'}
+                </span>
+                <span className="text-neutral-700 tabular-nums">{qrWaitingSeconds}s</span>
+              </div>
             </div>
           )}
 
@@ -864,7 +935,24 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       {/* Desktop: QR code tab */}
       {!isMobile && ncTab === 'qr' && (
         <div className="space-y-3">
-          {qrWaiting && qrUri ? (
+          {qrErrored ? (
+            // Errored flow — the QR's URI is stale. Show a Try-again
+            // affordance instead of a code that would lead nowhere.
+            <div className="flex flex-col items-center gap-3 py-2">
+              <div className="space-y-2 px-3 py-2.5 rounded-lg border border-amber-900/60 bg-amber-950/20 w-full">
+                <p className="text-xs text-amber-300 leading-snug text-center">
+                  The signer connection dropped. Generate a fresh QR and try again.
+                </p>
+                <button
+                  type="button"
+                  onClick={retryQrFlow}
+                  className="w-full py-1.5 px-3 rounded text-xs bg-amber-700 hover:bg-amber-600 text-white transition-colors"
+                >
+                  Try again
+                </button>
+              </div>
+            </div>
+          ) : qrWaiting && qrUri ? (
             <>
               <div className="flex flex-col items-center gap-3 py-2">
                 <div className="p-3 bg-white rounded-lg">
@@ -890,7 +978,14 @@ export default function LoginScreen({ onLogin, embedded = false }) {
                 {!qrStuckPrompt && (
                   <div className="flex items-center gap-2 text-xs text-neutral-500">
                     <span className="inline-block w-2 h-2 rounded-full bg-purple-500 animate-pulse" />
-                    Waiting for signer to connect...
+                    <span>
+                      {qrWaitingSeconds < 5
+                        ? 'Waiting for signer to connect…'
+                        : qrWaitingSeconds < 15
+                          ? 'Connecting…'
+                          : 'Still working — relay round-trip can take a bit.'}
+                    </span>
+                    <span className="text-neutral-700 tabular-nums">{qrWaitingSeconds}s</span>
                   </div>
                 )}
                 {qrStuckPrompt && (
@@ -1038,6 +1133,18 @@ export default function LoginScreen({ onLogin, embedded = false }) {
         {error && (
           <p className="text-sm text-red-400 text-center" role="alert">
             {error}
+            {qrErrored && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={retryQrFlow}
+                  className="underline text-red-300 hover:text-red-100 transition-colors"
+                >
+                  Try again
+                </button>
+              </>
+            )}
           </p>
         )}
       </div>
