@@ -175,7 +175,7 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
               Log in
             </button>
             <p className="text-[11px] text-neutral-600 text-center mt-1.5">
-              Extension, nsec, bunker, or generate a new key.
+              Extension, nsec, or bunker (Amber, nsec.app, etc.)
             </p>
           </div>
         )}
@@ -301,7 +301,7 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
                   Log in
                 </button>
                 <span className="text-[11px] text-neutral-600">
-                  Extension, nsec, bunker, or generate a new key.
+                  Extension, nsec, or bunker (Amber, nsec.app, etc.)
                 </span>
               </>
             )}
@@ -354,7 +354,7 @@ const FAQ_ITEMS = [
   },
   {
     q: 'Do I need an account to use MyNostr?',
-    a: 'No account creation is needed. Nostr identities are public/private keypairs that work across every Nostr app. You can sign in with a browser extension (Alby, nos2x, etc.), a remote signer like Amber, a bunker connection string, or generate a new key directly in MyNostr. You can also browse other users\' public pages without signing in at all.',
+    a: 'No account creation is needed. Nostr identities are public/private keypairs that work across every Nostr app. You can sign in with a browser extension (Alby, nos2x, etc.), a remote signer like Amber, or a bunker connection string. If you don\'t have a Nostr key yet, generate one with a tool like nstart.me or nsec.app first, then sign in here. You can also browse other users\' public pages without signing in at all.',
   },
   {
     q: 'Is MyNostr free?',

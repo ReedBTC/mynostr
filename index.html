@@ -18,6 +18,16 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0a0a0a" />
+    <!-- iOS standalone-mode hooks. Without these, an iPhone user who
+         taps Share → "Add to Home Screen" gets a tile that opens
+         MyNostr in regular Safari with the URL bar + nav buttons
+         visible. With them, the home-screen tile launches into a
+         standalone-app frame (no browser chrome), the status bar
+         reads dark over the app's near-black background, and the
+         tile label reads "MyNostr" rather than the document title. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MyNostr" />
     <link rel="canonical" href="https://mynostr.app/" />
     <!-- Title + description tuned for SERP relevance. Title hits brand
          + category + two highest-volume modules in ~55 chars (fits SERP
@@ -105,7 +115,7 @@
               "name": "Do I need an account to use MyNostr?",
               "acceptedAnswer": {
                 "@type": "Answer",
-                "text": "No account creation is needed. Nostr identities are public/private keypairs that work across every Nostr app. You can sign in with a browser extension (Alby, nos2x, etc.), a remote signer like Amber, a bunker connection string, or generate a new key directly in MyNostr. You can also browse other users' public pages without signing in at all."
+                "text": "No account creation is needed. Nostr identities are public/private keypairs that work across every Nostr app. You can sign in with a browser extension (Alby, nos2x, etc.), a remote signer like Amber, or a bunker connection string. If you don't have a Nostr key yet, generate one with a tool like nstart.me or nsec.app first, then sign in here. You can also browse other users' public pages without signing in at all."
               }
             },
             {
