@@ -140,12 +140,18 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-xl mx-auto px-4 py-8 sm:py-12 space-y-10">
 
-        {/* ── Pitch ────────────────────────────────────────────────── */}
+        {/* ── Pitch ──────────────────────────────────────────────────
+            The visible brand is the wordmark image, but search engines
+            weight a real H1 over an alt attribute — `sr-only` keeps
+            "MyNostr" out of the visual layout while still giving Google
+            a brand-name H1 to index. The tagline below it is now an H2
+            so the heading hierarchy reads brand → tagline → body. */}
         <div className="flex flex-col items-center text-center">
+          <h1 className="sr-only">MyNostr — Personal Nostr portal</h1>
           <img src="/mynostr.png" alt="MyNostr" className="w-full mb-4" />
-          <h1 className="text-base sm:text-lg text-neutral-200 font-medium max-w-md">
+          <h2 className="text-base sm:text-lg text-neutral-200 font-medium max-w-md">
             Built for creators and curators
-          </h1>
+          </h2>
           <p className="text-sm text-neutral-400 max-w-md mt-2">
             Save note templates. Write and export longform articles.
             Curate public collections. Organize private bookmarks.

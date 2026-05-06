@@ -1,0 +1,10 @@
+# MyNostr — public Nostr client + portal.
+# Allow everything; the per-user URL space is intentionally indexable
+# (each user's profile / notes / articles / events / marketplace lives
+# at /<npub>/<module> and the OG meta is rendered server-side by the
+# Pages Function so unfurlers and crawlers see real per-entity titles
+# and descriptions).
+User-agent: *
+Allow: /
+
+Sitemap: https://mynostr.app/sitemap.xml

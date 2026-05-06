@@ -5,8 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src * blob: data:; media-src *; connect-src *; font-src 'self'; frame-src *;" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <title>MyNostr</title>
-    <meta name="description" content="Your personal Nostr portal — publish, search, archive, and analyze your notes." />
+    <!-- iOS / Android home-screen icon. Re-uses /favicon.png until a
+         proper 180×180 apple-touch-icon.png is added; iOS scales the
+         existing favicon down acceptably for the home-screen tile. -->
+    <link rel="apple-touch-icon" href="/favicon.png" />
+    <link rel="canonical" href="https://mynostr.app/" />
+    <!-- Title + description tuned for SERP relevance. Title hits brand
+         + category + two highest-volume modules in ~55 chars (fits SERP
+         without truncation). Description packs the remaining module
+         keywords inside Google's ~155-char visible window. -->
+    <title>MyNostr — Personal Nostr portal: notes, articles, events</title>
+    <meta name="description" content="MyNostr is a personal Nostr portal — publish notes and longform articles, host events, sell on the marketplace, manage relays, and organize bookmarks." />
     <!--
       Open Graph + Twitter defaults for the homepage and any unmatched
       route (e.g., /login, /help, deep links to undeployed routes). The
@@ -14,8 +23,8 @@
       (articles, notes, profiles), so they don't conflict with per-entity
       meta — they're the static fallback for everything else.
     -->
-    <meta property="og:title" content="MyNostr — Your personal Nostr portal" />
-    <meta property="og:description" content="Publish, search, archive, and analyze your Nostr activity." />
+    <meta property="og:title" content="MyNostr — Personal Nostr portal: notes, articles, events" />
+    <meta property="og:description" content="MyNostr is a personal Nostr portal — publish notes and longform articles, host events, sell on the marketplace, manage relays, and organize bookmarks." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://mynostr.app" />
     <meta property="og:site_name" content="MyNostr" />
@@ -23,8 +32,8 @@
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="MyNostr — Your personal Nostr portal" />
-    <meta name="twitter:description" content="Publish, search, archive, and analyze your Nostr activity." />
+    <meta name="twitter:title" content="MyNostr — Personal Nostr portal: notes, articles, events" />
+    <meta name="twitter:description" content="MyNostr is a personal Nostr portal — publish notes and longform articles, host events, sell on the marketplace, manage relays, and organize bookmarks." />
     <meta name="twitter:image" content="https://mynostr.app/og-default.jpg" />
     <!--
       WebSite + Organization JSON-LD for the homepage. Tells Google the
@@ -44,7 +53,8 @@
           "@id": "https://mynostr.app/#website",
           "url": "https://mynostr.app",
           "name": "MyNostr",
-          "description": "Your personal Nostr portal — publish, search, archive, and analyze your notes.",
+          "alternateName": "mynostr.app",
+          "description": "MyNostr is a personal Nostr portal — publish notes and longform articles, host events, sell on the marketplace, manage relays, and organize bookmarks.",
           "publisher": { "@id": "https://mynostr.app/#org" },
           "inLanguage": "en-US"
         },
@@ -53,6 +63,21 @@
           "@id": "https://mynostr.app/#org",
           "name": "MyNostr",
           "url": "https://mynostr.app"
+        },
+        {
+          "@type": "SoftwareApplication",
+          "@id": "https://mynostr.app/#app",
+          "name": "MyNostr",
+          "url": "https://mynostr.app",
+          "description": "Personal Nostr client and portal: notes, longform articles, calendar events, NIP-99 marketplace, relay management, and bookmarks. Sign in with any Nostr key.",
+          "applicationCategory": "SocialNetworkingApplication",
+          "operatingSystem": "Any",
+          "publisher": { "@id": "https://mynostr.app/#org" },
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          }
         }
       ]
     }

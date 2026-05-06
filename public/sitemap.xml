@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MyNostr sitemap — only the homepage is currently a stable, statically-
+  curated landing page. Per-user surfaces (/<npub>/<module>) are
+  enumerable in principle but their canonical content lives on relays,
+  not in our build, so we don't list them here. Add new static landing
+  pages to this file as they ship (e.g. /about, /about/articles).
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://mynostr.app/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>
