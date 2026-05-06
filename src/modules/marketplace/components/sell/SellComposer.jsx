@@ -2,12 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emptySellForm, formToEventTemplate } from '../../../../lib/sellForm.js'
 import { decodeProduct, buildProductCoord } from '../../../../lib/gamma.js'
 import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
+import { getNDK, getOwnWriteRelays } from '../../../../lib/ndk.js'
+import { fetchUserDmRelays } from '../../../../lib/relayInfo.js'
 import ProductDrawer from '../selling/ProductDrawer.jsx'
 import ListingTab from './ListingTab.jsx'
 import PhotosTab from './PhotosTab.jsx'
 import ShippingTab from './ShippingTab.jsx'
 import AdvancedSection from './AdvancedSection.jsx'
 import LinkExistingListingModal from './LinkExistingListingModal.jsx'
+import PrePublishRelayCheckModal from './PrePublishRelayCheckModal.jsx'
+
+const PLEBEIAN_RELAY_URL = 'wss://relay.plebeian.market'
 
 /**
  * SellComposer — kind 30402 listing publisher.
@@ -120,18 +125,14 @@ export default function SellComposer({
   // those prompts grouped with the publish flow, not after.
   const [collectionSync, setCollectionSync] = useState({ active: false, completed: 0, total: 0 })
 
-  const handlePublish = useCallback(async () => {
-    if (!draft) return
-    if (!form.title?.trim()) {
-      setActiveTab('listing')
-      setValidationError('Title is required.')
-      return
-    }
-    if (!form.summary?.trim() && !form.content?.trim()) {
-      setActiveTab('listing')
-      setValidationError('Add a description or summary.')
-      return
-    }
+  // Pre-publish relay-check modal state. Holds the failing-check flags
+  // so the modal renders only the relevant sections; null = closed.
+  const [relayCheck, setRelayCheck] = useState(null)
+
+  // The actual publish path, extracted so the relay-check gate can call
+  // it from either branch (checks pass → straight in; user clicks
+  // "Publish anyway" → here from the modal).
+  const doPublish = useCallback(async () => {
     setValidationError('')
     const result = await onPublish(draft.id)
     // Sync the listing's kind-30405 memberships against the user's
@@ -179,6 +180,46 @@ export default function SellComposer({
       }
     }
   }, [draft, form, onPublish, pubkey, sessionCollectionsCtx])
+
+  // Validate, then run the pre-publish relay checks. If everything's
+  // in order we go straight to doPublish; if either Plebeian or DM
+  // relays are missing we open the advisory modal and let the user
+  // add inline (or "Publish anyway"). Failures inside the check
+  // shouldn't block publish — fall through to publish on any error
+  // so a flaky relay-info fetch can't soft-brick the listing flow.
+  const handlePublish = useCallback(async () => {
+    if (!draft) return
+    if (!form.title?.trim()) {
+      setActiveTab('listing')
+      setValidationError('Title is required.')
+      return
+    }
+    if (!form.summary?.trim() && !form.content?.trim()) {
+      setActiveTab('listing')
+      setValidationError('Add a description or summary.')
+      return
+    }
+    setValidationError('')
+    if (!pubkey) { doPublish(); return }
+    let missingPlebeian = false
+    let missingDmRelay  = false
+    try {
+      const ndk = getNDK()
+      const [writeRelays, dmInfo] = await Promise.all([
+        getOwnWriteRelays(ndk).catch(() => null),
+        fetchUserDmRelays(pubkey).catch(() => ({ relays: [] })),
+      ])
+      missingPlebeian = !(writeRelays || []).includes(PLEBEIAN_RELAY_URL)
+      missingDmRelay  = !(dmInfo?.relays?.length)
+    } catch {
+      // Fall through to publish — advisory checks must never block.
+    }
+    if (missingPlebeian || missingDmRelay) {
+      setRelayCheck({ missingPlebeian, missingDmRelay })
+      return
+    }
+    doPublish()
+  }, [draft, form, pubkey, doPublish])
 
   // Build the synthetic { event, decoded } shape that ProductDrawer
   // expects from the current draft. Recomputed when `previewOpen`
@@ -496,6 +537,18 @@ export default function SellComposer({
           : (
             <PreviewEmptyState onClose={() => setPreviewOpen(false)} />
           )
+      )}
+
+      {/* Pre-publish relay-check modal. Opens only when the user clicks
+          Publish AND a check fails — `relayCheck` carries the failing
+          flags so the modal renders only the relevant sections. */}
+      {relayCheck && (
+        <PrePublishRelayCheckModal
+          missingPlebeian={relayCheck.missingPlebeian}
+          missingDmRelay={relayCheck.missingDmRelay}
+          onCancel={() => setRelayCheck(null)}
+          onConfirm={() => { setRelayCheck(null); doPublish() }}
+        />
       )}
     </div>
   )

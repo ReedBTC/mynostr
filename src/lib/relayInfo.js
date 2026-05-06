@@ -212,6 +212,21 @@ export async function publishRelayList({ relays }) {
 }
 
 /**
+ * Curated NIP-17 DM relays surfaced when the user has no kind 10050 yet.
+ * Same shape as marketplaceRelays.SUPPLEMENTAL_PUBLISH_RELAYS so the same
+ * CopyButton + useRelayCopier({kind:'dm'}) machinery renders them inline.
+ *
+ * Selection criteria: relays known to accept NIP-17 gift-wrap (kind 1059)
+ * either by virtue of being chat-focused or by accepting NIP-42 auth.
+ * Mirrors the recommendations DmRelayCard already names in its help copy.
+ */
+export const RECOMMENDED_DM_RELAYS = Object.freeze([
+  { url: 'wss://inbox.lol',        label: 'inbox.lol',        hint: 'NIP-17 gift-wrap accepting' },
+  { url: 'wss://auth.nostr1.com',  label: 'auth.nostr1.com',  hint: 'NIP-42 auth, hides metadata from scrapers' },
+  { url: 'wss://relay.0xchat.com', label: 'relay.0xchat.com', hint: 'Built for chat clients' },
+])
+
+/**
  * Fetch the user's NIP-17 DM relay list (kind 10050). This is a separate
  * event from the main relay list because DM relays have different criteria:
  * they need to accept encrypted gift-wrap events (kind 1059), not have
