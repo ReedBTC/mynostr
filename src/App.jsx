@@ -19,6 +19,7 @@ import {
   clearViewedUserCache,
 } from './lib/ownerContext.jsx'
 import { connectAndWait, getNDK, resetNDK } from './lib/ndk.js'
+import { useDocumentTitle } from './hooks/useDocumentTitle.js'
 import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
 import * as nwc from './lib/nwc.js'
 import * as webln from './lib/webln.js'
@@ -436,6 +437,24 @@ function ModuleRoute({ sessionUser, onLogout }) {
   // (spinner) render and React throws. Neither callback depends on
   // viewedUser so it's safe to derive them up here.
   const viewingOwnPage = sessionUser?.npub && sessionUser.npub === npub
+
+  // Tab title — set as soon as we know the module and refine once the
+  // viewed user's display name resolves. Detail views nested inside
+  // modules (NoteDetailView, EventDetail, ArticleReadPanel) layer their
+  // own titles on top via the same hook; useDocumentTitle's
+  // unmount-restores-previous behavior chains them cleanly.
+  const moduleLabel = MODULES.find(m => m.id === moduleId)?.label || ''
+  const viewedDisplayName = (
+    viewedUser?.profile?.displayName ||
+    viewedUser?.profile?.display_name ||
+    viewedUser?.profile?.name ||
+    ''
+  )
+  useDocumentTitle(
+    moduleLabel
+      ? viewedDisplayName ? [moduleLabel, viewedDisplayName] : [moduleLabel]
+      : null
+  )
 
   const handleModuleChange = useCallback((id) => {
     if (viewingOwnPage && MODULES_WITH_WRITE.has(id)) {

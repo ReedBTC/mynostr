@@ -272,6 +272,14 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
           </div>
         )}
 
+        {/* ── FAQ ───────────────────────────────────────────────────────
+             Visible content matching the FAQPage JSON-LD in index.html.
+             Google's FAQ rich result requires the on-page text to match
+             the schema verbatim — keep these answers in sync if either
+             side changes. <details> keeps the section visually compact
+             while leaving the full content in the DOM for crawlers. */}
+        <FAQ />
+
         {/* ── Session CTA ──────────────────────────────────────────── */}
         <div className="border-t border-neutral-800 pt-6">
           <div className="flex flex-wrap items-center gap-2">
@@ -333,5 +341,63 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
 
       </div>
     </div>
+  )
+}
+
+// FAQ section. Mirror of the FAQPage JSON-LD in index.html — Google
+// penalizes rich-result schema whose visible text doesn't match the
+// markup, so any edit in one place needs the other updated too.
+const FAQ_ITEMS = [
+  {
+    q: 'What is MyNostr?',
+    a: 'MyNostr is a personal Nostr client and portal where you can publish notes, write longform articles, host events, list items in a NIP-99 marketplace, and manage your relays — all signed with your Nostr key. It\'s a single dashboard for everything you do on Nostr.',
+  },
+  {
+    q: 'Do I need an account to use MyNostr?',
+    a: 'No account creation is needed. Nostr identities are public/private keypairs that work across every Nostr app. You can sign in with a browser extension (Alby, nos2x, etc.), a remote signer like Amber, a bunker connection string, or generate a new key directly in MyNostr. You can also browse other users\' public pages without signing in at all.',
+  },
+  {
+    q: 'Is MyNostr free?',
+    a: 'Yes. MyNostr is free to use, with no subscription, no advertising, and no data harvesting. Your content publishes directly to public Nostr relays.',
+  },
+  {
+    q: 'Where is my data stored?',
+    a: 'Your published events live on the Nostr relays you choose to publish to (declared in your kind 10002 relay list). MyNostr does not store any of your events on its own servers — every read and write goes directly between your client and the relays.',
+  },
+  {
+    q: 'What is a Nostr key?',
+    a: 'A Nostr key is a cryptographic keypair — a public key (npub) that represents your identity and a private key (nsec) that signs your events. The same key works on every Nostr app, so there is no separate MyNostr account, login, or password to remember.',
+  },
+  {
+    q: 'Can I share my MyNostr profile with someone who doesn\'t use Nostr?',
+    a: 'Yes. Every page on MyNostr has a shareable link (mynostr.app/<npub> for your profile, mynostr.app/<naddr> for an article, and so on). When you paste these links in iMessage, Telegram, Discord, or X, they unfurl with rich previews. Recipients can browse without an account.',
+  },
+]
+
+function FAQ() {
+  return (
+    <section aria-labelledby="faq-heading" className="space-y-3">
+      <h2 id="faq-heading" className="text-[11px] uppercase tracking-wide text-neutral-500">
+        Common questions
+      </h2>
+      <ul className="space-y-1.5">
+        {FAQ_ITEMS.map(({ q, a }) => (
+          <li key={q}>
+            <details className="group rounded-lg border border-neutral-800 bg-neutral-900/40 hover:border-neutral-700 transition-colors">
+              <summary className="cursor-pointer list-none px-3 py-2.5 text-[13px] text-neutral-200 flex items-start gap-2">
+                <span
+                  className="text-neutral-600 group-open:rotate-90 transition-transform shrink-0 mt-0.5"
+                  aria-hidden
+                >▸</span>
+                <span className="flex-1">{q}</span>
+              </summary>
+              <p className="px-3 pb-3 pt-1 text-[12px] text-neutral-400 leading-relaxed">
+                {a}
+              </p>
+            </details>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

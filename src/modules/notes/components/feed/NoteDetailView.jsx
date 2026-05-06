@@ -18,6 +18,7 @@ import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { withTimeout, safeNpubEncode } from '../../../../lib/utils.js'
 import { fetchProfiles } from '../../../../lib/primal.js'
 import NoteThreadView from './NoteThreadView.jsx'
+import { useDocumentTitle } from '../../../../hooks/useDocumentTitle.js'
 
 export default function NoteDetailView({ nevent, viewerNpub }) {
   const navigate = useNavigate()
@@ -96,6 +97,17 @@ export default function NoteDetailView({ nevent, viewerNpub }) {
     })()
     return () => { cancelled = true }
   }, [nevent])
+
+  // Tab title — refines the module-level "Notes by …" once we know
+  // the focus event's author. Mirrors the OG meta the worker emits
+  // for the same URL so the tab text and unfurl titles agree.
+  const focusAuthorName = (
+    focusProfile?.displayName ||
+    focusProfile?.display_name ||
+    focusProfile?.name ||
+    ''
+  )
+  useDocumentTitle(focusAuthorName ? [`Note by ${focusAuthorName}`] : ['Note'])
 
   // Back button — always lands on the note author's notes feed. The
   // older navigate(-1) path silently failed on cold mounts: BechResolver

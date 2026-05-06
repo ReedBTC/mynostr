@@ -14,6 +14,7 @@ import { extractZapSplits } from '../../../../lib/zapSplits.js'
 import { useCommentCount, formatCommentCount } from '../../../../lib/useCommentCount.js'
 import BookmarkIcon from '../../../../components/BookmarkIcon.jsx'
 import ArticleActionsMenu from './ArticleActionsMenu.jsx'
+import { useDocumentTitle } from '../../../../hooks/useDocumentTitle.js'
 
 function getTag(event, name) {
   return event.tags?.find(t => t[0] === name)?.[1] || ''
@@ -194,6 +195,10 @@ export default function ArticleReadPanel({
   const effectiveTags = resolvedTags || article.tags
   const effectiveArticle = resolvedTags ? { ...article, tags: resolvedTags } : article
   const title      = getTag(effectiveArticle, 'title') || getTag(article, 'title') || 'Untitled'
+  // Tab title — overlays the module-level "Articles by …" while an
+  // article is open. Restores on unmount via useDocumentTitle's
+  // previous-restore behavior.
+  useDocumentTitle(title && title !== 'Untitled' ? [title] : null)
   const image      = getTag(effectiveArticle, 'image') || getTag(article, 'image')
   const summary    = getTag(effectiveArticle, 'summary')
   const dTag       = getTag(article, 'd')

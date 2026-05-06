@@ -34,6 +34,7 @@ import {
 } from '../../../lib/eventTypes.js'
 import RsvpButtons from './RsvpButtons.jsx'
 import EventActionsMenu from './EventActionsMenu.jsx'
+import { useDocumentTitle } from '../../../hooks/useDocumentTitle.js'
 import { buildReminderPrefill } from '../../../lib/eventReminder.js'
 import CommentsThread from './CommentsThread.jsx'
 import ZapModal from '../../../components/ZapModal.jsx'
@@ -202,6 +203,10 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
     () => safeNpubEncode(nip19, parsed?.pubkey, 'EventDetail.host'),
     [parsed?.pubkey],
   )
+
+  // Tab title — populates as soon as the event parses. Mirrors the
+  // OG title the Pages Function emits for the same URL.
+  useDocumentTitle(parsed?.title ? [parsed.title] : null)
 
   // Hooks must run unconditionally on every render — hoisted above the
   // loading / notFound early returns to satisfy the rules of hooks. The

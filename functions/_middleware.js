@@ -23,7 +23,7 @@ const CACHE_TTL_SECONDS = 3600
 // templates change so old previews don't linger for the TTL window after
 // a deploy. Keys live under a synthetic origin so the bump is transparent
 // to the request URL itself.
-const CACHE_VERSION = 'v9'
+const CACHE_VERSION = 'v10'
 
 export async function onRequest(context) {
   const { request, next } = context
@@ -340,6 +340,10 @@ async function transformAndMaterialize(originalResponse, meta) {
     .on('meta[property^="profile:"]', { element(el) { el.remove() } })
     .on('meta[name^="twitter:"]',     { element(el) { el.remove() } })
     .on('script[type="application/ld+json"]', { element(el) { el.remove() } })
+    // Drop the homepage's <link rel="canonical"> too — the per-entity
+    // headTags below emit one pointing at the canonical bech32 URL,
+    // and a duplicate canonical splits the ranking signal.
+    .on('link[rel="canonical"]',      { element(el) { el.remove() } })
     .on('head', {
       element(el) { el.append('\n    ' + meta.headTags + '\n  ', { html: true }) },
     })

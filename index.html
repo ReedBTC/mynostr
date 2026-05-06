@@ -4,11 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src * blob: data:; media-src *; connect-src *; font-src 'self'; frame-src *;" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
-    <!-- iOS / Android home-screen icon. Re-uses /favicon.png until a
-         proper 180×180 apple-touch-icon.png is added; iOS scales the
-         existing favicon down acceptably for the home-screen tile. -->
-    <link rel="apple-touch-icon" href="/favicon.png" />
+    <!-- Icon ladder. Largest sizes first so Google + browsers pick the
+         best fit for their context. The 192/512 PNGs are designed
+         edge-to-edge so Google's circular favicon frame in search
+         results doesn't ring the brand with whitespace; the maskable
+         512 variant has the brand inside the centered safe zone for
+         Android adaptive icons (Pixel circle, Samsung squircle, etc).
+         apple-touch-icon at 180 covers iOS home-screen + Safari pinned
+         tabs; the legacy 96 favicon is kept as the small-tab fallback. -->
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="96x96"   href="/favicon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#0a0a0a" />
     <link rel="canonical" href="https://mynostr.app/" />
     <!-- Title + description tuned for SERP relevance. Title hits brand
          + category + two highest-volume modules in ~55 chars (fits SERP
@@ -78,6 +87,60 @@
             "price": "0",
             "priceCurrency": "USD"
           }
+        },
+        {
+          "@type": "FAQPage",
+          "@id": "https://mynostr.app/#faq",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "What is MyNostr?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "MyNostr is a personal Nostr client and portal where you can publish notes, write longform articles, host events, list items in a NIP-99 marketplace, and manage your relays — all signed with your Nostr key. It's a single dashboard for everything you do on Nostr."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Do I need an account to use MyNostr?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "No account creation is needed. Nostr identities are public/private keypairs that work across every Nostr app. You can sign in with a browser extension (Alby, nos2x, etc.), a remote signer like Amber, a bunker connection string, or generate a new key directly in MyNostr. You can also browse other users' public pages without signing in at all."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Is MyNostr free?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. MyNostr is free to use, with no subscription, no advertising, and no data harvesting. Your content publishes directly to public Nostr relays."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Where is my data stored?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Your published events live on the Nostr relays you choose to publish to (declared in your kind 10002 relay list). MyNostr does not store any of your events on its own servers — every read and write goes directly between your client and the relays."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "What is a Nostr key?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "A Nostr key is a cryptographic keypair — a public key (npub) that represents your identity and a private key (nsec) that signs your events. The same key works on every Nostr app, so there is no separate MyNostr account, login, or password to remember."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Can I share my MyNostr profile with someone who doesn't use Nostr?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. Every page on MyNostr has a shareable link (mynostr.app/<npub> for your profile, mynostr.app/<naddr> for an article, and so on). When you paste these links in iMessage, Telegram, Discord, or X, they unfurl with rich previews. Recipients can browse without an account."
+              }
+            }
+          ]
         }
       ]
     }
