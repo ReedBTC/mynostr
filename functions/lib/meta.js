@@ -485,18 +485,21 @@ export function renderListingMeta(event, profile, canonicalUrl) {
   //     sellers whose actual policies vary per listing.
   //   - brand / gtin — Nostr's individual-seller model doesn't fit
   //     branded-retail identifiers; Person-as-brand bends the schema.
+  // schema.org/Product validation is all-or-nothing: it requires one of
+  // offers/review/aggregateRating, and offers itself requires ISO 4217
+  // price + priceCurrency. We have potential for offers (when the
+  // currency is ISO) but never reviews or aggregate ratings — no
+  // honest source for those on a Nostr listing.
+  //
+  // Result: only ISO-priced listings get JSON-LD. SATS/BTC listings
+  // ship zero structured data — Google indexes them as regular pages
+  // (no rich-result treatment, but no errors either), and the OG card
+  // continues to drive social unfurls regardless.
   const currencyCode = String(priceTag?.[2] || '').trim().toUpperCase()
   const hasIsoPrice = ISO_4217.has(currencyCode) && !!priceTag?.[1]
   const status = tagValue(event, 'status')
 
-  const jsonLd = {
-    '@context': 'https://schema.org',
-    '@type': 'Product',
-    name: rawTitle,
-    description,
-    image: [image],
-  }
-
+  let ldScript = ''
   if (hasIsoPrice) {
     const offer = {
       '@type': 'Offer',
@@ -512,14 +515,20 @@ export function renderListingMeta(event, profile, canonicalUrl) {
         url: profile?.npub ? `${SITE_URL}/${profile.npub}` : SITE_URL,
       }
     }
-    jsonLd.offers = offer
+    const jsonLd = {
+      '@context': 'https://schema.org',
+      '@type': 'Product',
+      name: rawTitle,
+      description,
+      image: [image],
+      offers: offer,
+    }
+    ldScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
   }
-
-  const ldScript = `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
 
   return {
     title,
     description,
-    headTags: tagLines.join('\n    ') + '\n    ' + ldScript,
+    headTags: tagLines.join('\n    ') + (ldScript ? '\n    ' + ldScript : ''),
   }
 }
