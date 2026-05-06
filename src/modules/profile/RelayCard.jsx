@@ -260,14 +260,14 @@ export default function RelayCard({ pubkey }) {
 
   return (
     <div className="border border-neutral-800 rounded-lg bg-neutral-950 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800 gap-3">
+      <div className="flex flex-col gap-2 px-4 py-3 border-b border-neutral-800 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <div className="flex items-baseline gap-2 min-w-0">
           <h2 className="text-sm font-semibold text-neutral-200">Relays</h2>
           <span className="text-[10px] text-neutral-500 whitespace-nowrap">
             where their notes live
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-[11px] text-neutral-500 whitespace-nowrap">
             {loading ? (
               <span className="inline-block w-24 h-3 bg-neutral-800 rounded animate-pulse" />

@@ -136,9 +136,26 @@ export default function ProductActionsMenu({
   // composer's Multi-JSON Import accepts, so a downloaded listing
   // round-trips back into a draft cleanly. Available to anyone — the
   // event is already public on relays; this is a convenience download.
+  //
+  // Build a plain object before serializing — `listing.event` is
+  // typically an NDKEvent instance, which carries non-enumerable
+  // methods plus a back-reference to the NDK instance and its relay
+  // pool. JSON.stringify throws on those circular refs, the prior
+  // catch swallowed it, and the download silently no-op'd.
   function handleExport() {
+    if (!listing?.event) { onClose?.(); return }
     try {
-      const json = JSON.stringify(listing.event, null, 2)
+      const ev = listing.event
+      const plain = {
+        kind:       ev.kind,
+        id:         ev.id,
+        pubkey:     ev.pubkey,
+        created_at: ev.created_at,
+        content:    ev.content || '',
+        tags:       ev.tags || [],
+        sig:        ev.sig || '',
+      }
+      const json = JSON.stringify(plain, null, 2)
       const blob = new Blob([json], { type: 'application/json' })
       const url  = URL.createObjectURL(blob)
       const slug = titleToSlug(listing.decoded?.title || listing.decoded?.dTag || 'listing') || 'listing'
@@ -148,8 +165,8 @@ export default function ProductActionsMenu({
       a.click()
       URL.revokeObjectURL(url)
     } catch {
-      // Serialization should never fail on a fetched event, but swallow
-      // rather than blow up the menu on a freak input.
+      // Serialization should never fail on the plucked plain object;
+      // swallow as a safety net rather than blow up the menu.
     }
     onClose?.()
   }

@@ -12,7 +12,9 @@
  * confirmation modal before iterating through every draft with text.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { nip19 } from 'nostr-tools'
+import { Z } from '../../../lib/zIndex.js'
 import {
   isSchedulerConfigured,
   listScheduled,
@@ -310,7 +312,10 @@ export default function DraftsTray({
     <>
       <div className="flex items-center justify-between gap-1.5 px-2.5 py-2 border-b border-neutral-800">
         <span className="text-[11px] uppercase tracking-wider text-neutral-500 font-medium">
-          Drafts ({drafts.length})
+          {/* Counter includes scheduled notes too — they're separate
+              state, but conceptually live in the same queue from the
+              user's perspective ("how many things am I working on?"). */}
+          Drafts ({drafts.length + scheduled.length})
         </span>
         <button
           onClick={() => { onCreateDraft(); if (isMobile && onMobileClose) onMobileClose() }}
@@ -526,17 +531,51 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
   //
   // `copied` flips the matching item's label to "✓ Copied!" briefly,
   // mirroring the locked-banner copy pattern in NoteComposer.
+  //
+  // The menu used to render `absolute right-0 top-full` inside the row,
+  // which got clipped by the drafts-list's overflow-y-auto when the row
+  // was near the bottom of the scroll viewport — and dropped behind the
+  // sticky import/export footer. It's portaled now: position is computed
+  // from the trigger's getBoundingClientRect on open, fixed-positioned
+  // on document.body, dismissed on scroll/resize. Same pattern
+  // NoteActionsMenu uses.
   const [menuOpen, setMenuOpen] = useState(false)
   const [copied, setCopied] = useState(null) // 'nevent' | 'note' | null
+  const triggerRef = useRef(null)
   const menuRef = useRef(null)
   const copyTimerRef = useRef(null)
+
+  // Position the portaled menu relative to the trigger; flip above when
+  // the trigger sits near the viewport bottom and the menu wouldn't fit
+  // below. maxHeight clamps to available space so the menu can't extend
+  // past either viewport edge.
+  const [menuPos, setMenuPos] = useState(null)
+  useEffect(() => {
+    if (!menuOpen || !triggerRef.current) { setMenuPos(null); return }
+    const rect = triggerRef.current.getBoundingClientRect()
+    const ESTIMATED_HEIGHT = 160
+    const spaceBelow = window.innerHeight - rect.bottom
+    const spaceAbove = rect.top
+    const flipAbove  = spaceBelow < ESTIMATED_HEIGHT && spaceAbove > spaceBelow
+    const maxHeight = Math.max(120, (flipAbove ? spaceAbove : spaceBelow) - 8)
+    setMenuPos(flipAbove
+      ? { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right, maxHeight }
+      : { top: rect.bottom + 4, right: window.innerWidth - rect.right, maxHeight })
+    function dismiss() { setMenuOpen(false) }
+    window.addEventListener('scroll', dismiss, true)
+    window.addEventListener('resize', dismiss)
+    return () => {
+      window.removeEventListener('scroll', dismiss, true)
+      window.removeEventListener('resize', dismiss)
+    }
+  }, [menuOpen])
 
   useEffect(() => {
     if (!menuOpen) return
     function onDown(e) {
-      if (menuRef.current && !menuRef.current.contains(e.target)) {
-        setMenuOpen(false)
-      }
+      if (menuRef.current && menuRef.current.contains(e.target)) return
+      if (triggerRef.current && triggerRef.current.contains(e.target)) return
+      setMenuOpen(false)
     }
     function onKey(e) { if (e.key === 'Escape') setMenuOpen(false) }
     document.addEventListener('mousedown', onDown)
@@ -599,14 +638,9 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
           {failed ? `failed after ${item.attempts} attempts` : when}
         </p>
       </div>
-      <div className="relative shrink-0" ref={menuRef}>
-        {/* No `onMouseDown stopPropagation` on the wrapper — that would
-            block the document-level mousedown listener on OTHER open
-            menus, leaving the previous menu open when the user clicks
-            a new trigger. The trigger + dropdown each stop their own
-            click bubbling, which is enough to keep the row's `onSelect`
-            from firing. */}
+      <div className="shrink-0">
         <button
+          ref={triggerRef}
           type="button"
           onClick={(e) => { e.stopPropagation(); setMenuOpen(o => !o) }}
           aria-label="Scheduled note actions"
@@ -624,11 +658,14 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
             <circle cx="13" cy="8" r="1.4" />
           </svg>
         </button>
-        {menuOpen && (
+        {menuOpen && menuPos && createPortal(
           <div
+            ref={menuRef}
             role="menu"
             onClick={e => e.stopPropagation()}
-            className="absolute right-0 top-full mt-1 z-30 min-w-[160px] bg-neutral-900 border border-neutral-700 rounded shadow-xl py-1"
+            onMouseDown={e => e.stopPropagation()}
+            className={`fixed bg-neutral-900 border border-neutral-700 rounded shadow-xl py-1 ${Z.portaledMenu} min-w-[180px] overflow-y-auto`}
+            style={menuPos}
           >
             {eventId && eventPubkey && (
               <button
@@ -657,7 +694,8 @@ function ScheduledRow({ item, isCurrent, onSelect, cancelling, onCancel }) {
             >
               {cancelling ? '…' : (failed ? 'Remove from list' : 'Cancel scheduled publish')}
             </button>
-          </div>
+          </div>,
+          document.body,
         )}
       </div>
     </div>

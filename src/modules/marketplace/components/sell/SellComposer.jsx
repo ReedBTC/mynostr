@@ -29,11 +29,13 @@ const PLEBEIAN_RELAY_URL = 'wss://relay.plebeian.market'
  * still as the user switches tabs — only the tab body re-renders.
  */
 
-const TABS = [
-  { id: 'listing',  label: 'Listing'  },
-  { id: 'photos',   label: 'Photos'   },
-  { id: 'shipping', label: 'Shipping' },
-]
+// Tabs were removed in favor of a single stream — the row of
+// Listing / Photos / Shipping pills looked identical to the
+// parent module's Sell · My Products · My Collections · Search
+// nav, which led to confusion (users tried tapping module nav
+// while filling out a form). Inlining means the user just scrolls
+// the form top-to-bottom: identity → description → photos →
+// price/stock → shipping → advanced.
 
 export default function SellComposer({
   sessionUser,
@@ -48,7 +50,6 @@ export default function SellComposer({
   draftsCount = 1,           // for the mobile "Drafts (N)" chip
 }) {
   const pubkey = sessionUser?.pubkey || null
-  const [activeTab, setActiveTab] = useState('listing')
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
   // ── Top-row action state ───────────────────────────────────────────
@@ -86,11 +87,9 @@ export default function SellComposer({
 
   // Reset per-draft local state when the draft id changes (selecting
   // a different draft) OR when the current draft's snapshot is
-  // replaced wholesale (single import / load-from-naddr). Both should
-  // land the user on the Listing tab fresh with no stale errors.
+  // replaced wholesale (single import / load-from-naddr).
   useEffect(() => {
     setDiscardArmed(false)
-    setActiveTab('listing')
     setAdvancedOpen(false)
     setValidationError('')
     setImportError('')
@@ -190,12 +189,10 @@ export default function SellComposer({
   const handlePublish = useCallback(async () => {
     if (!draft) return
     if (!form.title?.trim()) {
-      setActiveTab('listing')
       setValidationError('Title is required.')
       return
     }
     if (!form.summary?.trim() && !form.content?.trim()) {
-      setActiveTab('listing')
       setValidationError('Add a description or summary.')
       return
     }
@@ -304,35 +301,11 @@ export default function SellComposer({
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      {/* Tab strip + action row — content centered + same horizontal
-          extent as the form below so the row visually aligns with the
-          body and footer. Tabs left, actions right; flex-wrap so a
-          narrow viewport drops the actions onto a second line rather
-          than truncating either group. Hidden in the published-success
-          state — that view is panel-only with no editing affordances. */}
+      {/* Action row — per-current-draft import / naddr load / export.
+          Tabs were removed in favor of a single stream below; this row
+          retains the Drafts mobile chip + import/export controls. */}
       <div className={`flex-shrink-0 px-4 pt-3 pb-4 ${published ? 'hidden' : ''}`}>
-        <div className="max-w-2xl mx-auto flex items-center justify-between gap-2 flex-wrap">
-
-          {/* Tabs */}
-          <div className="flex items-center gap-0">
-            {TABS.map(({ id, label }, i, arr) => {
-              const isActive = activeTab === id
-              return (
-                <button
-                  key={id}
-                  onClick={() => setActiveTab(id)}
-                  className={`text-xs px-3 py-1.5 border transition-colors
-                    ${i === 0 ? 'rounded-l' : ''} ${i === arr.length - 1 ? 'rounded-r' : ''}
-                    ${isActive
-                      ? 'bg-purple-600 border-purple-600 text-white'
-                      : 'bg-neutral-900 border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500'}
-                    ${i > 0 ? '-ml-px' : ''}`}
-                >
-                  {label}
-                </button>
-              )
-            })}
-          </div>
+        <div className="max-w-2xl mx-auto flex items-center justify-end gap-2 flex-wrap">
 
           {/* Per-current-draft actions: import / naddr load / export.
               On mobile, the Drafts chip lives here (top row, always
@@ -445,26 +418,35 @@ export default function SellComposer({
                 updateForm={updateForm}
                 sessionUser={sessionUser}
               />
-              {activeTab === 'listing' && (
-                <>
-                  <ListingTab key={`${draft.id}-${draft.replaceVersion || 0}`} form={form} updateForm={updateForm} updatePrice={updatePrice} />
-                  {/* Advanced lives only on the Listing tab — its fields
-                      are listing-adjacent (NSFW, location, specs, etc.)
-                      rather than Photo/Shipping concerns. */}
-                  <AdvancedSection
+              {/* Single stream: listing identity + photos + price/etc.
+                  → shipping → advanced. ListingTab takes a mediaSlot
+                  for PhotosTab so images render between description
+                  and price (per Reed's UX feedback — images belong
+                  inline with what-is-this, not on a separate tab). */}
+              <ListingTab
+                key={`${draft.id}-${draft.replaceVersion || 0}-listing`}
+                form={form}
+                updateForm={updateForm}
+                updatePrice={updatePrice}
+                mediaSlot={
+                  <PhotosTab
+                    key={`${draft.id}-${draft.replaceVersion || 0}-photos`}
                     form={form}
                     updateForm={updateForm}
-                    open={advancedOpen}
-                    onToggle={() => setAdvancedOpen(o => !o)}
                   />
-                </>
-              )}
-              {activeTab === 'photos' && (
-                <PhotosTab key={`${draft.id}-${draft.replaceVersion || 0}`} form={form} updateForm={updateForm} />
-              )}
-              {activeTab === 'shipping' && (
-                <ShippingTab key={`${draft.id}-${draft.replaceVersion || 0}`} form={form} updateForm={updateForm} />
-              )}
+                }
+              />
+              <ShippingTab
+                key={`${draft.id}-${draft.replaceVersion || 0}-shipping`}
+                form={form}
+                updateForm={updateForm}
+              />
+              <AdvancedSection
+                form={form}
+                updateForm={updateForm}
+                open={advancedOpen}
+                onToggle={() => setAdvancedOpen(o => !o)}
+              />
             </>
           )}
         </div>

@@ -1,12 +1,17 @@
 import { useRef, useState } from 'react'
 import { uploadToBlossom } from '../../../../lib/blossom.js'
 import { isSafeUrl } from '../../../../lib/utils.js'
+import { useImageUploadFlow } from '../../../../components/ImageUploadConfirm.jsx'
 
 const MAX_IMAGES = 8
-// Matches the 5 MB ceiling Articles' Editor + cover-image picker enforce.
-// Most product photos compress well under 1 MB; 5 MB leaves room for
-// uncompressed phone shots without inviting accidental 50 MB drops.
-const MAX_PHOTO_BYTES = 5 * 1024 * 1024
+// Outer sanity cap on raw uploads; the compression flow normally lands
+// each shot well under 1 MB, but a 50 MB drop is almost certainly a
+// mis-pick (a video, a DSLR raw, etc) — reject before bothering with
+// compression. Notes' uploader doesn't enforce a cap of its own and
+// relies on the picker; we keep one here because product photos go
+// through the same Blossom endpoint that has its own server-side
+// limits, and rejecting locally is friendlier than a server error.
+const MAX_PHOTO_BYTES = 50 * 1024 * 1024
 
 /**
  * Photos tab — image management.
@@ -25,6 +30,11 @@ export default function PhotosTab({ form, updateForm }) {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const fileInputRef = useRef(null)
+  // Same compression picker every other upload surface uses (note
+  // composer, profile pfp/banner, article cover/inline). Lets sellers
+  // pick low/medium/high compression so a 30 MB phone shot can land
+  // as a ~300 KB JPG without manual prep.
+  const { requestUpload: requestImageUpload, element: uploadPicker } = useImageUploadFlow()
 
   const images = form.images || []
   const atCap = images.length >= MAX_IMAGES
@@ -58,10 +68,15 @@ export default function PhotosTab({ form, updateForm }) {
       setError(`Image too large — max ${Math.round(MAX_PHOTO_BYTES / 1024 / 1024)} MB.`)
       return
     }
+    // Compression picker — user picks none/low/medium/high, gets a
+    // size preview per level. Returns null on cancel; small or
+    // non-raster files (GIF/SVG) bypass the picker and resolve as-is.
+    const ready = await requestImageUpload(file)
+    if (!ready) return
     setError('')
     setUploading(true)
     try {
-      const url = await uploadToBlossom(file)
+      const url = await uploadToBlossom(ready)
       pushImage(url)
     } catch (e) {
       setError(e?.message || 'Upload failed')
@@ -189,6 +204,11 @@ export default function PhotosTab({ form, updateForm }) {
           ))}
         </ul>
       )}
+
+      {/* Compression picker — modal/sheet rendered via portal by the
+          hook; mounting empty here keeps the element in the React
+          tree and lifecycle-tied to this component. */}
+      {uploadPicker}
     </div>
   )
 }

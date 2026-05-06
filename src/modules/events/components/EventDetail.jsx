@@ -328,8 +328,13 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
             body={
               <>
                 Hosted by{' '}
+                {/* Land on the host's events feed, not their profile —
+                    if you came in through an event you almost certainly
+                    want to see what else they've scheduled, not stats
+                    and relays. Works logged-out (read-only events feed)
+                    and logged-in (composer/RSVP affordances appear). */}
                 <a
-                  href={`/${hostNpub}/profile`}
+                  href={`/${hostNpub}/events`}
                   className="text-purple-300 hover:text-purple-200 underline-offset-2 hover:underline"
                 >
                   {hostDisplay || `${hostNpub.slice(0, 14)}…`}

@@ -29,7 +29,12 @@ const COMMON_CATEGORIES = [
   'other',
 ]
 
-export default function ListingTab({ form, updateForm, updatePrice }) {
+export default function ListingTab({ form, updateForm, updatePrice, mediaSlot = null }) {
+  // mediaSlot lets the parent (SellComposer) inject the photos UI
+  // immediately after the description and before price/category. The
+  // composer used to render Photos as a separate tab; collapsing the
+  // tabs into one stream means images naturally belong inline with
+  // the rest of the listing, right after "what is this thing".
   return (
     <div className="space-y-5 max-w-2xl">
 
@@ -68,6 +73,10 @@ export default function ListingTab({ form, updateForm, updatePrice }) {
           className="w-full px-3 py-2 text-sm rounded border border-neutral-800 bg-neutral-900 text-neutral-100 outline-none focus:border-purple-600 transition-colors resize-y"
         />
       </Field>
+
+      {/* Photos render here — between description and price — when the
+          parent passes a mediaSlot. */}
+      {mediaSlot}
 
       {/* Price */}
       <Field label="Price">

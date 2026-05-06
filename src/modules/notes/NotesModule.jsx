@@ -33,6 +33,7 @@ import {
   cancelScheduled as workerCancelScheduled,
   getScheduledEntryLocal,
   onLocalChange as onSchedulerLocalChange,
+  readLocalScheduled,
   MIN_LEAD_SECONDS,
 } from '../../lib/scheduler.js'
 import { validateKind1Event } from '../../lib/noteParser.js'
@@ -97,6 +98,23 @@ export default function NotesModule({ user, sessionUser, subtab }) {
   } = useNoteDrafts(isOwner ? sessionUser?.pubkey : null)
 
   const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
+
+  // Scheduled-note count — kept here so the mobile composer "Drafts (N)"
+  // chip reflects the full queue (drafts + scheduled), matching the
+  // tray title's combined count. DraftsTray reads its own scheduled
+  // state for the rows; this is just the count for the chip.
+  const ownerPubkeyForCount = isOwner ? sessionUser?.pubkey : null
+  const [scheduledCount, setScheduledCount] = useState(() =>
+    ownerPubkeyForCount ? readLocalScheduled(ownerPubkeyForCount).length : 0
+  )
+  useEffect(() => {
+    if (!ownerPubkeyForCount) { setScheduledCount(0); return }
+    setScheduledCount(readLocalScheduled(ownerPubkeyForCount).length)
+    const off = onSchedulerLocalChange(() => {
+      setScheduledCount(readLocalScheduled(ownerPubkeyForCount).length)
+    })
+    return () => off()
+  }, [ownerPubkeyForCount])
 
   // Scheduled-item selection — mutually exclusive with a draft selection.
   // When a user clicks a scheduled row, the editor swaps to a locked
@@ -534,7 +552,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
                   key={scheduledDraftView.id}
                   user={user}
                   draft={scheduledDraftView}
-                  draftCount={drafts.length}
+                  draftCount={drafts.length + scheduledCount}
                   viewingScheduled
                   onCancelScheduled={handleCancelScheduledAndEdit}
                   onOpenDraftsMobile={isMobile ? () => setDraftsMobileOpen(true) : undefined}
@@ -544,7 +562,7 @@ export default function NotesModule({ user, sessionUser, subtab }) {
                   key={currentDraft.id}
                   user={user}
                   draft={currentDraft}
-                  draftCount={drafts.length}
+                  draftCount={drafts.length + scheduledCount}
                   onSnapshotChange={(patch) => handleSnapshotChange(currentDraft.id, patch)}
                   onPublish={() => publishOne(currentDraft.id)}
                   onClear={() => clearDraft(currentDraft.id)}
