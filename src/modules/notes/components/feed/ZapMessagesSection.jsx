@@ -30,6 +30,7 @@ import { nip19 } from 'nostr-tools'
 import { fetchZapMessages, getCachedSenderProfile } from '../../../../lib/zapMessages.js'
 import { fetchProfiles } from '../../../../lib/primal.js'
 import { isSafeUrl, safeNpubEncode } from '../../../../lib/utils.js'
+import { useNoteRefreshKey } from '../../../../lib/noteRefresh.js'
 
 const TOP_N = 5
 const MAX_PANEL_HEIGHT_PX = 320
@@ -43,6 +44,12 @@ export default function ZapMessagesSection({ noteId }) {
   const mountedRef  = useRef(true)
   const fetchedRef  = useRef(false)
 
+  // Bumped when the user clicks "Refresh comments & zaps" in the
+  // three-dot menu — refreshNoteData has already primed the
+  // zapMessages cache by the time this fires, so a re-call to
+  // fetchZapMessages returns instantly with fresh data.
+  const refreshKey = useNoteRefreshKey(noteId)
+
   useEffect(() => {
     mountedRef.current = true
     return () => { mountedRef.current = false }
@@ -51,8 +58,12 @@ export default function ZapMessagesSection({ noteId }) {
   // IntersectionObserver — fires fetch once per noteId when the
   // sentinel enters the viewport. `rootMargin` of 200px pre-warms
   // the data slightly before the card is fully visible.
+  // Refresh signal: fetchedRef is already true on subsequent runs;
+  // the refreshKey-deps re-run resets it so the IO path re-fires.
   useEffect(() => {
-    if (!noteId || fetchedRef.current) return
+    if (!noteId) return
+    if (refreshKey > 0) fetchedRef.current = false
+    if (fetchedRef.current) return
     const el = sentinelRef.current
     if (!el || typeof IntersectionObserver === 'undefined') {
       // Fallback for environments without IO — fetch on mount.
@@ -82,7 +93,7 @@ export default function ZapMessagesSection({ noteId }) {
         if (mountedRef.current) setMessages([])
       }
     }
-  }, [noteId])
+  }, [noteId, refreshKey])
 
   // When the user expands, fill in any missing sender profiles via a
   // batch Primal lookup. Profiles already cached (Primal harvest path)

@@ -21,9 +21,15 @@ import { createPortal } from 'react-dom'
 import { nip19 } from 'nostr-tools'
 import { copyToClipboard } from '../../../../lib/utils.js'
 import { Z } from '../../../../lib/zIndex.js'
+import { refreshNoteData } from '../../../../lib/noteRefresh.js'
 
 export default function NoteActionsMenu({ open, onClose, note, triggerRef }) {
   const [copied, setCopied] = useState(null)
+  // 'idle' | 'fetching' | 'done' — drives the Refresh button's label
+  // and disables it during the in-flight relay round-trip. Auto-resets
+  // back to idle after the success blink so a second click isn't gated.
+  const [refreshState, setRefreshState] = useState('idle')
+  const [refreshSummary, setRefreshSummary] = useState('')
 
   // Portal position — fixed coords derived from the trigger's rect.
   // Recomputed whenever the menu opens. We close on scroll/resize
@@ -99,6 +105,39 @@ export default function NoteActionsMenu({ open, onClose, note, triggerRef }) {
     }, 1100)
   }
 
+  async function handleRefresh() {
+    if (refreshState !== 'idle') return
+    if (!note?.id) return
+    setRefreshState('fetching')
+    setRefreshSummary('')
+    try {
+      const r = await refreshNoteData(note.id)
+      if (!mountedRef.current) return
+      const parts = [
+        `${r.commentCount} comment${r.commentCount === 1 ? '' : 's'}`,
+        `${r.zapCount} zap${r.zapCount === 1 ? '' : 's'}`,
+      ]
+      setRefreshSummary(parts.join(' · '))
+      setRefreshState('done')
+      // Auto-close after a brief success blink so the menu doesn't
+      // linger when there's nothing else the user wanted to do.
+      setTimeout(() => {
+        if (!mountedRef.current) return
+        setRefreshState('idle')
+        setRefreshSummary('')
+        onClose?.()
+      }, 1100)
+    } catch {
+      if (!mountedRef.current) return
+      setRefreshState('idle')
+      setRefreshSummary('Refresh failed')
+      setTimeout(() => {
+        if (!mountedRef.current) return
+        setRefreshSummary('')
+      }, 1500)
+    }
+  }
+
   function handleExportJson() {
     const event = {
       kind: 1,
@@ -144,6 +183,30 @@ export default function NoteActionsMenu({ open, onClose, note, triggerRef }) {
         className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors disabled:opacity-50"
       >
         {copied === 'url' ? '✓ Copied!' : 'Copy URL'}
+      </button>
+
+      <div className="border-t border-neutral-700" />
+
+      {/* Refresh — explicit relay-set fetch (user's NIP-65 read relays
+          including read-only entries that NDK's pool never connects to)
+          for both comments and zaps. Bypasses Primal entirely so brand-
+          new replies / zaps that haven't reached Primal's index yet
+          surface immediately. */}
+      <button
+        onClick={handleRefresh}
+        disabled={refreshState === 'fetching'}
+        className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors disabled:opacity-60 flex items-center justify-between gap-2"
+      >
+        <span>
+          {refreshState === 'fetching'
+            ? 'Refreshing…'
+            : refreshState === 'done'
+              ? `✓ ${refreshSummary || 'Refreshed'}`
+              : 'Refresh comments & zaps'}
+        </span>
+        {refreshState === 'fetching' && (
+          <span className="inline-block w-3 h-3 border border-neutral-500 border-t-transparent rounded-full animate-spin" />
+        )}
       </button>
 
       <div className="border-t border-neutral-700" />

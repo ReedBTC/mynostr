@@ -165,6 +165,17 @@ export async function getOwnWriteRelays(ndk) {
   }
 }
 
+// Resolve the signed-in user's NIP-65 read relays. Symmetric with
+// getOwnWriteRelays — same direct-fetch pattern (no NDK helper cache),
+// same null-on-miss contract. Used by features that need to query the
+// user's full read surface, including read-only relays that
+// ensureUserWriteRelays doesn't add to the explicit pool.
+export async function getOwnReadRelays(ndk) {
+  const pubkey = ndk?.activeUser?.pubkey
+  if (!pubkey) return null
+  return getUserReadRelays(ndk, pubkey)
+}
+
 /**
  * Read another user's NIP-65 read relays — the relays they listen on
  * for incoming events. Used by publish paths that want to ensure the

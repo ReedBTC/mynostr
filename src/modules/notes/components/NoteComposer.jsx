@@ -1303,7 +1303,9 @@ export default function NoteComposer({
                 </a>
               </div>
               <p className="text-[10px] text-neutral-600 mt-1">
-                {publishResult.relays.length} relay{publishResult.relays.length !== 1 ? 's' : ''}
+                {publishResult.targetedRelays?.length
+                  ? `${publishResult.confirmedRelays?.length ?? publishResult.relays.length} of ${publishResult.targetedRelays.length} relays`
+                  : `${publishResult.relays.length} relay${publishResult.relays.length !== 1 ? 's' : ''}`}
               </p>
             </div>
             <button

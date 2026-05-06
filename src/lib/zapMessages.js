@@ -43,6 +43,21 @@ export function getCachedSenderProfile(pubkey) {
   return senderProfileCache.get(pubkey) || null
 }
 
+// Allow external callers (refreshNoteData) to pre-populate the cache
+// with raw zap events fetched directly from the user's read relays —
+// bypasses both the Primal-first lookup and the 5-min TTL. The caller
+// has just-fetched authoritative data; we parse + harvest profiles
+// here so the next read returns instantly.
+export function primeZapMessages(noteId, rawEvents) {
+  if (!noteId) return
+  harvestSenderProfiles(rawEvents)
+  const messages = parseZapEvents(rawEvents)
+  cacheSet(messageCache, noteId, { messages, source: 'refresh', fetchedAt: Date.now() })
+  // Drop any in-flight Primal/relay fetch — the next consumer call will
+  // see our primed entry and skip the network.
+  inflight.delete(noteId)
+}
+
 /**
  * Get zap messages for a note. Returns a cached result when fresh,
  * otherwise fetches via Primal-then-relays. De-duplicates concurrent

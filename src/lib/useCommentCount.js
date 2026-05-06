@@ -29,6 +29,7 @@
 import { useEffect, useState } from 'react'
 import { getNDK, connectAndWait } from './ndk.js'
 import { withTimeout } from './utils.js'
+import { useNoteRefreshKey } from './noteRefresh.js'
 
 const cache = new Map() // key → { count, ts }
 const TTL_MS = 60_000
@@ -38,12 +39,26 @@ function keyOf(eventId, aTag) {
   return `${eventId || ''}|${aTag || ''}`
 }
 
+// Allow external callers (refreshNoteData) to pre-populate the cache
+// with a fresh count from an explicit relay-set fetch. Bypasses the
+// 60s TTL — the caller has authoritative data, not a stale memory hit.
+export function primeCommentCount(eventId, aTag, count) {
+  if (!eventId && !aTag) return
+  cache.set(keyOf(eventId, aTag), { count, ts: Date.now() })
+}
+
 export function useCommentCount({ eventId, aTag } = {}) {
   const [count, setCount] = useState(() => {
     const c = cache.get(keyOf(eventId, aTag))
     if (c && Date.now() - c.ts < TTL_MS) return c.count
     return null
   })
+
+  // Refresh key — bumps when the user clicks "Refresh comments & zaps"
+  // on the note's three-dot menu. Inclusion in the effect's deps below
+  // makes the effect re-run, picking up the cache entry that
+  // refreshNoteData primed before emitting.
+  const refreshKey = useNoteRefreshKey(eventId)
 
   useEffect(() => {
     if (!eventId && !aTag) { setCount(null); return }
@@ -71,7 +86,7 @@ export function useCommentCount({ eventId, aTag } = {}) {
       }
     })()
     return () => { cancelled = true }
-  }, [eventId, aTag])
+  }, [eventId, aTag, refreshKey])
 
   return count
 }
