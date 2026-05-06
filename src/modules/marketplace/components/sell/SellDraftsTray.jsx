@@ -601,7 +601,7 @@ export async function fetchListingForLoader(input) {
     }
     const snapshot = eventToForm(ev)
     if (!snapshot) return { ok: false, error: 'Could not decode that event as a listing.' }
-    return { ok: true, snapshot }
+    return { ok: true, snapshot, importedFromPubkey: ev.pubkey }
   } catch (err) {
     return {
       ok: false,

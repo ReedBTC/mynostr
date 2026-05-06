@@ -157,6 +157,12 @@ export default function DmRelayCard({ pubkey }) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [saveNotice, setSaveNotice] = useState(null)
+  // Confirmation gate for "save with zero DM relays" — explicitly
+  // removing all DM relays is a valid intent (peers see the empty list
+  // and stop sending gift-wraps to a stale inbox), but it warrants a
+  // confirm so an accidental All-Remove + Save can't silently leave
+  // the user uncontactable.
+  const [confirmEmpty, setConfirmEmpty] = useState(false)
 
   // Load kind 10050 for the viewed user. When owner + empty, also load the
   // user's kind 10002 list + NIP-11 info so suggestDmRelays can filter out
@@ -232,21 +238,21 @@ export default function DmRelayCard({ pubkey }) {
     setAddError('')
   }
 
-  async function handleSave() {
-    if (saving) return
-    if (draft.length === 0) {
-      setSaveError('Add at least one relay before saving.')
-      return
-    }
+  async function doSave() {
     setSaving(true)
     setSaveError('')
     try {
       const { relays: confirmedTo } = await publishDmRelayList({ relays: draft })
       setRelays(draft.slice())
-      setSource('nip17')
+      // An empty save is a valid "I have no DM inbox" signal; reflect
+      // that in the source so view-mode can render the empty-state
+      // copy correctly instead of "(loaded from kind 10050)".
+      setSource(draft.length === 0 ? 'none' : 'nip17')
       setMode('view')
       setSaveNotice({
-        msg: `DM relay list published to ${confirmedTo.length} relay${confirmedTo.length === 1 ? '' : 's'}.`,
+        msg: draft.length === 0
+          ? `DM relay list cleared on ${confirmedTo.length} relay${confirmedTo.length === 1 ? '' : 's'}.`
+          : `DM relay list published to ${confirmedTo.length} relay${confirmedTo.length === 1 ? '' : 's'}.`,
       })
       for (const url of draft) {
         if (!infoByUrl[url]) {
@@ -260,6 +266,16 @@ export default function DmRelayCard({ pubkey }) {
     } finally {
       setSaving(false)
     }
+  }
+
+  async function handleSave() {
+    if (saving) return
+    // Empty save is allowed but warned — see confirmEmpty doc on state.
+    if (draft.length === 0) {
+      setConfirmEmpty(true)
+      return
+    }
+    doSave()
   }
 
   const inEdit = mode === 'edit'
@@ -355,6 +371,70 @@ export default function DmRelayCard({ pubkey }) {
 
       <DmRelayFAQ />
       {copier.modalElement}
+      {confirmEmpty && (
+        <ConfirmEmptyDmListModal
+          busy={saving}
+          onCancel={() => setConfirmEmpty(false)}
+          onConfirm={() => { setConfirmEmpty(false); doSave() }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ConfirmEmptyDmListModal({ busy, onCancel, onConfirm }) {
+  useEffect(() => {
+    function onKey(e) { if (e.key === 'Escape' && !busy) onCancel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel, busy])
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4"
+      onMouseDown={busy ? undefined : onCancel}
+    >
+      <div
+        className="bg-neutral-900 border border-neutral-700 rounded-lg shadow-2xl w-full max-w-md p-4"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium text-neutral-100">Leave without adding any NIP-17 relays?</h3>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="text-neutral-500 hover:text-neutral-200 text-lg leading-none disabled:opacity-50"
+            aria-label="Cancel"
+          >
+            ×
+          </button>
+        </div>
+        <p className="text-[11px] text-neutral-500 mb-4 leading-relaxed">
+          Other users won't be able to send you NIP-17 direct messages
+          until you add at least one DM relay back. This publishes an
+          empty kind 10050 event so peers and clients see the change
+          immediately.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="text-xs px-3 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={busy}
+            className="text-xs px-3 py-1.5 rounded bg-purple-600 hover:bg-purple-500 text-white font-semibold transition-colors disabled:opacity-50"
+          >
+            {busy ? 'Publishing…' : 'Leave anyway'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

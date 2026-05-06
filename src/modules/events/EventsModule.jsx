@@ -231,9 +231,20 @@ export default function EventsModule({ user, sessionUser, subtab }) {
     if (!drafts.currentDraft) return { ok: false, error: 'No draft selected.' }
     const r = await fetchEventForLoader(input)
     if (!r.ok) return r
-    drafts.replaceSnapshot(drafts.currentDraft.id, r.snapshot)
+    let snapshot = r.snapshot
+    // Cross-author import → strip dTag + linkedEventTitle so the
+    // PublishIdentityBanner shows "Will publish as new event" instead
+    // of misleading "Will Replace Event" copy. See marketplace's
+    // handleLoadFromNostr for the longer rationale (dTag collision
+    // would silently overwrite the user's own event with the imported
+    // draft on publish).
+    const myPubkey = sessionUser?.pubkey
+    if (r.importedFromPubkey && myPubkey && r.importedFromPubkey !== myPubkey) {
+      snapshot = { ...snapshot, dTag: '', linkedEventTitle: '' }
+    }
+    drafts.replaceSnapshot(drafts.currentDraft.id, snapshot)
     return { ok: true }
-  }, [drafts])
+  }, [drafts, sessionUser?.pubkey])
 
   // ── Render ──────────────────────────────────────────────────────────
 

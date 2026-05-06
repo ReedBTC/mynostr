@@ -211,9 +211,23 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
     if (!drafts.currentDraft) return { ok: false, error: 'No draft selected.' }
     const r = await fetchListingForLoader(input)
     if (!r.ok) return r
-    drafts.replaceSnapshot(drafts.currentDraft.id, r.snapshot)
+    let snapshot = r.snapshot
+    // Strip dTag + linked-title when the imported listing was authored
+    // by someone else. Preserving them would render the "Will Replace
+    // Listing" banner — misleading because publishing creates a fresh
+    // event under the user's own pubkey, not a replacement of the
+    // original — and (worse) a dTag collision against one of the
+    // user's own listings would silently overwrite that listing with
+    // the imported draft on publish. Cross-author imports are fresh
+    // starting points; users who genuinely want to replace one of
+    // their own listings can use the Replace Existing picker.
+    const myPubkey = sessionUser?.pubkey
+    if (r.importedFromPubkey && myPubkey && r.importedFromPubkey !== myPubkey) {
+      snapshot = { ...snapshot, dTag: '', linkedListingTitle: '' }
+    }
+    drafts.replaceSnapshot(drafts.currentDraft.id, snapshot)
     return { ok: true }
-  }, [drafts])
+  }, [drafts, sessionUser?.pubkey])
 
   // ── Edit a published listing ──────────────────────────────────────
   // Loads the listing into the composer as a NEW draft (not replacing
