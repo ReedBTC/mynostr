@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MDEditor from '@uiw/react-md-editor'
 import rehypeSanitize from 'rehype-sanitize'
@@ -68,6 +68,43 @@ export default function ArticleReadPanel({
   )
   const menuRef = useRef(null)
   const listMenuRef = useRef(null)
+
+  // Mobile-only: collapse the title bar + social action bar when the
+  // user scrolls down through the article body, reveal them when
+  // scrolling back up. Same pattern as Medium / Substack / iOS Safari's
+  // own URL bar — gives more vertical space for the actual prose.
+  // Desktop keeps the headers persistent (more screen real estate, no
+  // need to claw it back).
+  const contentScrollRef = useRef(null)
+  const [headerCollapsed, setHeaderCollapsed] = useState(false)
+  const lastScrollYRef = useRef(0)
+  const rafScheduledRef = useRef(false)
+  const handleContentScroll = useCallback(() => {
+    if (!isMobile) return
+    if (rafScheduledRef.current) return
+    rafScheduledRef.current = true
+    requestAnimationFrame(() => {
+      rafScheduledRef.current = false
+      const el = contentScrollRef.current
+      if (!el) return
+      const y = el.scrollTop
+      const delta = y - lastScrollYRef.current
+      // Tiny deltas trip on momentum scroll oscillation — ignore them.
+      if (Math.abs(delta) < 6) return
+      // Hide on real downward intent past a small threshold; reveal on
+      // any upward movement (matches user expectation of "scrolling
+      // back to find the back button").
+      if (delta > 0 && y > 60) setHeaderCollapsed(true)
+      else if (delta < 0)      setHeaderCollapsed(false)
+      lastScrollYRef.current = y
+    })
+  }, [isMobile])
+  // Reset on article switch so the new article doesn't open with a
+  // collapsed header inherited from the previous read.
+  useEffect(() => {
+    setHeaderCollapsed(false)
+    lastScrollYRef.current = 0
+  }, [article?.id])
 
   // Social actions — `liked` is sourced from the cross-module reaction
   // store so the heart survives reload, navigation, and likes issued
@@ -423,6 +460,14 @@ export default function ArticleReadPanel({
       />
     )}
     <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+      {/* Header wrapper — on mobile, collapses on scroll-down and
+          reveals on scroll-up (see handleContentScroll). On desktop,
+          always visible. max-h-40 is generous (~10rem) — actual content
+          is well under, but giving slack avoids clipping if a longer
+          author name or wider button row pushes the natural height. */}
+      <div className={`flex-shrink-0 overflow-hidden transition-all duration-200 ease-out ${
+        isMobile && headerCollapsed ? 'max-h-0' : 'max-h-40'
+      }`}>
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-neutral-800 flex-shrink-0">
         {/* Mobile back button — collapses the reader and returns to the feed.
@@ -818,8 +863,15 @@ export default function ArticleReadPanel({
 
       </div>
 
+      </div>{/* end header wrapper */}
+
       {/* ── Content — matches the Write module's preview rendering ── */}
-      <div className="flex-1 overflow-y-auto bg-neutral-950 px-4 sm:px-8 py-6" data-color-mode="dark">
+      <div
+        ref={contentScrollRef}
+        onScroll={handleContentScroll}
+        className="flex-1 overflow-y-auto bg-neutral-950 px-4 sm:px-8 py-6"
+        data-color-mode="dark"
+      >
         {image && isSafeUrl(image) && !coverBroken && (
           <div className="w-full aspect-video mb-6 rounded-lg overflow-hidden border border-neutral-800">
             <img

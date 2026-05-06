@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
@@ -159,6 +159,7 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
   // until an article is picked, then the reader (with a back arrow) until
   // dismissed. Desktop keeps its resizable side-by-side layout.
   const isMobile = useIsMobile()
+  const navigate = useNavigate()
 
   // ── Selection / filter ────────────────────────────────────────────────────────
   const [selected,    setSelectedRaw]    = useState(null)
@@ -1188,9 +1189,17 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
               onLoadInEditor={onLoadInEditor}
               onClose={() => setSelected(null)}
               onAuthorClick={(author) => {
-                pickSearchAuthor(author)
-                onFeedModeChange('search')
-                setSelected(null)
+                // Navigate to the author's articles page rather than
+                // bouncing through the in-module Search tab. The Search
+                // path was owner-gated (visitors got bounced) and broke
+                // when logged out entirely. A direct navigate works in
+                // every state — visitor, owner, logged-out — and gives
+                // the click a predictable destination (the author's
+                // own /articles).
+                if (!author?.pubkey) return
+                let np = ''
+                try { np = nip19.npubEncode(author.pubkey) } catch {}
+                if (np) navigate(`/${np}/articles`)
               }}
               readOnly={readOnly}
               canBookmark={canBookmark}

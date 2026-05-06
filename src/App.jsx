@@ -54,18 +54,19 @@ const MODULE_COMPONENTS = {
 
 const DEFAULT_MODULE = 'notes'
 
-// Modules with a Write surface that owners should land on when they click
-// the sidebar nav — mirrors the old pre-URL-routing default. Visitors
-// (and owners clicking into someone else's page) get the bare feed URL
-// so the deep link is shareable and doesn't flash the composer.
+// Modules whose composer the owner lands on when clicking the sidebar
+// nav. Notes and Events still composer-default — most owner workflows
+// in those start with "I want to post." Articles and Marketplace
+// changed to feed-default ("My Articles", "My Products") because the
+// browse-your-own-work flow is more common there than the
+// fresh-publish flow, and a friend sharing a screenshot of "click
+// Articles" expects to see published content first, not an empty
+// composer.
 //
 // Each entry maps moduleId → the URL subtab that surfaces its composer.
-// Notes/Articles call it "write"; the marketplace composer is "sell".
 const MODULE_WRITE_SUBTAB = {
-  notes:       'write',
-  articles:    'write',
-  events:      'write',
-  marketplace: 'sell',
+  notes:  'write',
+  events: 'write',
 }
 const MODULES_WITH_WRITE = new Set(Object.keys(MODULE_WRITE_SUBTAB))
 

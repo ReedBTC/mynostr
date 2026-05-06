@@ -17,6 +17,19 @@
     @apply bg-neutral-950 text-neutral-100;
   }
 
+  /* Lock the document to viewport width — without this, any single
+     element that overflows (a long URL, an oversized image, etc.) makes
+     iOS Safari auto-scale-to-fit on first paint, which the user
+     experiences as "the page loaded too zoomed in." Pinch-to-zoom-out
+     doesn't actually fix the underlying overflow; it just resets the
+     scale Safari chose. Clamping the document width here means an
+     element overflow becomes a (clipped) horizontal scroll instead of
+     a global zoom event. */
+  html, body {
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+
   /* Scrollbar styling for dark mode */
   ::-webkit-scrollbar {
     width: 6px;

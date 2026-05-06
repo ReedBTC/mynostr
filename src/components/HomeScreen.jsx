@@ -19,6 +19,7 @@ import UserSearch from './UserSearch.jsx'
 import { fetchProfiles } from '../lib/primal.js'
 import { isSafeUrl } from '../lib/utils.js'
 import { useLoginModal } from './LoginModalContext.jsx'
+import { useIsMobile } from '../hooks/useIsMobile.js'
 import BookmarkIcon from './BookmarkIcon.jsx'
 
 const REED_NPUB = 'npub1xgyjasdztryl9sg6nfdm2wcj0j3qjs03sq7a0an32pg0lr5l6yaqxhgu7s'
@@ -92,6 +93,9 @@ const FEATURED_PUBKEYS = FEATURED.map(f => {
 export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
   const navigate = useNavigate()
   const { openLogin } = useLoginModal()
+  // Skip autoFocus on mobile so the OS keyboard doesn't pop up the
+  // moment the homepage loads — pleasant on desktop, intrusive on phones.
+  const isMobile = useIsMobile()
 
   // Reed's pfp for the footer byline. Fetched from Primal on mount so it
   // tracks any profile update without needing a redeploy. Shows nothing
@@ -157,7 +161,7 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
             inputRef={searchInputRef}
             onPickAuthor={handlePickAuthor}
             placeholder="Search by name, npub, or nprofile…"
-            autoFocus
+            autoFocus={!isMobile}
           />
           <p className="text-[11px] text-neutral-600">
             No account needed to browse — pick any user to see their public pages.

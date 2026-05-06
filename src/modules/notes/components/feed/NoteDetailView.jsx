@@ -12,7 +12,7 @@
  * SearchTab thread-stack pattern. Cleaner story for shared links.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
 import { getNDK, connectAndWait } from '../../../../lib/ndk.js'
 import { withTimeout, safeNpubEncode } from '../../../../lib/utils.js'
@@ -21,7 +21,6 @@ import NoteThreadView from './NoteThreadView.jsx'
 
 export default function NoteDetailView({ nevent, viewerNpub }) {
   const navigate = useNavigate()
-  const location = useLocation()
 
   const [decoded, setDecoded] = useState(null)
   const [focus, setFocus]     = useState(null)
@@ -98,19 +97,22 @@ export default function NoteDetailView({ nevent, viewerNpub }) {
     return () => { cancelled = true }
   }, [nevent])
 
-  // Back button — same logic EventDetail uses. If we have in-app
-  // history, pop one frame; otherwise, send the user to the note
-  // author's notes feed (or home as last resort) so a deep-link
-  // arrival has somewhere to go.
+  // Back button — always lands on the note author's notes feed. The
+  // older navigate(-1) path silently failed on cold mounts: BechResolver
+  // arrives via <Navigate replace />, which doesn't push history, so
+  // navigate(-1) tried to go before the tab existed and did nothing.
+  // Going to the author's notes is the predictable outcome regardless
+  // of how the user arrived (cold link, in-app click-through, deep
+  // share). Falls back to viewer's own notes, then home.
   const handleBack = useCallback(() => {
-    if (location.key && location.key !== 'default') { navigate(-1); return }
-    if (decoded?.author) {
-      const np = safeNpubEncode(nip19, decoded.author, 'NoteDetailView.back')
+    const authorPubkey = decoded?.author || focus?.pubkey
+    if (authorPubkey) {
+      const np = safeNpubEncode(nip19, authorPubkey, 'NoteDetailView.back')
       if (np) { navigate(`/${np}/notes`); return }
     }
     if (viewerNpub) navigate(`/${viewerNpub}/notes`)
     else navigate('/')
-  }, [location.key, navigate, decoded, viewerNpub])
+  }, [navigate, decoded, focus, viewerNpub])
 
   // Click-through on an in-thread card → that card's own detail URL.
   // Each click pushes a new history entry; back button unwinds. The

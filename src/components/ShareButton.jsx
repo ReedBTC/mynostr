@@ -47,11 +47,14 @@ export default function ShareButton({ variant = 'button', url: urlOverride }) {
     }, 2000)
   }, [urlOverride])
 
+  // touch-manipulation suppresses iOS's "first tap shows hover state,
+  // second tap fires click" behavior on elements with :hover styles.
+  // Without it, the share button needs two taps to copy on mobile.
   if (variant === 'icon') {
     return (
       <button
         onClick={handleCopy}
-        className="text-neutral-500 hover:text-neutral-200 p-1.5 rounded transition-colors"
+        className="text-neutral-500 hover:text-neutral-200 p-1.5 rounded transition-colors touch-manipulation"
         aria-label={copied ? 'Link copied' : 'Share page'}
         title={copied ? 'Link copied!' : 'Share'}
       >
@@ -72,7 +75,7 @@ export default function ShareButton({ variant = 'button', url: urlOverride }) {
   return (
     <button
       onClick={handleCopy}
-      className="text-xs text-neutral-400 hover:text-neutral-200 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600"
+      className="text-xs text-neutral-400 hover:text-neutral-200 transition-colors px-2 py-1 rounded border border-neutral-800 hover:border-neutral-600 touch-manipulation"
       aria-label={copied ? 'Link copied' : 'Share page'}
     >
       {copied ? 'Link copied!' : 'Share'}
