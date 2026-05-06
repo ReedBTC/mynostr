@@ -26,6 +26,37 @@
     <meta name="twitter:title" content="MyNostr — Your personal Nostr portal" />
     <meta name="twitter:description" content="Publish, search, archive, and analyze your Nostr activity." />
     <meta name="twitter:image" content="https://mynostr.app/og-default.jpg" />
+    <!--
+      WebSite + Organization JSON-LD for the homepage. Tells Google the
+      site's canonical name (so search-result listings show "MyNostr"
+      with proper formatting instead of just the bare URL) and links the
+      site to a publishing entity. The worker strips JSON-LD on entity
+      URLs (articles/profiles/events) and replaces with per-entity
+      schema, so this only takes effect on the homepage and other
+      non-entity routes.
+    -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebSite",
+          "@id": "https://mynostr.app/#website",
+          "url": "https://mynostr.app",
+          "name": "MyNostr",
+          "description": "Your personal Nostr portal — publish, search, archive, and analyze your notes.",
+          "publisher": { "@id": "https://mynostr.app/#org" },
+          "inLanguage": "en-US"
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://mynostr.app/#org",
+          "name": "MyNostr",
+          "url": "https://mynostr.app"
+        }
+      ]
+    }
+    </script>
   </head>
   <body class="bg-neutral-950">
     <div id="root"></div>
