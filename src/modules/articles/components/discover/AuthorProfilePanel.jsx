@@ -49,14 +49,19 @@ export default function AuthorProfilePanel({ profile, pubkey, user, onAuthorClic
       const event = new NDKEvent(ndk)
       event.kind = 3
 
+      // Strip any foreign client tag from the existing contacts so we
+      // don't end up with duplicate `client` tags after edits across
+      // clients — re-add ours below.
+      const baseTags = contacts.filter(t => t[0] !== 'client')
       let newTags
       if (following) {
         // Unfollow — remove this pubkey
-        newTags = contacts.filter(t => !(t[0] === 'p' && t[1] === pubkey))
+        newTags = baseTags.filter(t => !(t[0] === 'p' && t[1] === pubkey))
       } else {
         // Follow — add this pubkey
-        newTags = [...contacts, ['p', pubkey]]
+        newTags = [...baseTags, ['p', pubkey]]
       }
+      newTags.push(['client', 'mynostr'])
 
       event.tags = newTags
       event.content = ''

@@ -189,6 +189,7 @@ export async function publishRelayList({ relays }) {
     else if (r.read)             tags.push(['r', url, 'read'])
     // neither flag → skip (user effectively removed the relay)
   }
+  tags.push(['client', 'mynostr'])
 
   const event = new NDKEvent(ndk)
   event.kind = 10002
@@ -261,6 +262,7 @@ export async function publishDmRelayList({ relays }) {
     seen.add(url)
     tags.push(['relay', url])
   }
+  tags.push(['client', 'mynostr'])
 
   const event = new NDKEvent(ndk)
   event.kind = 10050

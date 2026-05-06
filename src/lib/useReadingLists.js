@@ -665,10 +665,12 @@ export function useReadingLists(user) {
           const freshEncrypted = looksEncrypted(freshContent)
           if (fresh) {
             // Keep every tag except what longform owns (`a`/`d`/`title`).
-            // `e`-tags (notes), `t`/`r`/etc stay.
+            // `e`-tags (notes), `t`/`r`/etc stay. Strip any foreign
+            // `client` tag too — we re-add ours below so cross-client
+            // edits don't accumulate multiple client tags.
             preservedTags = []
             for (const t of fresh.tags || []) {
-              if (t[0] === 'a' || t[0] === 'd' || t[0] === 'title') continue
+              if (t[0] === 'a' || t[0] === 'd' || t[0] === 'title' || t[0] === 'client') continue
               preservedTags.push(t)
             }
           }
@@ -718,13 +720,18 @@ export function useReadingLists(user) {
           for (const art of publicArticles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
+          event.tags.push(['client', 'mynostr'])
           event.content = contentOverride
         } else {
+          // Strip any inherited `client` from extraTags before re-adding
+          // ours below.
+          const customExtras = (list.extraTags || []).filter(t => t[0] !== 'client')
           event.kind = list.sourceKind === 30001 ? 30001 : 30003
-          event.tags = [['d', list.id], ['title', list.title], ...(list.extraTags || [])]
+          event.tags = [['d', list.id], ['title', list.title], ...customExtras]
           for (const art of publicArticles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
+          event.tags.push(['client', 'mynostr'])
 
           const hadCiphertext = !!list.privateCiphertext
           if (hasPrivateItems) {
@@ -987,7 +994,7 @@ export function useReadingLists(user) {
       // Tombstone the original kind — replaceables are per-kind, so a
       // 30001 tombstone wouldn't invalidate a 30003 original and vice versa.
       event.kind    = sourceKind
-      event.tags    = [['d', listId]]
+      event.tags    = [['d', listId], ['client', 'mynostr']]
       event.content = ''
       await signWithTimeout(event)
       // Same outbox-only reasoning as publishList — tombstones must reach

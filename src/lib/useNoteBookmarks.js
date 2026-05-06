@@ -473,8 +473,10 @@ export function useNoteBookmarks(user) {
         if (fresh) {
           // Keep every non-`e` tag (longform's `a`-tags, NIP-51 `t`/`r`
           // tags, etc). We rewrite the `e`-tag set completely from our
-          // `cat.items`.
-          preservedTags = (fresh.tags || []).filter(t => t[0] !== 'e')
+          // `cat.items`. Strip any foreign `client` tag too — we re-add
+          // ours below so cross-client edits don't end up with multiple
+          // client tags accumulating across the chain.
+          preservedTags = (fresh.tags || []).filter(t => t[0] !== 'e' && t[0] !== 'client')
         }
 
         if (hasPrivateItems) {
@@ -515,16 +517,21 @@ export function useNoteBookmarks(user) {
         for (const it of cat.items) {
           if (it?.id) event.tags.push(['e', it.id])
         }
+        event.tags.push(['client', 'mynostr'])
         event.content = contentOverride
       } else {
         // Preserve the source kind (30001 or 30003) so categories authored
         // by other modules stay on their original kind. New categories
         // created here default to 30003 (current NIP-51 convention).
+        // Strip any inherited `client` tag from extraTags before re-adding
+        // ours below.
+        const customExtras = (cat.extraTags || []).filter(t => t[0] !== 'client')
         event.kind = cat.sourceKind === 30001 ? 30001 : 30003
-        event.tags = [['d', cat.id], ['title', cat.title], ...(cat.extraTags || [])]
+        event.tags = [['d', cat.id], ['title', cat.title], ...customExtras]
         for (const it of cat.items) {
           if (it?.id) event.tags.push(['e', it.id])
         }
+        event.tags.push(['client', 'mynostr'])
 
         const hadCiphertext = !!cat.privateCiphertext
         if (hasPrivateItems) {
@@ -1029,7 +1036,7 @@ export function useNoteBookmarks(user) {
       const ndk = getNDK()
       const event = new NDKEvent(ndk)
       event.kind = sourceKind
-      event.tags = [['d', categoryId]]
+      event.tags = [['d', categoryId], ['client', 'mynostr']]
       event.content = ''
       await signWithTimeout(event)
       // Same outbox-only reasoning as publishCategory — tombstones must reach

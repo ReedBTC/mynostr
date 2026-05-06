@@ -26,7 +26,7 @@
 import { generateSecretKey, finalizeEvent, SimplePool } from 'nostr-tools'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { FALLBACK_RELAYS, getNDK, signWithTimeout } from './ndk.js'
+import { FALLBACK_RELAYS, getNDK, signWithTimeout, publishToPool } from './ndk.js'
 import { withTimeout } from './utils.js'
 import { fetchLnurlMeta as _fetchLnurlMeta, fetchLnurlInvoice as _fetchLnurlInvoice } from './lnurl.js'
 
@@ -293,13 +293,13 @@ export async function publishBoostShareNote({
   })
   await signWithTimeout(ev)
 
-  // Publish to the user's own write relays via NDK's default publish
-  // (kind 1 belongs on the donor's normal feed, not the boostagram
-  // relay set). Failures are non-fatal — the boost succeeded; the
-  // share is best-effort.
+  // Publish to the donor's reach set (write relays + fallbacks) so the
+  // share lands on the same surface as their other kind 1 notes.
+  // Failures are non-fatal — the boost succeeded; the share is
+  // best-effort.
   let published = false
   try {
-    const ackd = await ev.publish()
+    const ackd = await publishToPool(ev)
     published = ackd && ackd.size > 0
   } catch {
     published = false

@@ -360,7 +360,7 @@ export function useCollections(pubkey) {
         kind: 5,
         content: 'Collection deleted',
         created_at: Math.floor(Date.now() / 1000),
-        tags: [['a', coord]],
+        tags: [['a', coord], ['client', 'mynostr']],
       })
       await signWithTimeout(ev)
       await publishToOwnOutbox(ev)

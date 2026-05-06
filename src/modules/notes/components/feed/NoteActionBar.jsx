@@ -19,7 +19,7 @@ import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
-import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
+import { getNDK, signWithTimeout, publishToPool } from '../../../../lib/ndk.js'
 import { withTimeout } from '../../../../lib/utils.js'
 import { Z } from '../../../../lib/zIndex.js'
 import { useIsMobile } from '../../../../hooks/useIsMobile.js'
@@ -199,9 +199,10 @@ export default function NoteActionBar({ note, profile }) {
       ev.tags = [
         ['e', note.id],
         ['p', note.pubkey],
+        ['client', 'mynostr'],
       ]
       await signWithTimeout(ev)
-      const publishedTo = await ev.publish()
+      const publishedTo = await publishToPool(ev)
       if (!publishedTo || publishedTo.size === 0) {
         if (import.meta.env.DEV) console.warn('Repost reached no relays')
         if (mountedRef.current) setRepostDone(false)

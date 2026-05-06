@@ -226,11 +226,29 @@ export async function publishToOwnOutbox(event) {
   return event.publish(relaySet)
 }
 
-// Publish an event to NDK's full relay pool (user's outbox + fallbacks).
-// Use this for reach-over-recall events: kind 1 notes, reactions, reposts,
-// and the kind 10002 relay list itself (bootstrap repair).
+// Publish an event to a "reach" relay set: the user's own NIP-65 write
+// relays unioned with FALLBACK_RELAYS. Use for events that should reach
+// non-followers (kind 1 notes, reactions, reposts, comments) — followers
+// get them via outbox routing through the user's own relays, and
+// non-followers via the common fallbacks.
+//
+// Builds an explicit NDKRelaySet rather than calling event.publish()
+// with no args. Without an explicit set, NDK only reaches relays that
+// happened to be connected at publish time — slow relays whose WS
+// handshakes hadn't finished get silently skipped, so a 12-relay write
+// list could end up with the event on 6 with no warning. With a set,
+// NDK opens any missing connections and waits for ACK from each.
+//
+// Falls back to event.publish() (the bare-pool path) only when neither
+// the user's write list nor the fallbacks are available — same shape
+// as publishToOwnOutbox's degenerate case.
 export async function publishToPool(event) {
-  return event.publish()
+  const ndk = event.ndk
+  const writeRelays = await getOwnWriteRelays(ndk).catch(() => null)
+  const targets = Array.from(new Set([...(writeRelays || []), ...FALLBACK_RELAYS]))
+  if (targets.length === 0) return event.publish()
+  const relaySet = NDKRelaySet.fromRelayUrls(targets, ndk)
+  return event.publish(relaySet)
 }
 
 // Call on logout to close relay connections, detach the signer,

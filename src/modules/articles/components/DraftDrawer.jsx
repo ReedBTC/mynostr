@@ -92,7 +92,7 @@ export default function DraftDrawer({ user, onLoad, onClose }) {
       // Publish an empty replacement to "delete" the draft
       const ev = new NDKEvent(ndk)
       ev.kind = 31023
-      ev.tags = [['d', dTag]]
+      ev.tags = [['d', dTag], ['client', 'mynostr']]
       ev.content = ''
       await signWithTimeout(ev)
       // Draft is replaceable (kind 31023) — the empty replacement must land

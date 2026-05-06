@@ -50,7 +50,7 @@ export async function publishBugReport(content) {
   const ev = new NDKEvent(ndk)
   ev.kind    = 1
   ev.content = content
-  ev.tags    = [['t', BUG_TAG]]
+  ev.tags    = [['t', BUG_TAG], ['client', 'mynostr']]
 
   await signWithTimeout(ev)
 

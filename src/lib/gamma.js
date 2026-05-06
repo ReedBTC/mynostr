@@ -384,9 +384,15 @@ export function encodeCollection(form) {
       tags.push(['shipping_option', s.ref])
     }
   }
+  // Strip any foreign `client` tag from _extraTags (which preserves the
+  // prior event's tags on edits) before re-adding ours, so cross-client
+  // edits don't accumulate duplicates.
   for (const t of (form._extraTags || [])) {
-    if (Array.isArray(t) && t.length > 0) tags.push(t)
+    if (!Array.isArray(t) || t.length === 0) continue
+    if (t[0] === 'client') continue
+    tags.push(t)
   }
+  tags.push(['client', 'mynostr'])
   return { kind: KIND_COLLECTION, content: form.content || '', tags }
 }
 

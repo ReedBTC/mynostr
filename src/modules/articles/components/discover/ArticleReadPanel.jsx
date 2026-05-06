@@ -5,7 +5,7 @@ import rehypeSanitize from 'rehype-sanitize'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { isSafeUrl, getPublishedAt, withTimeout } from '../../../../lib/utils.js'
-import { getNDK, signWithTimeout } from '../../../../lib/ndk.js'
+import { getNDK, signWithTimeout, publishToPool } from '../../../../lib/ndk.js'
 import ZapModal from '../../../../components/ZapModal.jsx'
 import { useMyZapped, useMyZapPending } from '../../../../lib/useMyZapped.js'
 import { useMyLiked } from '../../../../lib/useMyLiked.js'
@@ -385,10 +385,11 @@ export default function ArticleReadPanel({
         ['p', article.pubkey],
         ['a', aTag],
         ['k', '30023'],
+        ['client', 'mynostr'],
       ]
       if (hasRealId) ev.tags.unshift(['e', article.id])
       await signWithTimeout(ev)
-      const publishedTo = await ev.publish()
+      const publishedTo = await publishToPool(ev)
       if (!publishedTo || publishedTo.size === 0) {
         if (import.meta.env.DEV) console.warn('Article repost reached no relays')
         setRepostDone(false)

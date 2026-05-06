@@ -20,7 +20,7 @@
  */
 
 import { NDKEvent } from '@nostr-dev-kit/ndk'
-import { getNDK, signWithTimeout } from './ndk.js'
+import { getNDK, signWithTimeout, publishToPool } from './ndk.js'
 import { markLiked, unmarkLiked } from './myReactionStore.js'
 
 export async function publishLike(target) {
@@ -47,10 +47,11 @@ export async function publishLike(target) {
       tags.push(['a', addressable])
     }
     if (kind != null) tags.push(['k', String(kind)])
+    tags.push(['client', 'mynostr'])
     ev.tags = tags
 
     await signWithTimeout(ev)
-    const publishedTo = await ev.publish()
+    const publishedTo = await publishToPool(ev)
     if (!publishedTo || publishedTo.size === 0) {
       unmarkLiked({ eventId, addressable })
       return { ok: false, error: 'no relays accepted the like' }
