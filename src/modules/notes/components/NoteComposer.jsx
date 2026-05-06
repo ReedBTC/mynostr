@@ -290,6 +290,19 @@ export default function NoteComposer({
       }
 
       await loadEventIntoEditor(event)
+
+      // Auto-populate the note-ID search box with the imported event's
+      // nevent. Saves the user from re-typing it when they want to
+      // refetch the latest version, share the link, or otherwise act
+      // on the same event after importing.
+      if (event?.id && importInputRef.current) {
+        try {
+          importInputRef.current.value = nip19.neventEncode({
+            id: event.id,
+            author: event.pubkey || undefined,
+          })
+        } catch {}
+      }
     } catch (e) {
       setUploadError(`Invalid JSON: ${e.message}`)
     }
