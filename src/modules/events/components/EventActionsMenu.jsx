@@ -28,6 +28,7 @@ import { copyToClipboard, titleToSlug } from '../../../lib/utils.js'
 import { formToEventTemplate, eventToForm } from '../../../lib/eventForm.js'
 import { deleteCalendarEvent } from '../../../lib/eventPublish.js'
 import { downloadEventIcs } from '../../../lib/ics.js'
+import { buildGoogleCalendarUrl, buildOutlookCalendarUrl } from '../../../lib/calendarLinks.js'
 import { isSchedulerConfigured } from '../../../lib/scheduler.js'
 import { isFutureEvent } from '../../../lib/eventTypes.js'
 import AddToCalendarModal from './AddToCalendarModal.jsx'
@@ -257,12 +258,40 @@ export default function EventActionsMenu({
           Save to calendar…
         </button>
       )}
+      {/* External-calendar deep links. Google + Outlook open the
+          provider's event-create form pre-filled in a new tab — user
+          confirms there. The .ics download covers Apple Calendar,
+          Fantastical, Thunderbird, and any other RFC 5545-aware
+          client. URLs only render when start time can be derived;
+          buildXxx returns '' on missing start. */}
+      {parsed && buildGoogleCalendarUrl(parsed) && (
+        <a
+          href={buildGoogleCalendarUrl(parsed)}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => onClose?.()}
+          className="block w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+        >
+          Add to Google Calendar ↗
+        </a>
+      )}
+      {parsed && buildOutlookCalendarUrl(parsed) && (
+        <a
+          href={buildOutlookCalendarUrl(parsed)}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => onClose?.()}
+          className="block w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+        >
+          Add to Outlook ↗
+        </a>
+      )}
       {parsed && (
         <button
           onClick={() => { downloadEventIcs(parsed); onClose?.() }}
           className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
         >
-          Export .ics
+          Download .ics (Apple, Fantastical, etc.)
         </button>
       )}
       {isOwner && onLoadInEditor && (
