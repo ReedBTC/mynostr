@@ -372,6 +372,10 @@ const FAQ_ITEMS = [
     q: 'Can I share my MyNostr profile with someone who doesn\'t use Nostr?',
     a: 'Yes. Every page on MyNostr has a shareable link (mynostr.app/<npub> for your profile, mynostr.app/<naddr> for an article, and so on). When you paste these links in iMessage, Telegram, Discord, or X, they unfurl with rich previews. Recipients can browse without an account.',
   },
+  {
+    q: 'Does MyNostr handle checkout for marketplace listings?',
+    a: 'No. MyNostr lets you publish and manage NIP-99 / Gamma marketplace listings, but actual checkout happens in dedicated marketplace apps like Shopstr or Plebeian Market. Your listings are published in a fully spec-compliant shape — structured shipping options (kind 30406), payment preference on your kind 0 profile, and an optional NIP-89 app recommendation — so any Gamma-aware marketplace app can quote shipping, accept payment, and route buyers through their checkout flow against your listings. The Compliance Check tool in My Selling shows which of your listings are checkout-ready and migrates the rest in one click.',
+  },
 ]
 
 function FAQ() {

@@ -114,7 +114,9 @@ If you touched `modules/events/` or `lib/eventForm.js` / `lib/eventPublish.js`.
 ## 5. Marketplace
 
 If you touched `modules/marketplace/` or `lib/publishProduct.js` /
-`lib/sellForm.js`.
+`lib/sellForm.js` / `lib/gamma*.js` / `lib/useShippingOptions.js`.
+
+### Core listings
 
 - [ ] **Create a listing** end-to-end: title, summary, description,
       photo upload (compression picker shows), price, status. Publish.
@@ -132,6 +134,74 @@ If you touched `modules/marketplace/` or `lib/publishProduct.js` /
       Export JSON: file downloads (does not silently no-op).
 - [ ] **Delete a listing**: confirms, scans target relays, ack count
       shown.
+
+### Shipping options (kind 30406)
+
+- [ ] **Create a shipping option** in Marketplace → Shipping: title,
+      price, countries (ISO 2-letter codes — e.g. `US, GB`), service
+      enum (standard/express/overnight/pickup). Save → option appears
+      in the list immediately.
+- [ ] **Invalid country code**: type `usa` → chip turns amber; save
+      blocked with field-level error. `US` → chip is neutral, save works.
+- [ ] **Edit + Archive**: open existing option → modify → save lands
+      with same dTag. Archive flow confirms before publishing kind 5.
+- [ ] **Cross-tab live update**: open Shipping tab in one browser tab,
+      Sell composer in another. Create an option in the first tab; it
+      shows up in the composer's Shipping section without a refresh.
+
+### Sell composer — structured shipping
+
+- [ ] **Multi-select shipping**: Sell composer's Shipping section
+      offers checkboxes (not radios). Tick two options (e.g. "US
+      Standard" + "Local Pickup"); publish. The published kind 30402
+      carries TWO `shipping_option` tags (verify in the drawer's raw
+      tags view).
+- [ ] **Inline + New option**: from the Sell composer, click "+ New
+      option" — the editor opens, save creates a new 30406 AND
+      auto-attaches the new ref to the in-progress draft.
+- [ ] **Notes still work**: free-text shipping notes (collapsed by
+      default) still publish into the markdown body under "## Shipping"
+      for forward-compat with non-Gamma readers.
+
+### Compliance check + migrate flow
+
+- [ ] **Banner shows on My Selling** when listings have shipping gaps
+      (or only info-level if shop is otherwise clean). Dismiss
+      persists for the session.
+- [ ] **Header score chip** ("X/Y checkout-ready") clickable → opens
+      the panel. Color matches state (green/amber/rose).
+- [ ] **Per-card compliance dot** ("Checkout-ready" / "Manual only" /
+      "Spec gap") visible only to owner; tooltip lists the gaps.
+- [ ] **Migrate a free-text-only listing**: parse preview shows the
+      original "## Shipping" notes. Pick an existing option (or
+      create new). Save → 30402 republishes with `shipping_option`
+      ref attached and "## Shipping" markdown removed.
+- [ ] **Bulk apply**: when other listings are missing shipping, the
+      "Also attach to my other N listings" checkbox appears. Save
+      republishes each at ~600ms spacing; progress bar updates;
+      partial-fail surfaces error count.
+- [ ] **Multi-option migrate**: tick multiple options in the picker,
+      save — listing's shipping_option tag count matches what was
+      ticked.
+- [ ] **Visitor-side stays clean**: open My Selling on someone else's
+      profile (logged in or out). NO compliance banner, NO score chip,
+      NO per-card dots.
+
+### Profile signals
+
+- [ ] **Payment preference** in Profile editor under Lightning address:
+      Manual default, Lightning Address gated on lud16 set, eCash
+      gated on a published kind 10019. Save → reload profile, the
+      "Marketplace checkout: Lightning auto-pay" line appears on the
+      read view (or no line at all when Manual).
+- [ ] **NIP-89 checkout app** (optional): paste an `naddr1…` or
+      `31990:<pubkey>:<dtag>` coord. Save → "Checkout via:" line
+      appears on the read view. Clear → line disappears.
+- [ ] **Profile tag round-trip**: edit your profile in MyNostr after
+      setting a tag from another client (or just toggle and save
+      twice in MyNostr). The previously-set tag is preserved across
+      saves — `publishProfile.js` round-trips kind-0 tags rather
+      than emitting an empty array.
 
 ## 6. Profile / Relays
 

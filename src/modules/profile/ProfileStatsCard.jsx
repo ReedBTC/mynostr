@@ -8,18 +8,23 @@ import InfoDot from './InfoDot.jsx'
  *   POSTS             Notes · Comments · Articles · Events · Market
  *   PUBLIC CURATION   Notes · Articles · Events · Market
  *
- * Public Curation = how many items of each kind this user has bookmarked
- * across their NIP-51 lists, with "N categories" under the count to show
- * how organized their curation is. Bookmark counting isn't something other
- * Nostr clients do, so the Public Curation header carries an explainer line
- * and each cell shows a bookmark-ribbon glyph over the kind icon so the two
- * sections are distinguishable at a glance.
+ * Public Curation is a hybrid:
+ *   - Notes / Articles → counts come from the user's NIP-51 bookmarks
+ *     (kind 10003 / 30001 / 30003); sublabel = "N categories" (number
+ *     of distinct lists containing items of that kind).
+ *   - Events → counts come from the user's Calendars (kind 31924);
+ *     value = total event refs across all calendars; sublabel = "N
+ *     Calendars".
+ *   - Market → counts come from the user's Collections (kind 30405);
+ *     value = total listing refs across all collections; sublabel =
+ *     "N Collections".
  *
- * Notes/Comments/Articles cells deep-link into NotesModule and
- * ArticlesModule; Events + Market are display-only until those modules ship.
- * Followers/Following live on the profile card above this one.
+ * Each cell deep-links to its module's actual public-curation surface
+ * (bookmarks page for Notes/Articles, Calendars tab for Events,
+ * Collections tab for Market). Followers/Following live on the profile
+ * card above this one.
  */
-export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkCounts, loading }) {
+export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkCounts, publicListCounts, loading }) {
   const navigate = useNavigate()
   const npub = user?.npub
 
@@ -61,12 +66,19 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
     },
   ]
 
+  // Two semantic sources mixed into one row:
+  //   - Notes / Articles → NIP-51 bookmarks (the existing fetch)
+  //   - Events / Market → kind 31924 / 30405 named public lists. These
+  //     are the actual curation surfaces those modules expose (the
+  //     bookmark-counts source had numbers but no module-side bookmark
+  //     view to link to, so the cells were dead-ends before).
   const bookmarkCells = [
     {
       key: 'bm-notes',
       label: 'Notes',
       value: bookmarkCounts?.notes,
       categories: bookmarkCounts?.noteCategories,
+      categoryLabel: 'category',
       icon: <NoteIcon />,
       onClick: npub ? () => navigate(`/${npub}/notes/bookmarks`) : null,
     },
@@ -75,24 +87,27 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       label: 'Articles',
       value: bookmarkCounts?.articles,
       categories: bookmarkCounts?.articleCategories,
+      categoryLabel: 'category',
       icon: <ArticleIcon />,
       onClick: npub ? () => navigate(`/${npub}/articles/collection`) : null,
     },
     {
       key: 'bm-events',
       label: 'Events',
-      value: bookmarkCounts?.events,
-      categories: bookmarkCounts?.eventCategories,
+      value: publicListCounts?.calendarItems,
+      categories: publicListCounts?.calendarLists,
+      categoryLabel: 'Calendar',
       icon: <EventIcon />,
-      onClick: null,
+      onClick: npub ? () => navigate(`/${npub}/events/calendars`) : null,
     },
     {
       key: 'bm-market',
       label: 'Market',
-      value: bookmarkCounts?.listings,
-      categories: bookmarkCounts?.listingCategories,
+      value: publicListCounts?.collectionItems,
+      categories: publicListCounts?.collectionLists,
+      categoryLabel: 'Collection',
       icon: <MarketIcon />,
-      onClick: null,
+      onClick: npub ? () => navigate(`/${npub}/marketplace/collections`) : null,
     },
   ]
 
@@ -114,16 +129,18 @@ export default function ProfileStatsCard({ user, stats, contentCounts, bookmarkC
       <div className="border-t border-neutral-800" />
       <Section
         label="Public Curation"
-        sublabel="Categorized Public Bookmarks: Curated Content for All"
+        sublabel="Public Bookmarks and Curated Collections"
         cells={bookmarkCells}
         loading={loading}
         variant="curation"
         info={(
           <p>
-            Public bookmark counts are read from this user's NIP-51 lists
-            (kind 10003 and 30003) fetched directly from relays. Numbers
-            reflect whatever our relay pool can reach — a list that hasn't
-            propagated everywhere may undercount.
+            Notes and Articles count NIP-51 public bookmarks (kind 10003
+            / 30001 / 30003). Events count refs across this user's
+            public Calendars (kind 31924); Market counts refs across
+            their Collections (kind 30405). Numbers reflect whatever
+            our relay pool can reach — a list that hasn't propagated
+            everywhere may undercount.
           </p>
         )}
       />
@@ -152,6 +169,7 @@ function Section({ label, sublabel, cells, loading, variant, info }) {
             label={c.label}
             value={c.value}
             categories={c.categories}
+            categoryLabel={c.categoryLabel}
             icon={c.icon}
             loading={loading && c.value == null}
             onClick={c.onClick}
@@ -163,10 +181,18 @@ function Section({ label, sublabel, cells, loading, variant, info }) {
   )
 }
 
-function StatCell({ label, value, categories, icon, loading, onClick, variant }) {
+function StatCell({ label, value, categories, categoryLabel, icon, loading, onClick, variant }) {
   const clickable = Boolean(onClick)
   const isCuration = variant === 'curation'
   const hasCats = typeof categories === 'number' && categories > 0 && value > 0
+  // Default sublabel reads "category / categories" — overridden per
+  // cell for the named-list cases ("Calendar" → "Calendars" plural,
+  // "Collection" → "Collections" plural). Pluralization is naive
+  // (just append 's') because both current overrides take a clean 's'.
+  const catLabelSingular = categoryLabel || 'category'
+  const catLabelPlural   = categoryLabel === 'category'
+    ? 'categories'
+    : `${catLabelSingular}s`
 
   const body = (
     <>
@@ -188,7 +214,7 @@ function StatCell({ label, value, categories, icon, loading, onClick, variant })
       </div>
       {isCuration && !loading && (
         <div className="text-[10px] text-neutral-500 leading-none mt-1 tabular-nums min-h-[1em]">
-          {hasCats ? `${categories} ${categories === 1 ? 'category' : 'categories'}` : ''}
+          {hasCats ? `${categories} ${categories === 1 ? catLabelSingular : catLabelPlural}` : ''}
         </div>
       )}
     </>

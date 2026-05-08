@@ -14,7 +14,7 @@ Every Nostr account gets a page at `mynostr.app/<npub>/<module>`. Visitors see a
 | **Notes** | 1 (short notes), 6/16 (reposts), 7 (reactions), 9735 (zaps), 10003/30001/30003 (bookmarks) | Live |
 | **Articles** | 30023 (long-form), 31023 (drafts) | Live |
 | **Events** | 31922/31923 (calendar events), 31924 (calendars), 31925 (RSVPs), 1111 (comments) | Live |
-| **Marketplace** | 30402 (NIP-99 listings), 30405 (collections), 5 (deletions) | Live |
+| **Marketplace** | 30402 (NIP-99 listings), 30405 (collections), 30406 (shipping options), 31989 (NIP-89 app recommendation), 5 (deletions) | Live |
 
 ### Profile
 
@@ -35,6 +35,8 @@ Multi-draft composer for date-based (31922) and time-based (31923) events with m
 ### Marketplace
 
 Single-stream composer for NIP-99 kind 30402 listings — title, summary, markdown description, images (compression picker, up to 8 per listing), price, stock, visibility, status, shipping, hashtags. **Collections** (kind 30405) for grouping listings — toggle membership inline from the composer. **Pre-publish relay check** advises the user when their kind 10002 is missing `wss://relay.plebeian.market` or their kind 10050 has no DM inbox; one-click adds with confirmation. **Edit / replace** preserves the listing's dTag; cross-author imports get a fresh dTag so you can't accidentally overwrite your own listings. **Delete** uses NIP-09 with a scan-then-target step that hits every relay actually serving the listing, not just the user's current outbox (relays drift, deletions need to reach the surface area).
+
+**Gamma checkout interop** (NIP-99 + [Gamma Markets spec](https://github.com/GammaMarkets/market-spec)) — MyNostr publishes listings in a shape that's natively checkout-ready in third-party marketplace apps like Shopstr and Plebeian Market, without doing checkout itself. **Shipping Options** (kind 30406, reusable per-seller) attach to listings via `shipping_option` refs — multiple per listing, so a seller can offer "US Standard" + "Local Pickup" side by side. **Payment preference** (`payment_preference` tag on kind 0) tells buyers' clients to route to your Lightning address, eCash, or fall back to manual DM checkout. **NIP-89 app recommendation** (kind 31989) lets you point buyers at your preferred Nostr marketplace app. **Compliance check** in My Selling scans your whole shop, flags listings still using free-text shipping, and migrates them in one click — bulk-apply moves multiple listings to the same shipping setup. Per-listing dots and a header score chip show what's checkout-ready at a glance.
 
 ## Authentication
 

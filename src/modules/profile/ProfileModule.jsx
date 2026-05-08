@@ -1,10 +1,14 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { nip19 } from 'nostr-tools'
 import { copyToClipboard, isSafeUrl, truncateNpub, formatCount, createLRU } from '../../lib/utils.js'
+import { getNDK } from '../../lib/ndk.js'
+import { PAYMENT_PREFERENCE_VALUES } from '../../lib/gammaCompliance.js'
+import { fetchCheckoutAppRecommendation } from '../../lib/publishCheckoutAppRecommendation.js'
 import { useOwnerContext, OwnerProvider } from '../../lib/ownerContext.jsx'
 import { fetchAggregateUserStats } from '../../lib/userStats.js'
 import { fetchUserContentCounts } from '../../lib/userContentCounts.js'
 import { fetchUserBookmarkCounts } from '../../lib/userBookmarkCounts.js'
+import { fetchUserPublicListsCounts } from '../../lib/userPublicListsCounts.js'
 import { fetchProfiles, fetchUserZapAggregates, fetchAuthorPostingCadence } from '../../lib/primal.js'
 import UserSearch from '../../components/UserSearch.jsx'
 import ShareButton from '../../components/ShareButton.jsx'
@@ -40,12 +44,18 @@ import DmRelayCard from './DmRelayCard.jsx'
 const STATS_CACHE           = createLRU(50)
 const COUNTS_CACHE          = createLRU(50)
 const BOOKMARK_COUNTS_CACHE = createLRU(50)
+const PUBLIC_LISTS_CACHE    = createLRU(50)
 const ZAP_AGGREGATES_CACHE  = createLRU(50)
 const CADENCE_CACHE         = createLRU(50)
 
 export default function ProfileModule({ user, subtab }) {
   const { isOwner: ownerOfUrl, sessionUser } = useOwnerContext()
   const [mode, setMode] = useState('view')   // 'view' | 'edit'
+  // Bumped after a successful profile save. Threaded down to the
+  // tag-driven read-view rows (PaymentPreferenceRow, CheckoutAppRow)
+  // so they refetch fresh kind 0 / 31989 instead of stale-rendering
+  // the value the seller just changed.
+  const [profileRefreshToken, setProfileRefreshToken] = useState(0)
   // When the URL is /:npub/profile/relays, scroll the relay section into
   // view once it's rendered. This is a shareable "check out my relays"
   // anchor — the rest of the profile stays visible above it.
@@ -72,9 +82,10 @@ export default function ProfileModule({ user, subtab }) {
   const [stats, setStats] = useState(() => (viewingPubkey ? STATS_CACHE.get(viewingPubkey) : null) || null)
   const [contentCounts, setContentCounts] = useState(() => (viewingPubkey ? COUNTS_CACHE.get(viewingPubkey) : null) || null)
   const [bookmarkCounts, setBookmarkCounts] = useState(() => (viewingPubkey ? BOOKMARK_COUNTS_CACHE.get(viewingPubkey) : null) || null)
+  const [publicListCounts, setPublicListCounts] = useState(() => (viewingPubkey ? PUBLIC_LISTS_CACHE.get(viewingPubkey) : null) || null)
   const [zapAggregates, setZapAggregates] = useState(() => (viewingPubkey ? ZAP_AGGREGATES_CACHE.get(viewingPubkey) : null) || null)
   const [cadence, setCadence] = useState(() => (viewingPubkey ? CADENCE_CACHE.get(viewingPubkey) : null) || null)
-  const [loading, setLoading] = useState(!stats || !contentCounts || !bookmarkCounts)
+  const [loading, setLoading] = useState(!stats || !contentCounts || !bookmarkCounts || !publicListCounts)
   const [zapLoading, setZapLoading] = useState(!zapAggregates)
   const [cadenceLoading, setCadenceLoading] = useState(!cadence)
 
@@ -116,6 +127,7 @@ export default function ProfileModule({ user, subtab }) {
     setStats(STATS_CACHE.get(viewingPubkey) || null)
     setContentCounts(COUNTS_CACHE.get(viewingPubkey) || null)
     setBookmarkCounts(BOOKMARK_COUNTS_CACHE.get(viewingPubkey) || null)
+    setPublicListCounts(PUBLIC_LISTS_CACHE.get(viewingPubkey) || null)
     setZapAggregates(ZAP_AGGREGATES_CACHE.get(viewingPubkey) || null)
     setCadence(CADENCE_CACHE.get(viewingPubkey) || null)
   }, [viewingPubkey])
@@ -127,10 +139,11 @@ export default function ProfileModule({ user, subtab }) {
     setZapLoading(true)
     ;(async () => {
       const startedAt = Date.now()
-      const [s, c, b] = await Promise.all([
+      const [s, c, b, p] = await Promise.all([
         fetchAggregateUserStats(viewingPubkey),
         fetchUserContentCounts(viewingPubkey),
         fetchUserBookmarkCounts(viewingPubkey),
+        fetchUserPublicListsCounts(viewingPubkey),
       ])
       if (cancelled) return
       // Minimum 500ms loading so the refresh button has perceptible
@@ -141,6 +154,7 @@ export default function ProfileModule({ user, subtab }) {
       if (s) { STATS_CACHE.set(viewingPubkey, s);  setStats(s) }
       if (c) { COUNTS_CACHE.set(viewingPubkey, c); setContentCounts(c) }
       if (b) { BOOKMARK_COUNTS_CACHE.set(viewingPubkey, b); setBookmarkCounts(b) }
+      if (p) { PUBLIC_LISTS_CACHE.set(viewingPubkey, p); setPublicListCounts(p) }
       setLoading(false)
     })()
     // Zap aggregates run independently — they're slower (fetch up to 1k
@@ -251,6 +265,10 @@ export default function ProfileModule({ user, subtab }) {
     setSaveNotice(meta?.warning || null)
     setMode('view')
     forceRender(n => n + 1)
+    // Tag-driven rows do their own fetch and don't observe user.profile
+    // mutations — bump a token so they refetch on the next render and
+    // pick up payment_preference / NIP-89 changes the editor just made.
+    setProfileRefreshToken(t => t + 1)
   }
 
   function handlePickAuthor(author) {
@@ -331,6 +349,8 @@ export default function ProfileModule({ user, subtab }) {
       stats={stats}
       contentCounts={contentCounts}
       bookmarkCounts={bookmarkCounts}
+      publicListCounts={publicListCounts}
+      profileRefreshToken={profileRefreshToken}
       zapAggregates={zapAggregates}
       zapLoading={zapLoading}
       onRefreshActivity={refreshActivity}
@@ -356,7 +376,7 @@ export default function ProfileModule({ user, subtab }) {
   return view
 }
 
-function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading, relaysRef }) {
+function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, publicListCounts, profileRefreshToken, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading, relaysRef }) {
   const profile = user?.profile || {}
   const displayName = profile.displayName || profile.name || 'Anonymous'
   const handle = profile.nip05 || (profile.name ? `@${profile.name}` : null)
@@ -491,30 +511,32 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
             </p>
           )}
 
-          {/* Secondary fields */}
-          {(websiteOk || profile.lud16) && (
-            <div className="mt-4 space-y-1.5 text-sm">
-              {websiteOk && (
-                <div className="flex items-center gap-2 text-neutral-400">
-                  <span className="text-neutral-600 w-4 text-center">🌐</span>
-                  <a
-                    href={profile.website}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-purple-400 hover:text-purple-300 break-all"
-                  >
-                    {profile.website.replace(/^https?:\/\//, '')}
-                  </a>
-                </div>
-              )}
-              {profile.lud16 && (
-                <div className="flex items-center gap-2 text-neutral-400">
-                  <span className="text-neutral-600 w-4 text-center">⚡</span>
-                  <span className="text-amber-400 break-all">{profile.lud16}</span>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Secondary fields. The wrapper always has at least the
+              PaymentPreferenceRow (which always renders for any
+              profile with a pubkey), so no `empty:hidden` here. */}
+          <div className="mt-4 space-y-1.5 text-sm">
+            {websiteOk && (
+              <div className="flex items-center gap-2 text-neutral-400">
+                <span className="text-neutral-600 w-4 text-center">🌐</span>
+                <a
+                  href={profile.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-purple-400 hover:text-purple-300 break-all"
+                >
+                  {profile.website.replace(/^https?:\/\//, '')}
+                </a>
+              </div>
+            )}
+            {profile.lud16 && (
+              <div className="flex items-center gap-2 text-neutral-400">
+                <span className="text-neutral-600 w-4 text-center">⚡</span>
+                <span className="text-amber-400 break-all">{profile.lud16}</span>
+              </div>
+            )}
+            <PaymentPreferenceRow pubkey={user?.pubkey} refreshToken={profileRefreshToken} />
+            <CheckoutAppRow pubkey={user?.pubkey} refreshToken={profileRefreshToken} />
+          </div>
 
           {!profile.about && !websiteOk && !profile.lud16 && !handle && (
             <p className="mt-4 text-sm text-neutral-600 italic">
@@ -525,14 +547,17 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
 
         </div>
 
-        {/* Stats card — counts pulled from Primal + relays. Notes/Articles
-            cells deep-link to those modules; others are display-only until
-            the Events/Marketplace modules ship. */}
+        {/* Stats card — Posts row pulls from Primal + relays. Public
+            curation row mixes NIP-51 bookmark counts (for Notes /
+            Articles) with named-list counts (Calendars / Collections)
+            so each cell links to its module's actual public-curation
+            surface rather than going nowhere. */}
         <ProfileStatsCard
           user={user}
           stats={stats}
           contentCounts={contentCounts}
           bookmarkCounts={bookmarkCounts}
+          publicListCounts={publicListCounts}
           loading={loading}
         />
 
@@ -571,5 +596,108 @@ function FollowStat({ label, value, loading }) {
       </span>
       <span>{label}</span>
     </span>
+  )
+}
+
+/**
+ * Marketplace payment-preference row — Gamma `payment_preference` tag
+ * on the profile's kind 0. Always renders for any profile with a
+ * pubkey: explicit values (lud16 / ecash) show their tone; a missing
+ * or "manual" tag falls back to "Manual (DM)" so visitors know the
+ * default is still a working answer (DM the seller, they reply with
+ * a payment request) rather than "checkout is broken." The compliance
+ * grader still flags absence as an info-level optional improvement —
+ * "default is fine, but you could opt into automation."
+ *
+ * Owns its own fetch so the read view doesn't need to thread raw
+ * kind-0 tags through the existing user.profile JSON-content shape.
+ * NDK caches the kind 0 fetch, and the editor refetches independently
+ * anyway, so this is a one-shot read with negligible cost.
+ */
+function PaymentPreferenceRow({ pubkey, refreshToken }) {
+  // 'manual' = explicit or default (we don't differentiate in the UI —
+  // both mean "DM the seller"). lud16 / ecash = explicit opt-ins.
+  const [pref, setPref] = useState('manual')
+
+  useEffect(() => {
+    if (!pubkey) { setPref('manual'); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const ndk = getNDK()
+        const ev = await ndk.fetchEvent({ kinds: [0], authors: [pubkey] })
+        if (cancelled) return
+        const tag = (ev?.tags || []).find(t => Array.isArray(t) && t[0] === 'payment_preference')
+        const v = String(tag?.[1] || '').toLowerCase()
+        if (PAYMENT_PREFERENCE_VALUES.includes(v)) setPref(v)
+        else setPref('manual')
+      } catch {
+        if (!cancelled) setPref('manual')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [pubkey, refreshToken])
+
+  if (!pubkey) return null
+
+  const labels = {
+    manual: { icon: '💬', text: 'Manual (DM)',          hint: 'Buyers DM the seller; payment request sent in reply' },
+    lud16:  { icon: '⚡', text: 'Lightning auto-pay',   hint: 'Marketplace apps charge directly to the address above' },
+    ecash:  { icon: '🪙', text: 'eCash',                hint: 'Pays via Cashu mints (NIP-61 / kind 10019)' },
+  }
+  const meta = labels[pref] || labels.manual
+
+  return (
+    <div className="flex items-center gap-2 text-neutral-400" title={meta.hint}>
+      <span className="text-neutral-600 w-4 text-center" aria-hidden>{meta.icon}</span>
+      <span className="text-neutral-300">Marketplace checkout:</span>
+      <span className="text-purple-300">{meta.text}</span>
+    </div>
+  )
+}
+
+/**
+ * NIP-89 checkout-app recommendation indicator. Visible on every
+ * profile (sellers and visitors alike) so a buyer knows which app
+ * the seller wants to handle their checkout. Renders nothing when
+ * the seller hasn't published a kind 31989 — most profiles will fall
+ * into that bucket since this is opt-in.
+ *
+ * Doesn't resolve the recommended app to a friendly name yet; that's
+ * a second fetch of the kind 31990 we're skipping for v1. The coord
+ * itself is shown so power users can click through manually.
+ */
+function CheckoutAppRow({ pubkey, refreshToken }) {
+  const [handlers, setHandlers] = useState(null)  // null=loading, []=none, [...]=present
+
+  useEffect(() => {
+    if (!pubkey) { setHandlers([]); return }
+    let cancelled = false
+    ;(async () => {
+      const r = await fetchCheckoutAppRecommendation(pubkey)
+      if (cancelled) return
+      setHandlers(r?.handlers || [])
+    })()
+    return () => { cancelled = true }
+  }, [pubkey, refreshToken])
+
+  if (!handlers || handlers.length === 0) return null
+
+  // Show the first handler's short coord (kind:pubkey-prefix:dtag) —
+  // full hex pubkey would dominate the row. The full coord is
+  // available on hover via title.
+  const first = handlers[0]
+  const parts = first.coord.split(':')
+  const shortCoord = parts.length >= 3
+    ? `${parts[0]}:${parts[1].slice(0, 8)}…:${parts[2]}`
+    : first.coord
+  const more = handlers.length > 1 ? ` (+${handlers.length - 1} more)` : ''
+
+  return (
+    <div className="flex items-center gap-2 text-neutral-400" title={first.coord}>
+      <span className="text-neutral-600 w-4 text-center" aria-hidden>🛒</span>
+      <span className="text-neutral-300">Checkout via:</span>
+      <span className="text-purple-300 font-mono text-xs truncate">{shortCoord}{more}</span>
+    </div>
   )
 }

@@ -3,8 +3,13 @@ import { useSearchParams } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
 import { useSelling } from '../../../../lib/useSelling.js'
 import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
+import { getNDK } from '../../../../lib/ndk.js'
+import { gradeMerchant, gradeListing } from '../../../../lib/gammaCompliance.js'
+import { useSessionShippingOptions } from '../../../../lib/sessionShippingOptionsContext.jsx'
 import ProductCard from './ProductCard.jsx'
 import ProductDrawer from './ProductDrawer.jsx'
+import ComplianceBanner from '../compliance/ComplianceBanner.jsx'
+import CompliancePanel from '../compliance/CompliancePanel.jsx'
 
 /**
  * SellingTab — feed of the viewed user's kind 30402 listings.
@@ -31,6 +36,58 @@ export default function SellingTab({
     if (isOwner) return listings
     return listings.filter(l => l.decoded.visibility !== 'hidden')
   }, [listings, isOwner])
+
+  // ── Compliance plumbing (owner-only) ────────────────────────────────
+  // Single fetch of kind 0 here so the banner, header score chip, and
+  // per-card compliance dots all read from the same verdict. The
+  // panel-open state is hoisted here too — both the banner and the
+  // chip need to open it.
+  //
+  // Skipped entirely for visitor views — non-owners don't see any of
+  // these surfaces anyway. The provider context + this fetch only run
+  // when isOwner is true.
+  const sessionShipping = useSessionShippingOptions()
+  const shippingOptions = sessionShipping?.options || []
+
+  const [profileEvent, setProfileEvent] = useState(null)
+  const [profileToken, setProfileToken] = useState(0)
+  const [panelOpen, setPanelOpen] = useState(false)
+
+  useEffect(() => {
+    if (!isOwner || !pubkey) { setProfileEvent(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const ev = await getNDK().fetchEvent({ kinds: [0], authors: [pubkey] })
+        if (!cancelled) setProfileEvent(ev || null)
+      } catch {
+        if (!cancelled) setProfileEvent(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [isOwner, pubkey, profileToken])
+
+  const verdict = useMemo(() => {
+    if (!isOwner) return null
+    return gradeMerchant({
+      profile:         profileEvent,
+      listings:        listings.map(l => l.decoded),
+      shippingOptions: shippingOptions.map(o => o.decoded),
+    })
+  }, [isOwner, profileEvent, listings, shippingOptions])
+
+  // Per-listing grades indexed by event id so each ProductCard can
+  // render its own compliance dot without re-grading on every render.
+  // Only computed for owners; visitor cards get no grade.
+  const listingGrades = useMemo(() => {
+    if (!isOwner) return new Map()
+    const decodedOptions = shippingOptions.map(o => o.decoded)
+    const m = new Map()
+    for (const l of listings) {
+      m.set(l.event.id, gradeListing(l.decoded, decodedOptions))
+    }
+    return m
+  }, [isOwner, listings, shippingOptions])
 
   // Batch-fetch the seller profile (just one author here, but reusing
   // the shared hook keeps the rendering path identical to the search +
@@ -160,13 +217,21 @@ export default function SellingTab({
 
   return (
     <div className="h-full flex flex-col">
-      {/* Top bar — count + reload button. Reload manually verifies
-          relay state after a publish so the user doesn't have to
-          tab away and back. */}
+      {/* Top bar — count + compliance score chip + reload button.
+          Reload manually verifies relay state after a publish so the
+          user doesn't have to tab away and back. */}
       <div className="flex-shrink-0 px-4 pt-3 pb-2">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
-          <div className="text-xs text-neutral-500">
-            {loading ? 'Loading…' : `${visible.length} listing${visible.length === 1 ? '' : 's'}`}
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="text-xs text-neutral-500 flex-shrink-0">
+              {loading ? 'Loading…' : `${visible.length} listing${visible.length === 1 ? '' : 's'}`}
+            </div>
+            {isOwner && verdict && verdict.listingCount > 0 && (
+              <ComplianceScoreChip
+                verdict={verdict}
+                onClick={() => setPanelOpen(true)}
+              />
+            )}
           </div>
           <button
             onClick={reload}
@@ -181,6 +246,13 @@ export default function SellingTab({
       {/* Body */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-5xl mx-auto px-4 pb-6">
+
+          {isOwner && verdict && listings.length > 0 && (
+            <ComplianceBanner
+              verdict={verdict}
+              onOpen={() => setPanelOpen(true)}
+            />
+          )}
 
           {error && (
             <p className="text-xs text-red-400 mb-3">{error}</p>
@@ -223,6 +295,7 @@ export default function SellingTab({
                   listing={l}
                   sessionUser={sessionUser}
                   profile={profileMap.get(l.event.pubkey)}
+                  complianceGrade={isOwner ? listingGrades.get(l.event.id) : null}
                   onClick={() => openDrawer(l)}
                   onEdit={onEdit}
                 />
@@ -243,7 +316,53 @@ export default function SellingTab({
           onDelete={handleDelete}
         />
       )}
+
+      {panelOpen && verdict && (
+        <CompliancePanel
+          profileEvent={profileEvent}
+          listings={listings}
+          shippingOptions={shippingOptions}
+          profileLud16={user?.profile?.lud16 || ''}
+          onClose={() => setPanelOpen(false)}
+          onProfileUpdated={() => setProfileToken(t => t + 1)}
+          onListingsUpdated={reload}
+        />
+      )}
     </div>
+  )
+}
+
+/**
+ * Compact compliance score for the My Selling header. Same color
+ * language as the per-card dots so the seller can correlate at a
+ * glance: full green = nothing to fix, amber = some listings need
+ * attention, red = nothing checkout-ready yet.
+ *
+ * Click opens the full CompliancePanel — useful even after the
+ * banner is dismissed for the session.
+ */
+function ComplianceScoreChip({ verdict, onClick }) {
+  const ready  = verdict.listingReadyCount
+  const total  = verdict.listingCount
+  const allOk  = ready === total
+  const noneOk = ready === 0
+
+  const tone = allOk
+    ? 'border-emerald-800 text-emerald-300 bg-emerald-950/30 hover:bg-emerald-900/40'
+    : noneOk
+      ? 'border-rose-800 text-rose-300 bg-rose-950/30 hover:bg-rose-900/40'
+      : 'border-amber-800 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Open compliance check"
+      className={`text-[11px] font-medium px-2 py-0.5 rounded border transition-colors flex items-center gap-1 ${tone}`}
+    >
+      <span aria-hidden>{allOk ? '✓' : '⚠'}</span>
+      <span>{ready}/{total} checkout-ready</span>
+    </button>
   )
 }
 
@@ -254,7 +373,7 @@ function EmptyState({ isOwner }) {
       <p className="text-sm text-neutral-300 mb-1">No listings yet</p>
       <p className="text-xs text-neutral-500 max-w-sm">
         {isOwner
-          ? 'Click the Sell tab to publish your first listing.'
+          ? 'Click the Sell tab to publish your first listing. Everything you list here is fully NIP-99 / Gamma compliant — checkout works in any Nostr marketplace app.'
           : 'Nothing for sale here right now.'}
       </p>
     </div>

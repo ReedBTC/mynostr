@@ -1,18 +1,24 @@
 /**
  * MarketplaceModule — Module 5
  *
- * Four submodules, mirroring Notes/Articles:
- *   Sell          — composer for new listings (owner only)
- *   My Selling    — owner's published kind 30402 listings (visible to all)
- *   My Watchlist  — owner's kind 30405 watchlist collection (visible to all)
- *   Search        — discover listings across marketplace relays (owner only)
+ * Five submodules:
+ *   Sell           — composer for new listings (owner only)
+ *   My Products    — owner's published kind 30402 listings (visible to all)
+ *   My Collections — owner's kind 30405 collections / watchlist (visible to all)
+ *   Shipping       — owner's reusable kind 30406 shipping options (owner only)
+ *   Search         — discover listings across marketplace relays (visible to all)
  *
- * Visitors (non-owners) see just Selling · Watchlist, matching the
- * Notes/Articles visitor view.
+ * Visitors (non-owners) see Products · Collections · Search, matching
+ * the Notes/Articles visitor view.
  *
  * Sell tab structure (desktop): drafts tray on the left, composer on
  * the right. Mobile: composer fills the panel; a "Drafts (N)" chip in
  * the composer footer opens the tray as a bottom sheet.
+ *
+ * Compliance check (Gamma) runs on the My Products tab — banner +
+ * header score chip + per-card dot. The seller's own kind 30406s and
+ * kind 0 (payment_preference) feed the compliance grader; see
+ * `lib/gammaCompliance.js` for the rules.
  */
 import { useCallback, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -20,7 +26,9 @@ import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { useSellDrafts } from '../../lib/useSellDrafts.js'
 import { useCollections } from '../../lib/useCollections.js'
+import { useShippingOptions } from '../../lib/useShippingOptions.js'
 import { SessionCollectionsContext } from '../../lib/sessionCollectionsContext.jsx'
+import { SessionShippingOptionsContext } from '../../lib/sessionShippingOptionsContext.jsx'
 import { eventToForm, formToEventTemplate, isFormMeaningful } from '../../lib/sellForm.js'
 import { titleToSlug } from '../../lib/utils.js'
 import { buildProductCoord } from '../../lib/gamma.js'
@@ -28,6 +36,7 @@ import SellComposer from './components/sell/SellComposer.jsx'
 import SellDraftsTray, { fetchListingForLoader } from './components/sell/SellDraftsTray.jsx'
 import SellingTab from './components/selling/SellingTab.jsx'
 import CollectionsTab from './components/collections/CollectionsTab.jsx'
+import ShippingOptionsTab from './components/sell/ShippingOptionsTab.jsx'
 import SearchTab from './components/search/SearchTab.jsx'
 
 export default function MarketplaceModule({ user, sessionUser, subtab }) {
@@ -51,6 +60,13 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
   // storm that hits the timeout. See sessionCollectionsContext.jsx.
   const sessionCollections = useCollections(sessionUser?.pubkey || null)
 
+  // Same pattern as sessionCollections — single source of truth for the
+  // seller's own kind 30406 shipping options. Without this, the Sell
+  // composer's Shipping tab and the Shipping sub-tab each hold separate
+  // state, so creating an option in one doesn't appear in the other.
+  // Owner-only data; unsigned visitors get an empty catalog.
+  const sessionShippingOptions = useShippingOptions(sessionUser?.pubkey || null)
+
   const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
 
   // ── Module tab derived from URL subtab ──────────────────────────────────
@@ -63,8 +79,9 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
   // Old slugs `selling`/`watchlist` are kept as aliases so any external
   // link from before the rename keeps working.
   const moduleTab = (() => {
-    if (subtab === 'sell' && isOwner)   return 'sell'
-    if (subtab === 'search' && isOwner) return 'search'
+    if (subtab === 'sell'     && isOwner) return 'sell'
+    if (subtab === 'shipping' && isOwner) return 'shipping'
+    if (subtab === 'search'   && isOwner) return 'search'
     if (subtab === 'collections' || subtab === 'watchlist') return 'collections'
     if (subtab === 'products'    || subtab === 'selling')   return 'products'
     return 'products'
@@ -76,10 +93,11 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
     navigate(path)
   }, [npub, navigate])
 
-  // Visitor bounce: a non-owner landing on /sell or /search via a stale
-  // share or browser back. Same pattern as NotesModule.
+  // Visitor bounce: a non-owner landing on an owner-only subtab via a
+  // stale share or browser back. Same pattern as NotesModule.
   useEffect(() => {
-    if (!isOwner && (subtab === 'sell' || subtab === 'search') && npub) {
+    const ownerOnly = subtab === 'sell' || subtab === 'search' || subtab === 'shipping'
+    if (!isOwner && ownerOnly && npub) {
       navigate(`/${npub}/marketplace`, { replace: true })
     }
   }, [isOwner, subtab, npub, navigate])
@@ -268,6 +286,7 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
         { id: 'sell',        label: 'Sell' },
         { id: 'products',    label: productsLabel },
         { id: 'collections', label: collectionsLabel },
+        { id: 'shipping',    label: 'Shipping' },
         { id: 'search',      label: 'Search' },
       ]
     : [
@@ -278,6 +297,7 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
 
   return (
     <SessionCollectionsContext.Provider value={sessionCollections}>
+    <SessionShippingOptionsContext.Provider value={sessionShippingOptions}>
     <div className="flex flex-col flex-1 overflow-hidden">
 
       {/* ── Tab bar ──
@@ -364,11 +384,18 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
             isOwner={isOwner}
           />
         )}
+        {moduleTab === 'shipping' && (
+          <ShippingOptionsTab
+            user={user}
+            isOwner={isOwner}
+          />
+        )}
         {moduleTab === 'search' && (
           <SearchTab sessionUser={sessionUser} />
         )}
       </div>
     </div>
+    </SessionShippingOptionsContext.Provider>
     </SessionCollectionsContext.Provider>
   )
 }

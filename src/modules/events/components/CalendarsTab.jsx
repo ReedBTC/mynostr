@@ -25,11 +25,12 @@
  */
 import { useEffect, useMemo, useState, useCallback, useRef, Fragment } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { isSafeUrl } from '../../../lib/utils.js'
+import { nip19 } from 'nostr-tools'
+import { isSafeUrl, copyToClipboard } from '../../../lib/utils.js'
 import { useEventCalendars } from '../../../lib/useEventCalendars.js'
 import { useEventRsvpSummaries } from '../../../lib/useEventRsvpSummaries.js'
 import { fetchEventsForRefs, groupByCalendar } from '../../../lib/calendarEvents.js'
-import { isFutureEvent } from '../../../lib/eventTypes.js'
+import { isFutureEvent, KIND_CALENDAR } from '../../../lib/eventTypes.js'
 import EventCard from './EventCard.jsx'
 import CollectionEditModal from '../../marketplace/components/collections/CollectionEditModal.jsx'
 
@@ -134,6 +135,12 @@ export default function CalendarsTab({ viewedUser, sessionUser, isOwner }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [confirmDeleteDTag, setConfirmDeleteDTag] = useState(null)
   const [deleteError, setDeleteError] = useState('')
+  const [copiedDTag, setCopiedDTag] = useState(null)
+  const copyTimerRef = useRef(null)
+
+  useEffect(() => () => {
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+  }, [])
 
   function toggleExpand(dTag) {
     setExpandedDTag(prev => prev === dTag ? null : dTag)
@@ -142,6 +149,32 @@ export default function CalendarsTab({ viewedUser, sessionUser, isOwner }) {
   function openInFullPage(dTag) {
     if (!npub || !dTag) return
     navigate(`/${npub}/events/cal-${encodeURIComponent(dTag)}`)
+  }
+
+  // Copy a bech32 share URL — `${origin}/<naddr>`. The single-segment
+  // BechResolver in App.jsx redirects naddr (kind 31924) to the canonical
+  // /<authorNpub>/events/cal-<dTag> page, matching how Articles share.
+  async function handleCopyLink(dTag) {
+    if (!viewedUser?.pubkey || !dTag) return
+    let naddr = ''
+    try {
+      naddr = nip19.naddrEncode({
+        kind: KIND_CALENDAR,
+        pubkey: viewedUser.pubkey,
+        identifier: dTag,
+      })
+    } catch {}
+    if (!naddr) return
+    const origin = typeof window !== 'undefined' ? window.location.origin : ''
+    const ok = await copyToClipboard(`${origin}/${naddr}`)
+    if (!ok) return
+    setCopiedDTag(dTag)
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => {
+      copyTimerRef.current = null
+      setCopiedDTag(null)
+      setActionMenuDTag(null)
+    }, 1100)
   }
 
   async function handleCreateSave({ title, summary, image }) {
@@ -261,6 +294,7 @@ export default function CalendarsTab({ viewedUser, sessionUser, isOwner }) {
               actionMenuOpen={actionMenuDTag === entry.decoded.dTag}
               confirmingDelete={confirmDeleteDTag === entry.decoded.dTag}
               deleteError={confirmDeleteDTag === entry.decoded.dTag ? deleteError : ''}
+              copied={copiedDTag === entry.decoded.dTag}
               pending={pending}
               eventsLoading={eventsLoading}
               summaryFor={summaryFor}
@@ -271,6 +305,7 @@ export default function CalendarsTab({ viewedUser, sessionUser, isOwner }) {
               )}
               onEdit={() => { setEditTarget(entry.decoded); setActionMenuDTag(null) }}
               onOpenFull={() => { openInFullPage(entry.decoded.dTag); setActionMenuDTag(null) }}
+              onCopyLink={() => handleCopyLink(entry.decoded.dTag)}
               onAskDelete={() => { setConfirmDeleteDTag(entry.decoded.dTag); setDeleteError(''); setActionMenuDTag(null) }}
               onConfirmDelete={() => handleDelete(entry.decoded.dTag)}
               onCancelDelete={() => { setConfirmDeleteDTag(null); setDeleteError('') }}
@@ -311,10 +346,10 @@ export default function CalendarsTab({ viewedUser, sessionUser, isOwner }) {
  */
 function CalendarSection({
   entry, isOwner, sessionUser, isExpanded, actionMenuOpen,
-  confirmingDelete, deleteError, pending, eventsLoading,
+  confirmingDelete, deleteError, copied, pending, eventsLoading,
   summaryFor, onEventDeleted,
   onToggleExpand, onToggleActions,
-  onEdit, onOpenFull, onAskDelete, onConfirmDelete, onCancelDelete,
+  onEdit, onOpenFull, onCopyLink, onAskDelete, onConfirmDelete, onCancelDelete,
 }) {
   const { decoded, events, nextUpcoming, lastPast, isUpcoming } = entry
   const refsCount = (decoded.eventRefs || []).length
@@ -361,36 +396,41 @@ function CalendarSection({
           </div>
         </button>
         <div className="flex items-start gap-0.5 shrink-0">
-          {isOwner && (
-            <div className="relative" ref={actionRef}>
-              <button
-                type="button"
-                onClick={onToggleActions}
-                aria-label="Actions"
-                title="Actions"
-                className="p-1.5 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-                  <circle cx="3" cy="8" r="1.4" />
-                  <circle cx="8" cy="8" r="1.4" />
-                  <circle cx="13" cy="8" r="1.4" />
-                </svg>
-              </button>
-              {actionMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 w-44 rounded-md border border-neutral-700 bg-neutral-900 shadow-lg z-10 overflow-hidden">
+          <div className="relative" ref={actionRef}>
+            <button
+              type="button"
+              onClick={onToggleActions}
+              aria-label="Actions"
+              title="Actions"
+              className="p-1.5 rounded text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800 transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+                <circle cx="3" cy="8" r="1.4" />
+                <circle cx="8" cy="8" r="1.4" />
+                <circle cx="13" cy="8" r="1.4" />
+              </svg>
+            </button>
+            {actionMenuOpen && (
+              <div className="absolute right-0 top-full mt-1 w-44 rounded-md border border-neutral-700 bg-neutral-900 shadow-lg z-10 overflow-hidden">
+                {isOwner && (
                   <button onClick={onEdit} className="w-full text-left px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-800 transition-colors">
                     Edit details
                   </button>
-                  <button onClick={onOpenFull} className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors">
-                    Open full page →
-                  </button>
+                )}
+                <button onClick={onOpenFull} className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors">
+                  Open full page →
+                </button>
+                <button onClick={onCopyLink} className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors">
+                  {copied ? '✓ Copied!' : 'Copy link'}
+                </button>
+                {isOwner && (
                   <button onClick={onAskDelete} className="w-full text-left px-3 py-2 text-xs text-rose-300 hover:bg-rose-950/40 transition-colors border-t border-neutral-800">
                     Delete calendar
                   </button>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={onToggleExpand}

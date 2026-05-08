@@ -84,6 +84,10 @@ export function useMarketSearch({
   keyword,
   withImages,       // checkbox: only listings with at least one image
   withPrice,        // checkbox: only listings with a numeric price
+  checkoutReady,    // checkbox: only listings carrying ≥1 shipping_option ref
+                    //  (the same "checkout-ready" predicate the compliance
+                    //   grader uses — keeps Search and the per-card dot
+                    //   in agreement on what "ready" means)
   includeNSFW,
   sort,
 }) {
@@ -217,6 +221,10 @@ export function useMarketSearch({
       // Price-presence filter: a numeric amount was set on the price tag.
       // Excludes "contact for price" / unset listings.
       if (withPrice && !Number.isFinite(d.price?.amount)) return false
+      // Checkout-ready filter: at least one shipping_option ref. Mirrors
+      // the gradeListing predicate exactly so Search + the per-card dot
+      // describe the same set of "ready" listings.
+      if (checkoutReady && !(Array.isArray(d.shippingOptionRefs) && d.shippingOptionRefs.length > 0)) return false
       // Keyword — match across title, summary, content, tTags, mainCategory.
       if (k) {
         const haystack = [
@@ -239,7 +247,7 @@ export function useMarketSearch({
     }
     // 'newest' (default) — sort by created_at desc.
     return filtered.sort((a, b) => (b.event.created_at || 0) - (a.event.created_at || 0))
-  }, [events, keyword, withImages, withPrice, includeNSFW, sort])
+  }, [events, keyword, withImages, withPrice, checkoutReady, includeNSFW, sort])
 
   return {
     listings,

@@ -64,11 +64,6 @@ export const SUPPLEMENTAL_PUBLISH_RELAYS = Object.freeze([
     label: 'Purple Relay',
     hint:  'Free Plebeian-friendly relay',
   },
-  {
-    url:   'wss://relay.nostr.band',
-    label: 'nostr.band',
-    hint:  'Indexed by nostr.band\'s search',
-  },
 ])
 
 /**

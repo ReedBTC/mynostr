@@ -169,10 +169,11 @@ export default function SearchTab({ sessionUser }) {
   }
 
   // Filters — all lazy-init from saved state (per-pubkey blob).
-  const [category,    setCategory]    = useState(saved.category || '')
-  const [withImages,  setWithImages]  = useState(!!saved.withImages)
-  const [withPrice,   setWithPrice]   = useState(!!saved.withPrice)
-  const [sort,        setSort]        = useState(saved.sort || 'newest')
+  const [category,      setCategory]      = useState(saved.category || '')
+  const [withImages,    setWithImages]    = useState(!!saved.withImages)
+  const [withPrice,     setWithPrice]     = useState(!!saved.withPrice)
+  const [checkoutReady, setCheckoutReady] = useState(!!saved.checkoutReady)
+  const [sort,          setSort]          = useState(saved.sort || 'newest')
   // NSFW always starts unchecked — explicit opt-in per session, not
   // sticky. Clean up the legacy persisted preference if it's still
   // there from a previous build.
@@ -192,11 +193,12 @@ export default function SearchTab({ sessionUser }) {
         category,
         withImages,
         withPrice,
+        checkoutReady,
         sort,
       })
     }, 400)
     return () => clearTimeout(t)
-  }, [sessionPubkey, selectedAuthor, keywordInput, category, withImages, withPrice, sort])
+  }, [sessionPubkey, selectedAuthor, keywordInput, category, withImages, withPrice, checkoutReady, sort])
 
   const { listings, loading, error, hasMore, loadMore, rawCount } = useMarketSearch({
     sessionPubkey,
@@ -205,6 +207,7 @@ export default function SearchTab({ sessionUser }) {
     keyword: debouncedKeyword,
     withImages,
     withPrice,
+    checkoutReady,
     includeNSFW,
     sort,
   })
@@ -325,11 +328,12 @@ export default function SearchTab({ sessionUser }) {
     setCategory('')
     setWithImages(false)
     setWithPrice(false)
+    setCheckoutReady(false)
     setSort('newest')
   }
 
   const hasAnyFilter = !!selectedAuthor || !!keywordInput.trim() || !!category ||
-    withImages || withPrice || sort !== 'newest'
+    withImages || withPrice || checkoutReady || sort !== 'newest'
 
   return (
     <div className="h-full flex flex-col">
@@ -417,6 +421,18 @@ export default function SearchTab({ sessionUser }) {
                 className="accent-purple-600"
               />
               <span>With price</span>
+            </label>
+            <label
+              className="flex items-center gap-1.5 text-neutral-300 cursor-pointer hover:text-neutral-100 transition-colors"
+              title="Show only listings carrying a structured shipping option — Shopstr / Plebeian / etc. can quote checkout against them automatically."
+            >
+              <input
+                type="checkbox"
+                checked={checkoutReady}
+                onChange={(e) => setCheckoutReady(e.target.checked)}
+                className="accent-purple-600"
+              />
+              <span>NIP-99 checkout-ready</span>
             </label>
             <label className="flex items-center gap-1.5 text-neutral-400 cursor-pointer hover:text-neutral-200 transition-colors">
               <input

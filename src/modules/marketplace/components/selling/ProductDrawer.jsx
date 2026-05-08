@@ -688,7 +688,7 @@ function SellerBlock({ pubkey, profile, sessionUser, onClose }) {
         title="See this seller's other listings"
         className="text-xs px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 hover:text-white hover:border-neutral-500 transition-colors flex-shrink-0"
       >
-        View their listings
+        View other listings
       </button>
     </div>
   )

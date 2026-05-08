@@ -27,7 +27,7 @@ import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
  *   • visibility='pre-order' → "Pre-order" badge
  *   • otherwise (active + on-sale) → no badge
  */
-export default function ProductCard({ listing, sessionUser, profile, onClick, onEdit, onAuthorClick }) {
+export default function ProductCard({ listing, sessionUser, profile, complianceGrade, onClick, onEdit, onAuthorClick }) {
   const { decoded } = listing
   const cover = decoded.images?.[0]?.url
   const safeCover = cover && isSafeUrl(cover) ? cover : null
@@ -124,6 +124,9 @@ export default function ProductCard({ listing, sessionUser, profile, onClick, on
                 Pre-order
               </span>
             )}
+            {complianceGrade && (
+              <ComplianceDot grade={complianceGrade} />
+            )}
           </div>
         </div>
 
@@ -133,6 +136,7 @@ export default function ProductCard({ listing, sessionUser, profile, onClick, on
             {decoded.title || 'Untitled listing'}
           </h3>
           <PriceLine price={decoded.price} />
+          <StockLine stock={decoded.stock} />
         </div>
       </button>
 
@@ -256,5 +260,76 @@ function PriceLine({ price }) {
       <span className="text-sm font-semibold text-purple-300">{primary}{primaryCurrency === 'SATS' ? ' sats' : ''}</span>
       {equivalent && <span className="text-[10px] text-neutral-500">{equivalent}</span>}
     </div>
+  )
+}
+
+/**
+ * Stock indicator on the gallery card. NIP-99 `stock` is optional —
+ * sellers leave it blank when the count isn't meaningful (digital
+ * goods, services, "ask me"). Render rules:
+ *   - null/undefined  → render nothing (no signal worth taking up space)
+ *   - 0               → "Out of stock" in muted red so the card visibly
+ *                        downgrades without needing the seller to flip
+ *                        status=sold
+ *   - 1-3             → "X in stock" in amber as a low-stock signal
+ *   - 4+              → "X in stock" in muted neutral
+ *
+ * Mirrors what the drawer already renders under "Stock", so a card
+ * preview matches the detail view.
+ */
+function StockLine({ stock }) {
+  if (!Number.isFinite(stock)) return null
+  if (stock === 0) {
+    return (
+      <div className="text-[10px] font-medium text-rose-400/90">Out of stock</div>
+    )
+  }
+  const lowStock = stock <= 3
+  return (
+    <div className={`text-[10px] tabular-nums ${lowStock ? 'text-amber-400/90' : 'text-neutral-500'}`}>
+      {stock.toLocaleString()} in stock
+    </div>
+  )
+}
+
+/**
+ * Owner-only compliance pill on the cover. Mirrors the dot language
+ * from the Shipping options tab + ProfileEditor: green = ready, amber
+ * = warning gaps, red = error gaps. Tooltip lists the gaps so the
+ * seller doesn't need to open the panel to know what's wrong.
+ *
+ * Visitor-side cards never receive a `complianceGrade` prop, so this
+ * component is owner-only by construction — no extra gate needed.
+ */
+function ComplianceDot({ grade }) {
+  const errors   = grade.gaps.filter(g => g.severity === 'error').length
+  const warnings = grade.gaps.filter(g => g.severity === 'warning').length
+
+  let tone, label
+  if (errors > 0) {
+    tone = 'bg-rose-900/80 text-rose-100 border-rose-700'
+    label = 'Spec gap'
+  } else if (warnings > 0) {
+    tone = 'bg-amber-900/80 text-amber-100 border-amber-700'
+    label = 'Manual only'
+  } else {
+    tone = 'bg-emerald-900/80 text-emerald-100 border-emerald-700'
+    label = 'Checkout-ready'
+  }
+
+  // Tooltip lists the exact gaps so the seller can see what's needed
+  // without opening the compliance panel. Single line — wrapping in a
+  // native title attr is best-effort by the browser anyway.
+  const tooltip = grade.gaps.length > 0
+    ? grade.gaps.map(g => g.label).join(' · ')
+    : 'This listing meets the Gamma checkout-ready spec.'
+
+  return (
+    <span
+      className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${tone}`}
+      title={tooltip}
+    >
+      {label}
+    </span>
   )
 }

@@ -47,10 +47,15 @@ const PRODUCT_KNOWN_TAGS = new Set([
 const COLLECTION_KNOWN_TAGS = new Set([
   'd', 'title', 'summary', 'image', 'location', 'g', 'a', 'shipping_option', 't',
 ])
+// Only list tags that the decoder actually surfaces as named fields below.
+// Anything we recognise as part of the spec but don't yet model (duration,
+// weight/dim min/max, price-weight/volume/distance) flows through
+// _extraTags so editing a 30406 in MyNostr's composer doesn't strip a
+// future Gamma-aware field that another client wrote. Same _extraTags
+// philosophy as decodeProduct above.
 const SHIPPING_KNOWN_TAGS = new Set([
   'd', 'title', 'price', 'country', 'region', 'service', 'carrier',
-  'duration', 'weight-min', 'weight-max', 'dim-min', 'dim-max',
-  'price-weight', 'price-volume', 'price-distance', 'location', 'g', 't',
+  'location', 'g', 't',
 ])
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -440,6 +440,7 @@ export default function SellComposer({
                 key={`${draft.id}-${draft.replaceVersion || 0}-shipping`}
                 form={form}
                 updateForm={updateForm}
+                pubkey={pubkey}
               />
               <AdvancedSection
                 form={form}
