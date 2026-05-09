@@ -26,6 +26,7 @@ import {
   compressImage,
   formatBytes,
   isCompressible,
+  stripImageMetadata,
 } from '../lib/imageCompress.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 
@@ -38,14 +39,15 @@ const LEVEL_ORDER = ['none', 'low', 'medium', 'high']
 export function useImageUploadFlow() {
   const [state, setState] = useState(null) // { file, resolve } | null
 
-  const requestUpload = useCallback((file) => {
+  const requestUpload = useCallback(async (file) => {
+    if (!file) return null
+    // Small files or non-raster: skip the picker. Still strip identifying
+    // metadata silently — stripImageMetadata is a no-op for GIF/SVG/ICO,
+    // so animation/vector files pass through untouched.
+    if (!isCompressible(file) || file.size < SKIP_PICKER_UNDER_BYTES) {
+      return stripImageMetadata(file)
+    }
     return new Promise((resolve) => {
-      if (!file) { resolve(null); return }
-      // Small files or non-raster: skip the picker, hand back as-is.
-      if (!isCompressible(file) || file.size < SKIP_PICKER_UNDER_BYTES) {
-        resolve(file)
-        return
-      }
       // If a prior request is still pending (caller fired again before the
       // modal was answered), resolve the stale one with null so its await
       // doesn't hang forever when we overwrite state.
