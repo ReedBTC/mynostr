@@ -122,15 +122,34 @@ export default function NoteActionBar({ note, profile }) {
     return () => { mountedRef.current = false }
   }, [])
 
-  // Portal position — same pattern as NoteActionsMenu. Computed from
-  // the trigger's rect once the dropdown opens; closes on scroll/resize.
-  // Fixed positioning + body portal escape the NoteCard's overflow:hidden
-  // so the dropdown can drop past the card/feed edges.
+  // Portal position — same flip-aware pattern as NoteActionsMenu. Computed
+  // from the trigger's rect once the dropdown opens; closes on scroll/
+  // resize. Fixed positioning + body portal escape the NoteCard's
+  // overflow:hidden so the dropdown can drop past the card/feed edges.
+  // When the trigger sits near the viewport bottom and the menu wouldn't
+  // fit there, flips to anchor above via `bottom` instead of `top`.
+  // maxHeight is capped to available space so the menu can't extend
+  // past either viewport edge.
   const [bookmarkPos, setBookmarkPos] = useState(null)
   useEffect(() => {
     if (!bookmarkOpen || !bookmarkRef.current) { setBookmarkPos(null); return }
     const rect = bookmarkRef.current.getBoundingClientRect()
-    setBookmarkPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    // Bookmark menu can be fairly tall — privacy pill + "In" section +
+    // "Add to" section + new-collection input. 360px covers the common
+    // "few categories" case; the maxHeight cap handles overflow.
+    const ESTIMATED_HEIGHT = 360
+    const spaceBelow = window.innerHeight - rect.bottom
+    const spaceAbove = rect.top
+    const flipAbove  = spaceBelow < ESTIMATED_HEIGHT && spaceAbove > spaceBelow
+    const maxHeight  = Math.max(160, (flipAbove ? spaceAbove : spaceBelow) - 8)
+    setBookmarkPos({
+      right: window.innerWidth - rect.right,
+      maxHeight,
+      flipAbove,
+      ...(flipAbove
+        ? { bottom: window.innerHeight - rect.top + 4 }
+        : { top: rect.bottom + 4 }),
+    })
     function dismiss() { setBookmarkOpen(false) }
     window.addEventListener('scroll', dismiss, true)
     window.addEventListener('resize', dismiss)
@@ -253,7 +272,7 @@ export default function NoteActionBar({ note, profile }) {
     try { await removeNote(categoryId, note.id, { privacy: privacyOverride || 'public' }) }
     finally {
       if (!mountedRef.current) return
-      setPending(null); setBookmarkOpen(false)
+      setPending(null); setBookmarkOpen(false); setMobileSheet(false)
     }
   }
   async function handleCreateAndAdd(name, privacyOverride) {
@@ -387,8 +406,14 @@ export default function NoteActionBar({ note, profile }) {
             {!isMobile && bookmarkOpen && bookmarkPos && createPortal(
               <div
                 data-note-bookmark-menu="true"
-                className={`fixed bg-neutral-800 border border-neutral-700 rounded shadow-xl ${Z.portaledMenu} w-[240px] max-h-[70vh] overflow-y-auto`}
-                style={{ top: bookmarkPos.top, right: bookmarkPos.right }}
+                className={`fixed bg-neutral-800 border border-neutral-700 rounded shadow-xl ${Z.portaledMenu} w-[240px] overflow-y-auto`}
+                style={{
+                  right: bookmarkPos.right,
+                  maxHeight: bookmarkPos.maxHeight,
+                  ...(bookmarkPos.flipAbove
+                    ? { bottom: bookmarkPos.bottom }
+                    : { top: bookmarkPos.top }),
+                }}
                 onMouseDown={e => e.stopPropagation()}
                 onClick={e => e.stopPropagation()}
               >
@@ -499,9 +524,11 @@ export default function NoteActionBar({ note, profile }) {
                 open={mobileSheet}
                 onClose={() => setMobileSheet(false)}
                 categories={writableCategories}
+                containingRows={containingRows}
                 onPick={handleAddToCategory}
+                onRemove={handleRemoveFromCategory}
                 onCreate={handleCreateAndAdd}
-                pending={pending === 'add'}
+                pending={!!pending}
               />
             )}
           </div>

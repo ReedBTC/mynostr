@@ -1,9 +1,46 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
 import { nip19 } from 'nostr-tools'
 import { searchUsers } from '../../../lib/primal.js'
 import { isSafeUrl } from '../../../lib/utils.js'
+import { useIsMobile } from '../../../hooks/useIsMobile.js'
 
 const DEBOUNCE_MS = 300
+
+// On mobile, the soft keyboard covers the bottom of the viewport. The
+// default `absolute` positioning anchors the dropdown directly under
+// the textarea, which lands behind the keyboard. When VisualViewport is
+// available we instead dock the dropdown to the top of the keyboard via
+// `position: fixed` so it stays visible above the keyboard line. This
+// is the same pattern Twitter/X web uses for its compose autocomplete.
+//
+// Returns the number of CSS pixels the soft keyboard occupies at the
+// bottom of the layout viewport (0 when no keyboard / API unsupported).
+function useKeyboardHeight() {
+  const [height, setHeight] = useState(0)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const vv = window.visualViewport
+    if (!vv) return
+    function update() {
+      // window.innerHeight = layout viewport (typically excludes browser
+      // chrome). vv.height = currently visible portion (excludes
+      // keyboard too). vv.offsetTop is non-zero when the visual viewport
+      // is scrolled relative to the layout viewport — adding it cancels
+      // out that scroll so the math stays in layout-viewport coords.
+      const kb = window.innerHeight - vv.height - vv.offsetTop
+      setHeight(Math.max(0, kb))
+    }
+    update()
+    vv.addEventListener('resize', update)
+    vv.addEventListener('scroll', update)
+    return () => {
+      vv.removeEventListener('resize', update)
+      vv.removeEventListener('scroll', update)
+    }
+  }, [])
+  return height
+}
 
 function formatFollowers(n) {
   if (n == null) return null
@@ -43,6 +80,13 @@ export default function MentionAutocomplete({ textareaRef, content, cursorPos, o
   const [searching, setSearching] = useState(false)
   const debounceRef = useRef(null)
   const dropdownRef = useRef(null)
+  const isMobile = useIsMobile()
+  const keyboardHeight = useKeyboardHeight()
+  // Mobile docking only kicks in when a keyboard is actually open AND
+  // we're on a mobile viewport. Desktop and mobile-no-keyboard fall
+  // through to the default `absolute`-under-textarea layout so the
+  // dropdown stays anchored to the composer in normal use.
+  const dockToKeyboard = isMobile && keyboardHeight > 0
 
   // Detect @mention at cursor
   useEffect(() => {
@@ -115,11 +159,11 @@ export default function MentionAutocomplete({ textareaRef, content, cursorPos, o
     return null
   }
 
-  return (
-    <div
-      ref={dropdownRef}
-      className="absolute left-0 right-0 bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl z-30 overflow-hidden max-h-64 overflow-y-auto"
-    >
+  // Body of the dropdown — same in both layouts. Two render paths
+  // below differ only in positioning + chrome (rounded vs. flat,
+  // absolute vs. fixed, portaled or not).
+  const body = (
+    <>
       {searching && results.length === 0 && (
         <div className="flex items-center gap-2 px-4 py-3 text-neutral-500 text-xs">
           <span className="w-3.5 h-3.5 border-2 border-neutral-500 border-t-transparent rounded-full animate-spin inline-block" />
@@ -156,6 +200,34 @@ export default function MentionAutocomplete({ textareaRef, content, cursorPos, o
           </button>
         )
       })}
+    </>
+  )
+
+  // Mobile + soft keyboard open → fixed-positioned overlay docked to
+  // the keyboard's top edge. Portaled to <body> so it can't be clipped
+  // by any composer ancestor's overflow:hidden. Loses the rounded
+  // corners since it sits flush with the keyboard line. The user is
+  // focused on picking a result here, so covering the bottom of the
+  // textarea is the right trade.
+  if (dockToKeyboard) {
+    return createPortal(
+      <div
+        ref={dropdownRef}
+        className="fixed left-0 right-0 bg-neutral-800 border-t border-neutral-700 shadow-2xl z-50 max-h-64 overflow-y-auto"
+        style={{ bottom: keyboardHeight }}
+      >
+        {body}
+      </div>,
+      document.body,
+    )
+  }
+
+  return (
+    <div
+      ref={dropdownRef}
+      className="absolute left-0 right-0 bg-neutral-800 border border-neutral-700 rounded-xl shadow-2xl z-30 overflow-hidden max-h-64 overflow-y-auto"
+    >
+      {body}
     </div>
   )
 }

@@ -1,6 +1,11 @@
 /**
  * Bug-report modal.
  *
+ * Credit: the bug-report pipeline (modal → dedicated tag-gated relay →
+ * polling watcher → GitHub issues) is inspired by Plebeian Market's
+ * widget. https://plebeian.market — see lib/bugReport.js for the full
+ * architecture note.
+ *
  * Single textarea pre-seeded with a brief template. Auto-injects which
  * page the user was on (`window.location.href`), browser, screen size,
  * timezone, and build mode — pasted into the body so the user can

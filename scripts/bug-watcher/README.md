@@ -4,6 +4,11 @@ Polls `wss://relay.mynostr.app` every 10 minutes for kind 1 events
 tagged `["t", "mynostr-alpha"]` and creates a GitHub issue per new
 report in `ReedBTC/mynostr` with labels `bug` + `from-relay`.
 
+> **Credit:** the whole architecture (in-app modal → dedicated
+> tag-gated relay → poller → GitHub issues, no backend) is inspired by
+> [Plebeian Market](https://plebeian.market)'s bug-report tooling.
+> Thanks to that team for the pattern.
+
 ## Files
 
 - `watcher.js` — the polling script. All site-specific config (relay,

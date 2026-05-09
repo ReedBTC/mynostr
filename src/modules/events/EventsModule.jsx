@@ -24,7 +24,7 @@
  * autosaved state survives a detour through other tabs.
  */
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
 import { useEventDrafts } from '../../lib/useEventDrafts.js'
@@ -63,6 +63,7 @@ const TAB_DEFS_OWNER = [
 export default function EventsModule({ user, sessionUser, subtab }) {
   const { isOwner } = useOwnerContext()
   const navigate = useNavigate()
+  const location = useLocation()
   const isMobile = useIsMobile()
   const npub = user?.npub
   const ownerPubkey = isOwner ? sessionUser?.pubkey : null
@@ -73,6 +74,25 @@ export default function EventsModule({ user, sessionUser, subtab }) {
   const drafts = useEventDrafts(ownerPubkey)
 
   const [draftsMobileOpen, setDraftsMobileOpen] = useState(false)
+
+  // Cross-surface "Load in editor" deep-link — EventDetail / EventCard
+  // navigate here with `state.composerPrefill = { snapshot }` to seed a
+  // new draft from an existing event (the action menu's "Load in editor"
+  // item). Mirrors NotesModule's reminder-prefill pattern: createDraft
+  // → navigate to /events/write → strip state from history so a back/
+  // forward doesn't replay the prefill.
+  //
+  // Single navigate is load-bearing: a two-call dance (setModuleTab +
+  // follow-up state-clear) raced against itself in NotesModule and we
+  // fixed it there with one navigate. Same here.
+  useEffect(() => {
+    const pending = location.state?.composerPrefill
+    if (!pending?.snapshot) return
+    if (!isOwner || !npub) return
+    drafts.createDraft({ snapshot: pending.snapshot })
+    navigate(`/${npub}/events/write`, { replace: true, state: null })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.state, isOwner, npub])
 
   // Detail-page detection — both naddr1… (single event) and cal-…
   // (single calendar list) render via dedicated detail components,

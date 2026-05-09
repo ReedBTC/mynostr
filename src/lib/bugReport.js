@@ -1,18 +1,22 @@
 /**
  * Bug-report publisher.
  *
+ * Credit: this whole pipeline (frontend modal, dedicated relay with
+ * tag-gated write policy, polling watcher → GitHub issues) is
+ * inspired by Plebeian Market's bug-report widget. Same architecture
+ * — kind 1 + magic tag + single relay + no backend service in the
+ * middle. https://plebeian.market — thanks to that team for the
+ * pattern.
+ *
  * mynostr's bug-report channel is a single dedicated relay
  * (`wss://relay.mynostr.app`) that only accepts events tagged with
  * `["t", "mynostr-alpha"]` (enforced by the relay's strfry write-policy
  * plugin). Reports are kind 1 notes signed by the user's logged-in key,
  * published *only* to that one relay — never to outbox, never to the
  * pool. Isolation is the whole point: bug reports don't pollute the
- * user's normal feed and don't end up on third-party indexers.
- *
- * Modeled after Plebeian Market's bug-report widget. Same pattern: kind
- * 1 + magic tag + single relay + no backend. The "viewer" is just
- * `npm run bugs` from a laptop hitting the same relay with the same
- * filter.
+ * user's normal feed and don't end up on third-party indexers. The
+ * "viewer" is just `npm run bugs` from a laptop hitting the same
+ * relay with the same filter.
  *
  * Anti-pattern reminders (don't break these):
  *   - DO NOT publish() through the pool. Use the explicit relay set.

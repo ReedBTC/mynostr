@@ -95,23 +95,18 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
 
   const isOwner = sessionUser?.pubkey && parsed?.pubkey && sessionUser.pubkey === parsed.pubkey
 
-  // "Load in editor" handler — owner-only. Writes the snapshot into the
-  // composer's autosave key and navigates to /<npub>/events/write so
-  // EventComposer picks it up via loadAutosave on mount. The composer
-  // is a single-draft surface, so this clobbers any in-progress draft;
-  // the user explicitly chose this action and the draft was already
-  // auto-saved elsewhere if they were mid-edit on a different event.
+  // "Load in editor" handler — owner-only. Hands the snapshot to
+  // EventsModule via router state, which calls drafts.createDraft and
+  // navigates to /<npub>/events/write. Same pattern NotesModule uses
+  // for reminder prefills; the previous localStorage-write approach
+  // wrote to a key (mynostr_event_draft_, singular) that the multi-
+  // draft store (mynostr_event_drafts_, plural) doesn't read, so the
+  // composer always opened blank.
   const handleLoadInEditor = useCallback(({ snapshot }) => {
     if (!sessionUser?.pubkey || !sessionUser?.npub) return
-    try {
-      const key = `mynostr_event_draft_${sessionUser.pubkey}`
-      localStorage.setItem(key, JSON.stringify(snapshot))
-    } catch {
-      // localStorage can fail in private/quota-exceeded modes — fall
-      // through to the navigate so the user at least lands on the
-      // composer instead of staring at an unresponsive menu item.
-    }
-    navigate(`/${sessionUser.npub}/events/write`)
+    navigate(`/${sessionUser.npub}/events/write`, {
+      state: { composerPrefill: { snapshot } },
+    })
   }, [navigate, sessionUser])
 
   // "Schedule reminder" — opens the notes composer with a quoted naddr,

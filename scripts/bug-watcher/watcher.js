@@ -2,6 +2,10 @@
 /**
  * mynostr bug-relay watcher.
  *
+ * Credit: the relay → poller → GitHub-issues architecture is inspired
+ * by Plebeian Market's bug-report tooling. https://plebeian.market —
+ * thanks to that team for the pattern.
+ *
  * Polls a Nostr relay for kind 1 events tagged with a configured topic
  * tag, and creates one GitHub issue per new event via the `gh` CLI.
  * Designed to be invoked on a 10-minute systemd timer; first run seeds
