@@ -31,6 +31,27 @@ import {
 } from '../../lib/relayInfo.js'
 
 /**
+ * Cross-component refresh signal — fired any time we publish a fresh
+ * kind 10002 (kind: 'main') or kind 10050 (kind: 'dm'). RelayCard /
+ * DmRelayCard / sibling useRelayCopier instances listen for it and
+ * refetch their own snapshots so a relay added from the discovery
+ * modal shows up on the parent profile without a page reload.
+ *
+ * Detail shape: `{ pubkey, kind }` where pubkey is the author whose
+ * list just changed. Listeners ignore events for other pubkeys.
+ */
+export const RELAYS_CHANGED_EVENT = 'mynostr:relays-changed'
+
+function dispatchRelaysChanged(pubkey, kind) {
+  if (typeof window === 'undefined' || !pubkey) return
+  try {
+    window.dispatchEvent(new CustomEvent(RELAYS_CHANGED_EVENT, {
+      detail: { pubkey, kind },
+    }))
+  } catch {}
+}
+
+/**
  * @param {object} opts
  * @param {'main'|'dm'} opts.kind
  * @param {boolean} [opts.allowOwn=false] — when true, the +/✓ controls
@@ -53,6 +74,26 @@ export function useRelayCopier({ kind, allowOwn = false }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  // Refetch token bumped by either (a) sessionUser pubkey changing or
+  // (b) a sibling component publishing a new relay list and dispatching
+  // RELAYS_CHANGED_EVENT for our pubkey + kind. Without this, a copy
+  // performed by one useRelayCopier instance leaves other instances
+  // (e.g. the +/✓ buttons on a friend's profile a tab away) showing
+  // stale +'s for relays the user already added.
+  const [refetchToken, setRefetchToken] = useState(0)
+  useEffect(() => {
+    if (!canCopy) return
+    function onChanged(e) {
+      const detail = e?.detail
+      if (!detail) return
+      if (detail.pubkey !== sessionUser?.pubkey) return
+      if (detail.kind !== kind) return
+      setRefetchToken(t => t + 1)
+    }
+    window.addEventListener(RELAYS_CHANGED_EVENT, onChanged)
+    return () => window.removeEventListener(RELAYS_CHANGED_EVENT, onChanged)
+  }, [canCopy, kind, sessionUser?.pubkey])
+
   useEffect(() => {
     if (!canCopy) { setMyList(null); return }
     let cancelled = false
@@ -70,7 +111,7 @@ export function useRelayCopier({ kind, allowOwn = false }) {
       }
     })()
     return () => { cancelled = true }
-  }, [canCopy, kind, sessionUser?.pubkey])
+  }, [canCopy, kind, sessionUser?.pubkey, refetchToken])
 
   function viewerHas(url) {
     if (!myList) return false
@@ -127,6 +168,10 @@ export function useRelayCopier({ kind, allowOwn = false }) {
         await publishDmRelayList({ relays: next })
         setMyList(next)
       }
+      // Notify siblings — RelayCard / DmRelayCard on the parent profile,
+      // and any other useRelayCopier instances pinned to this user —
+      // so they refetch and reflect the new list without a page reload.
+      dispatchRelaysChanged(sessionUser.pubkey, kind)
       setPending(null)
     } catch (e) {
       setError(e?.message || 'Publish failed. Check your signer and try again.')

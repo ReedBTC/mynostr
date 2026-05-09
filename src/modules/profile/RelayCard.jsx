@@ -30,7 +30,7 @@ import {
   paidRelayInfoUrl,
 } from '../../lib/relayInfo.js'
 import RelayFAQ from './RelayFAQ.jsx'
-import { useRelayCopier, CopyButton } from './useRelayCopier.jsx'
+import { useRelayCopier, CopyButton, RELAYS_CHANGED_EVENT } from './useRelayCopier.jsx'
 
 const FEATURES = [
   {
@@ -155,8 +155,27 @@ export default function RelayCard({ pubkey }) {
   const [saveError, setSaveError] = useState('')
   const [saveNotice, setSaveNotice] = useState(null)
 
-  // Load the user's relay list whenever the viewed pubkey changes, then
-  // fan out NIP-11 fetches in parallel. One bad relay doesn't block the rest.
+  // Refetch token bumped by sibling components (RelayDiscoveryModal's
+  // useRelayCopier instance, in particular) when they publish a new
+  // kind 10002 for this user. Without this hook the parent card would
+  // show stale relays after closing the discovery modal — the user
+  // had to manually refresh before the just-added relay appeared.
+  const [refetchToken, setRefetchToken] = useState(0)
+  useEffect(() => {
+    if (!pubkey) return
+    function onChanged(e) {
+      const detail = e?.detail
+      if (!detail || detail.kind !== 'main') return
+      if (detail.pubkey !== pubkey) return
+      setRefetchToken(t => t + 1)
+    }
+    window.addEventListener(RELAYS_CHANGED_EVENT, onChanged)
+    return () => window.removeEventListener(RELAYS_CHANGED_EVENT, onChanged)
+  }, [pubkey])
+
+  // Load the user's relay list whenever the viewed pubkey changes (or
+  // a refetchToken bump signals an external publish), then fan out
+  // NIP-11 fetches in parallel. One bad relay doesn't block the rest.
   useEffect(() => {
     if (!pubkey) { setRelays([]); setSource('none'); setLoading(false); return }
     let cancelled = false
@@ -179,7 +198,7 @@ export default function RelayCard({ pubkey }) {
       }
     })()
     return () => { cancelled = true }
-  }, [pubkey])
+  }, [pubkey, refetchToken])
 
   function enterEdit() {
     // Deep-copy into draft so toggling W/R flags doesn't mutate the live list

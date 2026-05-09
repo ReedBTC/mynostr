@@ -25,7 +25,7 @@ import {
 } from '../../lib/relayInfo.js'
 import DmRelayFAQ from './DmRelayFAQ.jsx'
 import InfoDot from './InfoDot.jsx'
-import { useRelayCopier, CopyButton } from './useRelayCopier.jsx'
+import { useRelayCopier, CopyButton, RELAYS_CHANGED_EVENT } from './useRelayCopier.jsx'
 
 function displayName(url, info) {
   if (info?.name && typeof info.name === 'string') return info.name.slice(0, 40)
@@ -164,6 +164,23 @@ export default function DmRelayCard({ pubkey }) {
   // the user uncontactable.
   const [confirmEmpty, setConfirmEmpty] = useState(false)
 
+  // Refetch token bumped by sibling components (RelayDiscoveryModal's
+  // useRelayCopier instance) when they publish a new kind 10050 for
+  // this user. Same shape as the parallel listener in RelayCard for
+  // kind 10002.
+  const [refetchToken, setRefetchToken] = useState(0)
+  useEffect(() => {
+    if (!pubkey) return
+    function onChanged(e) {
+      const detail = e?.detail
+      if (!detail || detail.kind !== 'dm') return
+      if (detail.pubkey !== pubkey) return
+      setRefetchToken(t => t + 1)
+    }
+    window.addEventListener(RELAYS_CHANGED_EVENT, onChanged)
+    return () => window.removeEventListener(RELAYS_CHANGED_EVENT, onChanged)
+  }, [pubkey])
+
   // Load kind 10050 for the viewed user. When owner + empty, also load the
   // user's kind 10002 list + NIP-11 info so suggestDmRelays can filter out
   // auth-gated relays from the suggestion set.
@@ -207,7 +224,7 @@ export default function DmRelayCard({ pubkey }) {
       }
     })()
     return () => { cancelled = true }
-  }, [pubkey, isOwner])
+  }, [pubkey, isOwner, refetchToken])
 
   function enterEdit(seed) {
     setDraft((seed || relays).slice())

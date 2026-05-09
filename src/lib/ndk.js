@@ -84,7 +84,18 @@ export function getLastOutboxWarning() {
 }
 export function clearLastOutboxWarning() { _lastOutboxWarning = null }
 
-export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = {}) {
+// Retry-on-miss tuning for the kind-10002 fetch. The primary attempt is
+// generous (6s) because mobile Firefox / cellular connections often need
+// 1-3s per WSS handshake AFTER connectAndWait returns; a 4s window let
+// us race past slow handshakes and falsely warn users with valid 10002s.
+// On miss (timeout OR null), we wait 1.5s for additional relays in the
+// pool to finish handshaking, then retry once with a tighter 4s window.
+// Worst-case wait for users genuinely missing a 10002: 6 + 1.5 + 4 ≈
+// 11.5s — slow but accurate, beats a false "no write relays" banner.
+const ENSURE_RELAYS_RETRY_GAP_MS = 1500
+const ENSURE_RELAYS_RETRY_TIMEOUT_MS = 4000
+
+export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 6000 } = {}) {
   if (!ndk || !pubkey) return []
   // Empty/failed results mean subsequent publishes will fall back to the
   // full pool (fallback relays) — the exact pre-outbox-migration behavior
@@ -103,34 +114,61 @@ export async function ensureUserWriteRelays(ndk, pubkey, { timeoutMs = 4000 } = 
       }
     } catch {}
   }
-  try {
-    const relayListEvent = await withTimeout(
+
+  // Wraps the actual fetch so the primary + retry paths share one shape.
+  // Returns the kind-10002 NDKEvent, null if the relay pool returned nothing
+  // before the timeout, or throws (only for non-timeout errors — withTimeout
+  // resolves null on timeout via the underlying fetch resolving empty).
+  async function attemptFetch(ms) {
+    return withTimeout(
       ndk.fetchEvent({ kinds: [10002], authors: [pubkey] }),
-      timeoutMs,
+      ms,
     )
-    if (!relayListEvent) {
-      warn('no kind 10002 relay list')
-      return []
-    }
-    const writeRelays = (relayListEvent.tags || [])
-      .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
-      .map(t => t[1])
-      .filter(u => typeof u === 'string' && /^wss:\/\//i.test(u))
-    if (writeRelays.length === 0) {
-      warn('kind 10002 has no write relays')
-      return []
-    }
-    for (const url of writeRelays) {
-      try { ndk.addExplicitRelay(url) } catch {}
-    }
-    // Success — clear any prior warning so a recovered session doesn't
-    // keep nagging the user about an outbox issue that no longer applies.
-    _lastOutboxWarning = null
-    return writeRelays
+  }
+
+  let relayListEvent = null
+  let lastErr = null
+  try {
+    relayListEvent = await attemptFetch(timeoutMs)
   } catch (err) {
-    warn(err?.message === 'timeout' ? 'timed out fetching kind 10002' : 'error fetching kind 10002')
+    lastErr = err
+  }
+  // Single retry on miss — see the constant comment above for rationale.
+  // Both timeout-thrown and resolved-null land here, since both mean
+  // "we didn't see the 10002 yet" and the same gap+retry helps either.
+  if (!relayListEvent) {
+    await new Promise(r => setTimeout(r, ENSURE_RELAYS_RETRY_GAP_MS))
+    try {
+      relayListEvent = await attemptFetch(ENSURE_RELAYS_RETRY_TIMEOUT_MS)
+    } catch (err) {
+      lastErr = err
+    }
+  }
+
+  if (!relayListEvent) {
+    if (lastErr) {
+      warn(lastErr?.message === 'timeout' ? 'timed out fetching kind 10002' : 'error fetching kind 10002')
+    } else {
+      warn('no kind 10002 relay list')
+    }
     return []
   }
+
+  const writeRelays = (relayListEvent.tags || [])
+    .filter(t => t[0] === 'r' && (!t[2] || t[2] === 'write'))
+    .map(t => t[1])
+    .filter(u => typeof u === 'string' && /^wss:\/\//i.test(u))
+  if (writeRelays.length === 0) {
+    warn('kind 10002 has no write relays')
+    return []
+  }
+  for (const url of writeRelays) {
+    try { ndk.addExplicitRelay(url) } catch {}
+  }
+  // Success — clear any prior warning so a recovered session doesn't
+  // keep nagging the user about an outbox issue that no longer applies.
+  _lastOutboxWarning = null
+  return writeRelays
 }
 
 // Resolve the signed-in user's NIP-65 write relays. Returns the URL list if

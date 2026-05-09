@@ -136,7 +136,13 @@ export default function MobileNavDrawer({
           {MODULES.map(mod => {
             const active = activeModule === mod.id
             const isProfile = mod.id === 'profile'
-            const displayName = profile?.displayName || profile?.name || 'Profile'
+            // Identity pfp falls back to the session user when there's
+            // no viewedUser (homepage = `user` is null) so a logged-in
+            // visitor opening the drawer from / sees their own pfp
+            // instead of a "?". The profile entry's onClick navigates
+            // to the session user's profile in that case anyway, so
+            // the icon matches the destination.
+            const identityProfile = profile || sessionUser?.profile
             return (
               <button
                 key={mod.id}
@@ -150,9 +156,9 @@ export default function MobileNavDrawer({
               >
                 {isProfile ? (
                   <>
-                    {profile?.image && isSafeUrl(profile.image) ? (
+                    {identityProfile?.image && isSafeUrl(identityProfile.image) ? (
                       <img
-                        src={profile.image}
+                        src={identityProfile.image}
                         alt=""
                         className="w-6 h-6 rounded-full object-cover bg-neutral-800 shrink-0"
                         onError={e => { e.target.style.display = 'none' }}
@@ -162,7 +168,7 @@ export default function MobileNavDrawer({
                         ?
                       </span>
                     )}
-                    <span className="truncate">{displayName}</span>
+                    <span className="truncate">Stats &amp; Relays</span>
                   </>
                 ) : (
                   <>
