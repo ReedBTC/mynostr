@@ -375,6 +375,12 @@ async function decryptPrivateArticles(ciphertext, ndk) {
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
+// Retry pacing for the private-decrypt pass (parallel to useNoteBookmarks).
+// Catches the cold-start signer race AND gives the user time to grant
+// a per-call permission popup (nos2x-fox / similar) without leaving the
+// list permanently empty.
+const PRIVATE_DECRYPT_RETRY_DELAYS_MS = [1000, 3000]
+
 export function useReadingLists(user) {
   const [lists,           setLists]           = useState([])
   const [hiddenIdsByView, setHiddenIdsByView] = useState(() => ({
@@ -382,6 +388,11 @@ export function useReadingLists(user) {
     private: new Set(),
   }))
   const [loading,   setLoading]   = useState(true)
+  // Count of lists whose privateCiphertext we couldn't decrypt after all
+  // retries. Surfaced to the UI so the Articles bookmark surface can show
+  // a "your signer may need permission" banner instead of silently
+  // rendering "Private (0)" when the user definitely has private items.
+  const [privateDecryptFailed, setPrivateDecryptFailed] = useState(0)
   const enrichingRef = useRef(false)
   // Mirror of `lists` so async flows (deleteList) can read the current
   // value without wrapping logic in a setState reducer.
@@ -514,32 +525,61 @@ export function useReadingLists(user) {
         // session, so keep those in-memory for the page lifetime only.
         if (!readOnly) saveToStorage(pubkey, result)
 
-        // Async decrypt pass for NIP-51 private items — owner only, sequential
-        // so a bunker prompting per request doesn't flood the signer app.
+        // Async decrypt pass for NIP-51 private items — owner only,
+        // sequential so a bunker prompting per request doesn't flood
+        // the signer app. Failures retry with backoff (1s, 3s) — see
+        // useNoteBookmarks for the same pattern + rationale.
         if (!readOnly) {
-          const ndkSigner = ndk.signer
-          const needsDecrypt = result.filter(l => l.privateCiphertext)
-          for (const list of needsDecrypt) {
+          async function pendingPass() {
+            const live = listsRef.current
+            return live.filter(l => l.privateCiphertext && (l.privateArticles?.length || 0) === 0)
+          }
+          let pending = await pendingPass()
+          for (let attempt = 0; ; attempt++) {
             if (cancelled) return
-            if (!ndkSigner) break
-            const privateArticles = await decryptPrivateArticles(list.privateCiphertext, ndk)
-            if (cancelled) return
-            if (privateArticles.length === 0) continue
-            // Apply cached metadata to decrypted stubs before setState so
-            // they render with real titles immediately.
-            for (const art of privateArticles) {
-              const c = cachedItemMap.get(art.aTag)
-              if (!c) continue
-              if (!art.title       && c.title)       art.title       = c.title
-              if (!art.image       && c.image)       art.image       = c.image
-              if (!art.author      && c.author)      art.author      = c.author
-              if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
-              if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
-              if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
+            const failures = []
+            for (const list of pending) {
+              if (cancelled) return
+              if (!ndk.signer) { failures.push(list); continue }
+              const privateArticles = await decryptPrivateArticles(list.privateCiphertext, ndk)
+              if (cancelled) return
+              if (privateArticles.length === 0) {
+                // decryptPrivateArticles returns [] on decrypt failure
+                // OR on a legitimately empty private set. We treat both
+                // as "needs retry" — a user who genuinely has no private
+                // items still gets a noisy banner suppressed by the
+                // `totalPrivate === 0 AND privateCiphertext exists`
+                // check at the call site, not here.
+                failures.push(list)
+                continue
+              }
+              // Apply cached metadata to decrypted stubs before setState so
+              // they render with real titles immediately.
+              for (const art of privateArticles) {
+                const c = cachedItemMap.get(art.aTag)
+                if (!c) continue
+                if (!art.title       && c.title)       art.title       = c.title
+                if (!art.image       && c.image)       art.image       = c.image
+                if (!art.author      && c.author)      art.author      = c.author
+                if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
+                if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
+                if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
+              }
+              setLists(prev => prev.map(l =>
+                l.id === list.id ? { ...l, privateArticles } : l
+              ))
             }
-            setLists(prev => prev.map(l =>
-              l.id === list.id ? { ...l, privateArticles } : l
-            ))
+            if (failures.length === 0) {
+              if (!cancelled) setPrivateDecryptFailed(0)
+              break
+            }
+            const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
+            if (nextDelay == null) {
+              if (!cancelled) setPrivateDecryptFailed(failures.length)
+              break
+            }
+            await new Promise(r => setTimeout(r, nextDelay))
+            pending = await pendingPass()
           }
         }
 
@@ -1229,7 +1269,7 @@ export function useReadingLists(user) {
   }, [readOnly, pubkey])
 
   return {
-    lists, loading,
+    lists, loading, privateDecryptFailed,
     createList,
     addArticle, addArticlesBulk,
     removeArticle, removeArticlesBulk,

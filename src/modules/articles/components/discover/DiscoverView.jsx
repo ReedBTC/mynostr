@@ -135,7 +135,7 @@ function dedupeReplaceable(events) {
   return Array.from(best.values())
 }
 
-export default function DiscoverView({ user, lists, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+export default function DiscoverView({ user, lists, privateDecryptFailed = 0, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
   // Session-scoped bookmark writers live in ArticleBookmarksContext so any
   // descendant (the three-dot menu on an author's bookmarked item, the
   // reader-pane bookmark button, the bulk-action bar on a search feed)
@@ -866,6 +866,28 @@ export default function DiscoverView({ user, lists, removeArticle, removeArticle
           </>
         )}
       </div>
+
+      {/* Decrypt-failure banner — sits between the toolbar and the body.
+          Same pattern + copy as Notes' BookmarksTab; surfaces the case
+          where every private list's ciphertext came back undecryptable
+          (most often a signer-permission gap on mobile signers like
+          nos2x-fox, where the per-call permission popup doesn't reliably
+          render). Without this we'd silently render "Private (0)". */}
+      {!readOnly && privacyView === 'private' && privateDecryptFailed > 0 && privateCount === 0 && (
+        <div className="px-4 pt-2 flex-shrink-0">
+          <div className="px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-start gap-2">
+            <span className="text-base leading-none mt-0.5" aria-hidden>⚠</span>
+            <span>
+              Couldn't decrypt your private bookmarks ({privateDecryptFailed}
+              {' '}{privateDecryptFailed === 1 ? 'list' : 'lists'}). Your signer
+              extension may need permission to read encrypted content. On
+              nos2x-fox: open the extension's options, find authorized
+              sites, and grant <code className="font-mono text-amber-100">nip44.decrypt</code>
+              {' '}for this site (then reload).
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── Body — feed + reader, 50/50 default on desktop; on mobile either
           feed OR reader (controlled by whether an article is selected). ── */}

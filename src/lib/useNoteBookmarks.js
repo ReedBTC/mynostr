@@ -225,9 +225,23 @@ export function parseEventToCategory(event) {
  * Returns { categories, loading, createCategory, addNote, removeNote,
  * deleteCategory, renameCategory }.
  */
+// Retry pacing for the private-decrypt pass. The first attempt may fail
+// because the signer isn't fully responsive yet (mobile Firefox extensions
+// in particular take a beat to wake their service worker after page load).
+// Two retries at 1s and 3s catch the cold-start race without hammering
+// signers that prompt the user per call (nos2x-fox: each retry could
+// trigger a permission popup; if the user denied, retries land on the
+// cached deny and resolve fast — no extra UX noise).
+const PRIVATE_DECRYPT_RETRY_DELAYS_MS = [1000, 3000]
+
 export function useNoteBookmarks(user) {
   const [categories, setCategories] = useState([])
   const [loading, setLoading] = useState(true)
+  // Count of categories whose privateCiphertext we couldn't decrypt
+  // after all retries. Surfaced to the UI so we can render a helpful
+  // "your signer may need permission to read encrypted content" banner
+  // instead of a misleading "0 private bookmarks" empty state.
+  const [privateDecryptFailed, setPrivateDecryptFailed] = useState(0)
   // Split by privacy view. Consumers pick `hiddenIdsByView[privacyView]`
   // when they know which bucket they're rendering; cross-cutting consumers
   // (e.g., the Add-to-bookmarks picker inside a note's three-dot menu) can
@@ -375,19 +389,52 @@ export function useNoteBookmarks(user) {
         // parallel) so a bunker that prompts per request doesn't flood the
         // signer app with N concurrent approvals. We only decrypt for the
         // owner — visitors can't read anyone else's private items, period.
+        //
+        // After the initial sweep, retry any failures with backoff (1s,
+        // 3s). Catches two real-world cases:
+        //   - cold-start signer race (mobile Firefox extensions can take
+        //     a beat to wake after page load)
+        //   - user denying then granting an extension permission popup
+        //     mid-flight (the cached grant lands by the second retry)
+        // Categories that still fail after the retry pass get counted in
+        // `privateDecryptFailed` so the UI can surface a useful banner
+        // instead of silently showing "0 private bookmarks."
         if (!readOnly) {
-          const ndkSigner = ndk.signer
-          const needsDecrypt = result.filter(c => c.privateCiphertext && !c.readOnly)
-          for (const cat of needsDecrypt) {
+          // Re-read pendingCats from latest state on each pass — earlier
+          // passes' successes are already reflected in `categories`.
+          async function decryptPass() {
+            const live = categoriesRef.current
+            return live.filter(c => c.privateCiphertext && !c.readOnly && (c.privateItems?.length || 0) === 0)
+          }
+          let pending = await decryptPass()
+          for (let attempt = 0; ; attempt++) {
             if (cancelled) return
-            if (!ndkSigner) break
-            const tagArray = await decryptPrivateTagArray(cat.privateCiphertext, ndk)
-            if (cancelled) return
-            if (!tagArray) continue
-            const privateItems = tagArrayToNoteItems(tagArray)
-            setCategories(prev => prev.map(c =>
-              c.id === cat.id ? { ...c, privateItems } : c
-            ))
+            const failures = []
+            for (const cat of pending) {
+              if (cancelled) return
+              if (!ndk.signer) { failures.push(cat); continue }
+              const tagArray = await decryptPrivateTagArray(cat.privateCiphertext, ndk)
+              if (cancelled) return
+              if (!tagArray) { failures.push(cat); continue }
+              const privateItems = tagArrayToNoteItems(tagArray)
+              setCategories(prev => prev.map(c =>
+                c.id === cat.id ? { ...c, privateItems } : c
+              ))
+            }
+            if (failures.length === 0) {
+              if (!cancelled) setPrivateDecryptFailed(0)
+              break
+            }
+            const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
+            if (nextDelay == null) {
+              // Out of retries — record the failure count for the UI
+              // and stop retrying. The user can manually refresh the
+              // page once they've sorted out their signer permissions.
+              if (!cancelled) setPrivateDecryptFailed(failures.length)
+              break
+            }
+            await new Promise(r => setTimeout(r, nextDelay))
+            pending = await decryptPass()
           }
         }
       } catch {
@@ -1076,7 +1123,7 @@ export function useNoteBookmarks(user) {
     return true
   }, [readOnly, pubkey, publishCategory])
 
-  return { categories, loading, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
+  return { categories, loading, privateDecryptFailed, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
 }
 
 export const NOTE_PRIMARY_CATEGORY_ID = PRIMARY_CATEGORY_ID

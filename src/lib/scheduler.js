@@ -108,18 +108,50 @@ function removeLocal(pubkey, eventId) {
 // Falls back to FALLBACK_RELAYS if no kind 10002 is found — better to
 // publish *somewhere* than to fail.
 
-import { FALLBACK_RELAYS } from './ndk.js'
+import { FALLBACK_RELAYS, getOwnWriteRelays } from './ndk.js'
 
+// Mirror of MAX_RELAYS_PER_EVENT in cf-workers/scheduler/index.js.
+// Keep in sync — the worker enforces this same cap server-side, so
+// posting more than this triggers a server-side rejection. We slice
+// + warn client-side so the user gets a useful surface ("first 24
+// of your 30 relays were used") instead of a flat error.
+export const MAX_SCHEDULER_RELAYS = 24
+
+/**
+ * Resolve the user's write relays for the scheduler payload. Dedupes
+ * via Set + filters to wss:// only. Uses the direct kind-10002 fetch
+ * (getOwnWriteRelays) rather than NDK's activeUser.relayList() helper —
+ * the helper has a known habit of returning stale or duplicate URLs
+ * after a session-long edit, which is exactly what made Reed see
+ * "limit is 24 write relays" with fewer than 24 actual relays.
+ *
+ * Returns:
+ *   { relays: string[], total: number, source: 'kind10002'|'fallback' }
+ *   - `relays`: deduped wss-only list, ALREADY SLICED to MAX_SCHEDULER_RELAYS
+ *   - `total`:  pre-slice count (so callers can warn when > MAX)
+ *   - `source`: where the relays came from (kind10002 vs fallback pool)
+ */
 async function resolveOutboxRelays() {
   const ndk = getNDK()
-  try {
-    const list = await ndk.activeUser?.relayList?.()
-    const writes = list?.writeRelayUrls
-    if (Array.isArray(writes) && writes.length) {
-      return writes.filter(r => typeof r === 'string' && r.startsWith('wss://'))
-    }
-  } catch {}
-  return [...FALLBACK_RELAYS]
+  let urls = await getOwnWriteRelays(ndk)
+  let source = 'kind10002'
+  if (!Array.isArray(urls) || urls.length === 0) {
+    urls = [...FALLBACK_RELAYS]
+    source = 'fallback'
+  }
+  const seen = new Set()
+  const deduped = []
+  for (const u of urls) {
+    if (typeof u !== 'string') continue
+    if (!/^wss:\/\//i.test(u)) continue
+    const norm = u.trim()
+    if (!norm || seen.has(norm)) continue
+    seen.add(norm)
+    deduped.push(norm)
+  }
+  const total = deduped.length
+  const sliced = deduped.slice(0, MAX_SCHEDULER_RELAYS)
+  return { relays: sliced, total, source }
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -155,7 +187,16 @@ export async function scheduleNote({ content, tags, publishUnixSec }) {
   ev.tags       = Array.isArray(tags) ? tags : []
   await signWithTimeout(ev)
 
-  const relays = await resolveOutboxRelays()
+  const { relays, total: totalRelays, source: relaySource } = await resolveOutboxRelays()
+
+  // Soft cap warning — the worker enforces MAX_SCHEDULER_RELAYS too
+  // (same constant), but slicing client-side means a user with 30
+  // write relays gets a graceful "first 24 used" message instead of
+  // a flat error. Warning is non-blocking; schedule still succeeds.
+  let warning = null
+  if (totalRelays > MAX_SCHEDULER_RELAYS) {
+    warning = `You have ${totalRelays} write relays in your kind-10002 list, but the scheduler can only publish to ${MAX_SCHEDULER_RELAYS} per note. Your note will land on the first ${MAX_SCHEDULER_RELAYS} of your write relays. To use a different set, trim your relay list (Profile → Relays).`
+  }
 
   let res
   try {
@@ -180,6 +221,14 @@ export async function scheduleNote({ content, tags, publishUnixSec }) {
     throw new Error(errBody.error || `Scheduler returned ${res.status}`)
   }
   const data = await res.json()
+  // Surface relay-source + warning so the success view can render
+  // useful context. relaySource='fallback' lets us hint that the user
+  // should publish a kind 10002 if they care about their notes
+  // landing on their followers' read relays.
+  data.warning = warning
+  data.relaysUsed = relays.length
+  data.relayTotal = totalRelays
+  data.relaySource = relaySource
   const pubkey = ndk.activeUser?.pubkey
   if (pubkey) {
     addLocal(pubkey, {

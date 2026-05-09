@@ -1663,6 +1663,11 @@ export default function NoteComposer({
                       It now sits in your drafts list (blue card with a clock).
                       Cancel from there any time before it fires.
                     </p>
+                    {scheduleResult.warning && (
+                      <p className="text-[11px] text-amber-300 leading-snug border-t border-green-900/40 pt-2">
+                        ⚠ {scheduleResult.warning}
+                      </p>
+                    )}
                     <button
                       onClick={() => {
                         // Schedule consumed this draft — delete it

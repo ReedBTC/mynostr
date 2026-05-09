@@ -99,7 +99,8 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
   // live into the Collection view), viewed hook when visiting someone
   // else (readOnly; owner mutators become no-ops automatically).
   const {
-    lists, removeArticle, removeArticlesBulk,
+    lists, privateDecryptFailed,
+    removeArticle, removeArticlesBulk,
     moveArticle, moveArticlesBulk,
     movePrivacy, bulkMovePrivacy,
     deleteList, renameList, reorderLists,
@@ -303,6 +304,7 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
         <DiscoverView
           user={user}
           lists={lists}
+          privateDecryptFailed={privateDecryptFailed}
           removeArticle={removeArticle}
           removeArticlesBulk={removeArticlesBulk}
           moveArticle={moveArticle}

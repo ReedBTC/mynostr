@@ -46,6 +46,7 @@ export default function BookmarksTab({ user, isOwner }) {
   const {
     categories,
     loading: bookmarksLoading,
+    privateDecryptFailed,
     createCategory,
     bulkMove,
     bulkRemove,
@@ -468,6 +469,33 @@ export default function BookmarksTab({ user, isOwner }) {
     <PrivacyToggle value={privacyView} onChange={setPrivacyView} categories={categories} />
   )
 
+  // Decrypt-failure banner — shown only on the private view when we
+  // have ciphertext but couldn't decrypt any of it. Most common cause
+  // is a signer extension (e.g. nos2x-fox on mobile Firefox) that
+  // hasn't been granted the nip44.decrypt permission for this site.
+  // The banner sits above the chip bar so it's visible regardless of
+  // which category the user lands on.
+  const totalPrivate = useMemo(
+    () => categories.reduce((n, c) => n + (c.privateItems?.length || 0), 0),
+    [categories],
+  )
+  const showDecryptBanner = isOwner && isPrivate && privateDecryptFailed > 0 && totalPrivate === 0
+  const decryptBanner = showDecryptBanner ? (
+    <div className="max-w-xl mx-auto w-full px-4 pt-2">
+      <div className="px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-start gap-2">
+        <span className="text-base leading-none mt-0.5" aria-hidden>⚠</span>
+        <span>
+          Couldn't decrypt your private bookmarks ({privateDecryptFailed}
+          {' '}{privateDecryptFailed === 1 ? 'category' : 'categories'}).
+          Your signer extension may need permission to read encrypted
+          content. On nos2x-fox: open the extension's options, find
+          authorized sites, and grant <code className="font-mono text-amber-100">nip44.decrypt</code>
+          {' '}for this site (then reload).
+        </span>
+      </div>
+    </div>
+  ) : null
+
   const emptyMessage = activeCategory
     ? (isPrivate
         ? `No private bookmarks in ${activeCategory.title} yet.`
@@ -521,6 +549,7 @@ export default function BookmarksTab({ user, isOwner }) {
     return (
       <div className="flex-1 flex flex-col overflow-hidden">
         {privacyToggle}
+        {decryptBanner}
         <BookmarkCategoryMenu
           categories={[]}
           activeCategoryId={null}
@@ -559,6 +588,7 @@ export default function BookmarksTab({ user, isOwner }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {privacyToggle}
+      {decryptBanner}
       <BookmarkCategoryMenu
         categories={categories}
         activeCategoryId={activeCategoryId}

@@ -19,6 +19,7 @@ import { useNoteBookmarks } from '../../lib/useNoteBookmarks.js'
 const NoteBookmarksContext = createContext({
   categories: [],
   loading: false,
+  privateDecryptFailed: 0,
   createCategory: async () => null,
   addNote: async () => {},
   removeNote: async () => {},
