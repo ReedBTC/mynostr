@@ -49,6 +49,11 @@ export default function EventActionsMenu({
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
   const [showCalendarPicker, setShowCalendarPicker] = useState(false)
+  const [externalCalOpen, setExternalCalOpen] = useState(false)
+
+  // Reset the external-calendar disclosure when the menu closes so the
+  // next open starts collapsed — keeps the menu visually compact.
+  useEffect(() => { if (!open) setExternalCalOpen(false) }, [open])
 
   const mountedRef = useRef(true)
   const copyTimerRef = useRef(null)
@@ -255,44 +260,60 @@ export default function EventActionsMenu({
           onClick={() => { setShowCalendarPicker(true); onClose?.() }}
           className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
         >
-          Save to calendar…
+          Save to nostr calendar…
         </button>
       )}
-      {/* External-calendar deep links. Google + Outlook open the
-          provider's event-create form pre-filled in a new tab — user
-          confirms there. The .ics download covers Apple Calendar,
-          Fantastical, Thunderbird, and any other RFC 5545-aware
-          client. URLs only render when start time can be derived;
-          buildXxx returns '' on missing start. */}
-      {parsed && buildGoogleCalendarUrl(parsed) && (
-        <a
-          href={buildGoogleCalendarUrl(parsed)}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={() => onClose?.()}
-          className="block w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
-        >
-          Add to Google Calendar ↗
-        </a>
-      )}
-      {parsed && buildOutlookCalendarUrl(parsed) && (
-        <a
-          href={buildOutlookCalendarUrl(parsed)}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={() => onClose?.()}
-          className="block w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
-        >
-          Add to Outlook ↗
-        </a>
-      )}
+      {/* External-calendar destinations grouped under one disclosure so
+          they don't stack flatly with "Save to nostr calendar". Google
+          + Outlook open the provider's event-create form pre-filled in
+          a new tab — user confirms there. The .ics export covers Apple
+          Calendar, Fantastical, Thunderbird, and any other RFC 5545-
+          aware client. Google/Outlook URLs only render when start time
+          can be derived (buildXxx returns '' on missing start); .ics is
+          the always-available fallback. */}
       {parsed && (
-        <button
-          onClick={() => { downloadEventIcs(parsed); onClose?.() }}
-          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
-        >
-          Download .ics (Apple, Fantastical, etc.)
-        </button>
+        <>
+          <button
+            onClick={() => setExternalCalOpen(v => !v)}
+            aria-expanded={externalCalOpen}
+            className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors flex items-center justify-between"
+          >
+            <span>Add to external calendar</span>
+            <span className="text-neutral-500">{externalCalOpen ? '▾' : '▸'}</span>
+          </button>
+          {externalCalOpen && (
+            <>
+              {buildGoogleCalendarUrl(parsed) && (
+                <a
+                  href={buildGoogleCalendarUrl(parsed)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => onClose?.()}
+                  className="block w-full text-left pl-6 pr-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+                >
+                  Google Calendar ↗
+                </a>
+              )}
+              {buildOutlookCalendarUrl(parsed) && (
+                <a
+                  href={buildOutlookCalendarUrl(parsed)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => onClose?.()}
+                  className="block w-full text-left pl-6 pr-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+                >
+                  Outlook ↗
+                </a>
+              )}
+              <button
+                onClick={() => { downloadEventIcs(parsed); onClose?.() }}
+                className="w-full text-left pl-6 pr-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+              >
+                Export .ics (Apple, Fantastical, etc.)
+              </button>
+            </>
+          )}
+        </>
       )}
       {isOwner && onLoadInEditor && (
         <button
