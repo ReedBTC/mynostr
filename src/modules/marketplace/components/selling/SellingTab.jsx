@@ -6,6 +6,7 @@ import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
 import { getNDK } from '../../../../lib/ndk.js'
 import { gradeMerchant, gradeListing, hasOptedIntoGamma } from '../../../../lib/gammaCompliance.js'
 import { readClassifiedSet, onClassifiedChange } from '../../../../lib/gammaClassified.js'
+import { fetchUserDmRelays } from '../../../../lib/relayInfo.js'
 import { useSessionShippingOptions } from '../../../../lib/sessionShippingOptionsContext.jsx'
 import { useNip15Scan } from '../../../../lib/useNip15Scan.js'
 import ProductCard from './ProductCard.jsx'
@@ -55,6 +56,8 @@ export default function SellingTab({
 
   const [profileEvent, setProfileEvent] = useState(null)
   const [profileToken, setProfileToken] = useState(0)
+  const [dmRelays, setDmRelays] = useState([])
+  const [dmRelaysToken, setDmRelaysToken] = useState(0)
   const [panelOpen, setPanelOpen] = useState(false)
   // When the panel opens via a per-card "Needs attention" click, scroll
   // the panel to that listing's row instead of just opening the panel.
@@ -107,14 +110,34 @@ export default function SellingTab({
     return () => { cancelled = true }
   }, [isOwner, pubkey, profileToken])
 
+  // NIP-17 DM relay list (kind 10050). Fetched in parallel with kind 0
+  // because the grader needs both to decide whether the seller's
+  // manual-checkout flow is actually reachable (DMs land somewhere).
+  // dmRelaysToken bumps after a successful publish from the panel so
+  // the grader re-evaluates without a tab switch.
+  useEffect(() => {
+    if (!isOwner || !pubkey) { setDmRelays([]); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { relays } = await fetchUserDmRelays(pubkey)
+        if (!cancelled) setDmRelays(Array.isArray(relays) ? relays : [])
+      } catch {
+        if (!cancelled) setDmRelays([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [isOwner, pubkey, dmRelaysToken])
+
   const verdict = useMemo(() => {
     if (!isOwner) return null
     return gradeMerchant({
       profile:         profileEvent,
       listings:        complianceListings.map(l => l.decoded),
       shippingOptions: shippingOptions.map(o => o.decoded),
+      dmRelays,
     })
-  }, [isOwner, profileEvent, complianceListings, shippingOptions])
+  }, [isOwner, profileEvent, complianceListings, shippingOptions, dmRelays])
 
   // Shop intent — has the seller taken any positive Gamma opt-in
   // action (published a 30406 OR set payment_preference)? Computed
@@ -398,10 +421,12 @@ export default function SellingTab({
           profileEvent={profileEvent}
           listings={listings}
           shippingOptions={shippingOptions}
+          dmRelays={dmRelays}
           profileLud16={user?.profile?.lud16 || ''}
           focusListingId={panelFocusListingId}
           onClose={() => { setPanelOpen(false); setPanelFocusListingId(null) }}
           onProfileUpdated={() => setProfileToken(t => t + 1)}
+          onDmRelaysUpdated={() => setDmRelaysToken(t => t + 1)}
           onListingsUpdated={reload}
         />
       )}

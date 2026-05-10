@@ -19,6 +19,8 @@
  * refs, invalid values) stays warning regardless of intent.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { nip19 } from 'nostr-tools'
 import { publishProfile } from '../../../../lib/publishProfile.js'
 import {
   gradeMerchant,
@@ -32,6 +34,10 @@ import {
   unmarkClassifiedOnly,
   onClassifiedChange,
 } from '../../../../lib/gammaClassified.js'
+import {
+  RECOMMENDED_DM_RELAYS,
+  publishDmRelayList,
+} from '../../../../lib/relayInfo.js'
 import MigrateShippingModal from './MigrateShippingModal.jsx'
 import WhatIsGammaPopover from './WhatIsGammaPopover.jsx'
 
@@ -50,12 +56,15 @@ export default function CompliancePanel({
   profileEvent,                 // raw kind 0 NDKEvent (or null)
   listings = [],                // [{ event, decoded }] from useSelling
   shippingOptions = [],         // [{ event, decoded }] from useSessionShippingOptions
+  dmRelays = [],                // string[] from fetchUserDmRelays
   profileLud16,                 // for gating the inline lud16 radio
   focusListingId,               // optional event id to scroll to on open
   onClose,
   onProfileUpdated,             // called after a payment_preference write
+  onDmRelaysUpdated,            // called after a kind 10050 publish
   onListingsUpdated,            // called after one or more listings republish
 }) {
+  const navigate = useNavigate()
   // Owner pubkey is consistent across listings (panel is owner-only).
   // Falls back to the kind-0 author if the listings array is empty
   // (initial pre-populate pass, etc.).
@@ -90,23 +99,25 @@ export default function CompliancePanel({
     profile:         profileEvent,
     listings:        visibleListings.map(l => l.decoded),
     shippingOptions: shippingOptions.map(o => o.decoded),
-  }), [profileEvent, visibleListings, shippingOptions])
+    dmRelays,
+  }), [profileEvent, visibleListings, shippingOptions, dmRelays])
 
   const optedIn = useMemo(() => hasOptedIntoGamma({
     profile:         profileEvent,
     shippingOptions,
   }), [profileEvent, shippingOptions])
 
-  // Two opt-in steps. Each step is "complete" when the seller has
-  // taken the corresponding positive action. Both must be complete
-  // (and listings must be wired up) for the shop to be fully
-  // checkout-ready.
+  // Three opt-in steps. Each step is "complete" when the seller has
+  // taken the corresponding positive action. All three (plus per-listing
+  // wiring) must be complete for the shop to be fully checkout-ready.
   const paymentPrefSet = useMemo(() => {
     const tags = profileEvent?.tags || []
     return tags.some(t => Array.isArray(t) && t[0] === 'payment_preference' && typeof t[1] === 'string' && t[1].trim())
   }, [profileEvent])
+  const hasDmRelays = Array.isArray(dmRelays) && dmRelays.length > 0
   const hasShippingOptions = shippingOptions.length > 0
-  const stepsComplete = (paymentPrefSet ? 1 : 0) + (hasShippingOptions ? 1 : 0)
+  const stepsComplete = (paymentPrefSet ? 1 : 0) + (hasDmRelays ? 1 : 0) + (hasShippingOptions ? 1 : 0)
+  const TOTAL_STEPS = 3
 
   // Listing-level gaps need to know which listing they belong to; the
   // grader returns a `listingIndex` pointer back into the input array.
@@ -126,7 +137,14 @@ export default function CompliancePanel({
     })).filter(x => x.listing)
   }, [verdict.gaps, visibleListings])
 
+  // Profile-scope gaps split by which step owns the fix UI:
+  //   - Step 1 renders payment-preference gaps inline (radios + Save)
+  //   - Step 2 renders the DM relays gap as the step's own picker, so
+  //     a separate gap row would be redundant
   const profileGaps = verdict.gaps.filter(g => g.scope === 'profile')
+  const paymentGaps = profileGaps.filter(
+    g => g.code === 'NO_PAYMENT_PREFERENCE' || g.code === 'INVALID_PAYMENT_PREFERENCE'
+  )
 
   // Listings that have NO shipping_option ref yet — used by the migrate
   // modal's "apply to all" bulk option. Computed once so a per-row
@@ -172,7 +190,7 @@ export default function CompliancePanel({
                 Gamma checkout setup
               </h2>
               <p className="text-[11px] text-neutral-500 mt-0.5">
-                {stepsComplete}/2 setup steps complete
+                {stepsComplete}/{TOTAL_STEPS} setup steps complete
                 {verdict.listingCount > 0 && (
                   <> · {verdict.listingReadyCount} of {verdict.listingCount} listing{verdict.listingCount === 1 ? '' : 's'} checkout-ready</>
                 )}
@@ -211,8 +229,8 @@ export default function CompliancePanel({
                 : 'Tell buyers\' marketplace apps to route payments to your Lightning address, eCash mints, or fall back to manual DMs.'}
               complete={paymentPrefSet}
             >
-              {(profileGaps.length > 0
-                ? profileGaps.map((g, i) => (
+              {(paymentGaps.length > 0
+                ? paymentGaps.map((g, i) => (
                   <ProfileGapRow
                     key={`p-${i}`}
                     gap={g}
@@ -229,9 +247,36 @@ export default function CompliancePanel({
                 ))}
             </StepCard>
 
-            {/* Step 2 — Shipping options + per-listing wiring. */}
+            {/* Step 2 — NIP-17 DM inbox relays. Manual checkout (the
+                Gamma default) is "buyers DM you" — without a kind 10050,
+                gift-wrapped messages have nowhere to land. */}
             <StepCard
               number={2}
+              title="How can buyers reach you?"
+              hint={hasDmRelays
+                ? `${dmRelays.length} DM relay${dmRelays.length === 1 ? '' : 's'} published — buyers' clients can deliver gift-wrapped messages to your inbox.`
+                : 'Publish at least one NIP-17 DM relay so buyers can actually message you to complete a sale.'}
+              complete={hasDmRelays}
+            >
+              <DmRelayStep
+                pubkey={profileEvent?.pubkey || listings[0]?.event?.pubkey || null}
+                dmRelays={dmRelays}
+                onAdded={onDmRelaysUpdated}
+                onOpenRelaysPage={() => {
+                  const pk = profileEvent?.pubkey || listings[0]?.event?.pubkey
+                  if (!pk) return
+                  try {
+                    const npub = nip19.npubEncode(pk)
+                    onClose?.()
+                    navigate(`/${npub}/profile/relays`)
+                  } catch {}
+                }}
+              />
+            </StepCard>
+
+            {/* Step 3 — Shipping options + per-listing wiring. */}
+            <StepCard
+              number={3}
               title="How should buyers' apps quote shipping?"
               hint={hasShippingOptions
                 ? `${shippingOptions.length} shipping option${shippingOptions.length === 1 ? '' : 's'} published — attach to each listing you want checkout-ready.`
@@ -272,7 +317,7 @@ export default function CompliancePanel({
             </StepCard>
 
             {/* All-clear celebration */}
-            {verdict.gaps.length === 0 && stepsComplete === 2 && (
+            {verdict.gaps.length === 0 && stepsComplete === TOTAL_STEPS && (
               <div className="text-center py-4 rounded border border-emerald-900/60 bg-emerald-950/20">
                 <div className="text-2xl mb-1" aria-hidden>✓</div>
                 <p className="text-xs text-emerald-100">
@@ -540,6 +585,113 @@ function ListingGapRow({ listing, gaps, optedIn, isFocused, registerRef, onMigra
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Step 2 content — quick-pick DM relay chips.
+ *
+ * Each chip publishes a fresh kind 10050 with the existing list +
+ * the picked relay. Buttons individually busy/disabled while their
+ * publish is in flight; ✓ flash for ~1.5s on success. Already-added
+ * relays are filtered out so the picker stays focused on net-new
+ * options. "More options" closes the panel and deep-links to the
+ * relays page where the friend-search and custom-URL flows live.
+ */
+function DmRelayStep({ pubkey, dmRelays, onAdded, onOpenRelaysPage }) {
+  const [busyUrl, setBusyUrl] = useState(null)
+  const [errorUrl, setErrorUrl] = useState(null)
+  const [errorMsg, setErrorMsg] = useState('')
+  const [flashUrl, setFlashUrl] = useState(null)
+
+  // Strip relays the user already has so the picker only surfaces
+  // new options. Compares case-insensitively and ignores trailing /.
+  const have = useMemo(() => {
+    const s = new Set()
+    for (const r of dmRelays || []) {
+      if (typeof r === 'string') s.add(r.toLowerCase().replace(/\/+$/, ''))
+    }
+    return s
+  }, [dmRelays])
+  const remainingRecommendations = RECOMMENDED_DM_RELAYS.filter(
+    r => !have.has(r.url.toLowerCase().replace(/\/+$/, ''))
+  )
+
+  async function handlePick(url) {
+    if (!pubkey) return
+    setBusyUrl(url)
+    setErrorUrl(null)
+    setErrorMsg('')
+    try {
+      const next = [...(dmRelays || []), url]
+      await publishDmRelayList({ relays: next })
+      setFlashUrl(url)
+      setTimeout(() => setFlashUrl(null), 1500)
+      onAdded?.()
+    } catch (e) {
+      setErrorUrl(url)
+      setErrorMsg(e?.message || 'Publish failed')
+    } finally {
+      setBusyUrl(null)
+    }
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {dmRelays.length > 0 && (
+        <p className="text-[11px] text-neutral-500 italic">
+          ✓ {dmRelays.length} DM relay{dmRelays.length === 1 ? '' : 's'} on your kind 10050 list.
+        </p>
+      )}
+
+      {remainingRecommendations.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] text-neutral-400">
+            {dmRelays.length === 0 ? 'Quick add — one click publishes a new DM relay list:' : 'Add another:'}
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {remainingRecommendations.map(r => {
+              const busy = busyUrl === r.url
+              const flash = flashUrl === r.url
+              const errored = errorUrl === r.url
+              return (
+                <button
+                  key={r.url}
+                  type="button"
+                  onClick={() => handlePick(r.url)}
+                  disabled={!!busyUrl}
+                  title={r.hint}
+                  className={`text-[11px] px-2.5 py-1 rounded border transition-colors disabled:opacity-50 ${
+                    flash
+                      ? 'border-emerald-700 text-emerald-200 bg-emerald-950/40'
+                      : errored
+                        ? 'border-rose-700 text-rose-200 bg-rose-950/30'
+                        : 'border-purple-700 text-purple-200 bg-purple-950/30 hover:bg-purple-900/40 hover:text-purple-100'
+                  }`}
+                >
+                  {flash ? `✓ Added ${r.label}` : busy ? `Adding ${r.label}…` : `+ ${r.label}`}
+                </button>
+              )
+            })}
+          </div>
+          {errorMsg && (
+            <p className="text-[11px] text-rose-400">{errorMsg}</p>
+          )}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={onOpenRelaysPage}
+        className="text-[11px] text-purple-300 hover:text-purple-200 transition-colors underline-offset-2 hover:underline"
+      >
+        More options →
+      </button>
+      <p className="text-[11px] text-neutral-500">
+        The relays page lets you search what other Nostr users have set up,
+        copy from a friend's list, or paste a custom URL.
+      </p>
     </div>
   )
 }

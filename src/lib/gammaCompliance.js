@@ -47,6 +47,7 @@ export const GAP_SHIPPING_OPTION_MISSING_COUNTRY = 'SHIPPING_OPTION_MISSING_COUN
 export const GAP_NO_PAYMENT_PREFERENCE          = 'NO_PAYMENT_PREFERENCE'
 export const GAP_INVALID_PAYMENT_PREFERENCE     = 'INVALID_PAYMENT_PREFERENCE'
 export const GAP_NO_CHECKOUT_APP_RECOMMENDATION = 'NO_CHECKOUT_APP_RECOMMENDATION'
+export const GAP_NO_DM_RELAYS                   = 'NO_DM_RELAYS'
 
 // ── Intent-aware rendering helpers ───────────────────────────────────────────
 // The grader stays spec-faithful — it reports every gap regardless of whether
@@ -84,6 +85,12 @@ const ALWAYS_HARD_GAP_CODES = new Set([
  * whether soft gaps render as warnings ("fix this") or info ("here's
  * how to opt in if you want to").
  *
+ * Note: kind 10050 (DM relays) deliberately doesn't count as opt-in —
+ * a seller might publish DM relays for general personal use without
+ * intending to do commerce, and we don't want their classified-style
+ * marketplace listings to escalate to "needs attention" because of an
+ * unrelated profile setting.
+ *
  * @param {object} args
  * @param {object|null} args.profile — kind 0 NDKEvent or POJO with `tags`
  * @param {Array} [args.shippingOptions=[]] — any non-empty array of the
@@ -109,7 +116,11 @@ export function hasOptedIntoGamma({ profile, shippingOptions = [] } = {}) {
 export function effectiveSeverity(gap, hasOptedIn) {
   if (!gap) return 'info'
   if (ALWAYS_HARD_GAP_CODES.has(gap.code)) return gap.severity
-  if (gap.code === GAP_NO_SHIPPING_OPTION || gap.code === GAP_NO_PAYMENT_PREFERENCE) {
+  if (
+    gap.code === GAP_NO_SHIPPING_OPTION ||
+    gap.code === GAP_NO_PAYMENT_PREFERENCE ||
+    gap.code === GAP_NO_DM_RELAYS
+  ) {
     return hasOptedIn ? 'warning' : 'info'
   }
   return gap.severity
@@ -222,17 +233,22 @@ export function gradeListing(parsed, sellerShippingOptions = []) {
 // ── gradeProfile ─────────────────────────────────────────────────────────────
 
 /**
- * Grade a kind-0 profile event for the merchant-side Gamma signals
- * (currently just `payment_preference`). Absence is *info-level* because
- * the spec defaults missing `payment_preference` to `manual` — i.e. a
- * profile with no tag is technically valid, just not as automation-
- * friendly as one that opts in.
+ * Grade a kind-0 profile event for the merchant-side Gamma signals.
+ * Currently checks:
+ *   - `payment_preference` tag (kind 0)
+ *   - kind 10050 NIP-17 DM relay list — at least one declared inbox
  *
- * @param {object} kind0Event — raw NDKEvent or POJO with `tags` array.
- *   Pass `null` if the profile hasn't loaded yet — grader returns the
- *   same shape with one info-level gap for the missing preference.
+ * `payment_preference` absence is info-level because the spec defaults
+ * missing values to `manual`. `dmRelays` absence defaults to warning
+ * because a manual-pay listing without an inbox means buyers' DMs may
+ * silently disappear; effectiveSeverity softens it to info for shops
+ * that haven't opted into Gamma at all.
+ *
+ * @param {object|null} kind0Event — raw NDKEvent or POJO with `tags`.
+ * @param {string[]} [dmRelays=[]] — flat list of NIP-17 inbox URLs
+ *   from the user's kind 10050. Empty/missing → warning gap.
  */
-export function gradeProfile(kind0Event) {
+export function gradeProfile(kind0Event, dmRelays = []) {
   const tags = Array.isArray(kind0Event?.tags) ? kind0Event.tags : []
   const prefTag = tags.find(t => Array.isArray(t) && t[0] === 'payment_preference')
 
@@ -261,6 +277,22 @@ export function gradeProfile(kind0Event) {
         fix: `Set payment preference to one of: ${PAYMENT_PREFERENCE_VALUES.join(', ')}`,
       })
     }
+  }
+
+  // NIP-17 inbox relays. Manual checkout (the spec default) is literally
+  // "buyers DM you," so without a kind 10050 the messages have nowhere
+  // to land — buyers' clients gift-wrap to the seller's declared inboxes,
+  // and if there are none they silently fall back to write relays that
+  // may not accept gift-wraps. Warning at the grader level; UI softens
+  // to info for shops that haven't opted into Gamma so a non-commerce
+  // profile doesn't get nagged.
+  if (!Array.isArray(dmRelays) || dmRelays.length === 0) {
+    gaps.push({
+      code: GAP_NO_DM_RELAYS,
+      severity: 'warning',
+      label: 'No NIP-17 DM inbox relays published',
+      fix: 'Publish a DM relay list so buyers\' messages reach you',
+    })
   }
 
   return summarize(gaps)
@@ -327,8 +359,8 @@ export function gradeShippingOption(parsed) {
  * Returns the same shape as the per-item graders, plus:
  *   - listingCount, listingReadyCount: for "8/10 ready" UI copy
  */
-export function gradeMerchant({ profile, listings = [], shippingOptions = [] }) {
-  const profileResult = gradeProfile(profile)
+export function gradeMerchant({ profile, listings = [], shippingOptions = [], dmRelays = [] }) {
+  const profileResult = gradeProfile(profile, dmRelays)
   const listingResults = listings.map(p => gradeListing(p, shippingOptions))
 
   const allGaps = [
