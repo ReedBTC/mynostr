@@ -6,10 +6,13 @@ import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
 import { getNDK } from '../../../../lib/ndk.js'
 import { gradeMerchant, gradeListing } from '../../../../lib/gammaCompliance.js'
 import { useSessionShippingOptions } from '../../../../lib/sessionShippingOptionsContext.jsx'
+import { useNip15Scan } from '../../../../lib/useNip15Scan.js'
 import ProductCard from './ProductCard.jsx'
 import ProductDrawer from './ProductDrawer.jsx'
 import ComplianceBanner from '../compliance/ComplianceBanner.jsx'
 import CompliancePanel from '../compliance/CompliancePanel.jsx'
+import LegacyMigrationBanner from '../compliance/LegacyMigrationBanner.jsx'
+import MigrateLegacyListingsModal from '../compliance/MigrateLegacyListingsModal.jsx'
 
 /**
  * SellingTab — feed of the viewed user's kind 30402 listings.
@@ -52,6 +55,20 @@ export default function SellingTab({
   const [profileEvent, setProfileEvent] = useState(null)
   const [profileToken, setProfileToken] = useState(0)
   const [panelOpen, setPanelOpen] = useState(false)
+  const [legacyModalOpen, setLegacyModalOpen] = useState(false)
+  const [toolsOpen, setToolsOpen] = useState(false)
+
+  // Legacy NIP-15 detection (owner-only). The hook gates its own fetch
+  // on a per-pubkey scanFlag so this is essentially free for sellers
+  // who've already cleaned up. Banner + modal share the same hook
+  // instance so a successful migration in the modal is reflected in
+  // the banner count without an extra fetch.
+  const {
+    candidates: legacyCandidates,
+    stalls:     legacyStalls,
+    rescan:     rescanLegacy,
+    markAllHandled: markAllLegacyHandled,
+  } = useNip15Scan(isOwner ? pubkey : null)
 
   useEffect(() => {
     if (!isOwner || !pubkey) { setProfileEvent(null); return }
@@ -233,19 +250,36 @@ export default function SellingTab({
               />
             )}
           </div>
-          <button
-            onClick={reload}
-            disabled={loading}
-            className="text-xs px-2.5 py-1 rounded border border-neutral-800 text-neutral-500 hover:text-neutral-300 hover:border-neutral-600 transition-colors disabled:opacity-40"
-          >
-            {loading ? '…' : 'Refresh'}
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={reload}
+              disabled={loading}
+              className="text-xs px-2.5 py-1 rounded border border-neutral-800 text-neutral-500 hover:text-neutral-300 hover:border-neutral-600 transition-colors disabled:opacity-40"
+            >
+              {loading ? '…' : 'Refresh'}
+            </button>
+            {isOwner && (
+              <SellingToolsMenu
+                open={toolsOpen}
+                onOpen={() => setToolsOpen(true)}
+                onClose={() => setToolsOpen(false)}
+                onRescanLegacy={() => { setToolsOpen(false); rescanLegacy() }}
+              />
+            )}
+          </div>
         </div>
       </div>
 
       {/* Body */}
       <div className="flex-1 overflow-auto">
         <div className="max-w-5xl mx-auto px-4 pb-6">
+
+          {isOwner && legacyCandidates.length > 0 && (
+            <LegacyMigrationBanner
+              count={legacyCandidates.length}
+              onOpen={() => setLegacyModalOpen(true)}
+            />
+          )}
 
           {isOwner && verdict && listings.length > 0 && (
             <ComplianceBanner
@@ -328,6 +362,15 @@ export default function SellingTab({
           onListingsUpdated={reload}
         />
       )}
+
+      {legacyModalOpen && (
+        <MigrateLegacyListingsModal
+          candidates={legacyCandidates}
+          stalls={legacyStalls}
+          onMarkAllHandled={markAllLegacyHandled}
+          onClose={() => setLegacyModalOpen(false)}
+        />
+      )}
     </div>
   )
 }
@@ -373,9 +416,57 @@ function EmptyState({ isOwner }) {
       <p className="text-sm text-neutral-300 mb-1">No listings yet</p>
       <p className="text-xs text-neutral-500 max-w-sm">
         {isOwner
-          ? 'Click the Sell tab to publish your first listing. Everything you list here is fully NIP-99 / Gamma compliant — checkout works in any Nostr marketplace app.'
+          ? 'Click the Sell tab to publish your first NIP-99 listing. Everything you publish here is fully NIP-99 / Gamma compliant — checkout works in any Nostr marketplace app.'
           : 'Nothing for sale here right now.'}
       </p>
+    </div>
+  )
+}
+
+/**
+ * Owner-only overflow next to Refresh. Single item today ("Re-scan for
+ * legacy listings"); designed to grow as we add more shop-level tools.
+ * Click-outside closes via document listener; Escape also dismisses.
+ */
+function SellingToolsMenu({ open, onOpen, onClose, onRescanLegacy }) {
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e) {
+      if (e.target.closest && e.target.closest('[data-selling-tools="true"]')) return
+      onClose?.()
+    }
+    function onKey(e) { if (e.key === 'Escape') onClose?.() }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, onClose])
+
+  return (
+    <div className="relative" data-selling-tools="true">
+      <button
+        type="button"
+        onClick={() => (open ? onClose?.() : onOpen?.())}
+        title="Selling tools"
+        aria-label="Selling tools"
+        aria-expanded={open}
+        className="text-xs px-2 py-1 rounded border border-neutral-800 text-neutral-500 hover:text-neutral-300 hover:border-neutral-600 transition-colors leading-none"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 w-[220px]">
+          <button
+            type="button"
+            onClick={onRescanLegacy}
+            className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
+          >
+            Re-scan for legacy listings
+          </button>
+        </div>
+      )}
     </div>
   )
 }
