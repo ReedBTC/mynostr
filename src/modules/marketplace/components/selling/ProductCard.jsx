@@ -27,7 +27,7 @@ import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
  *   • visibility='pre-order' → "Pre-order" badge
  *   • otherwise (active + on-sale) → no badge
  */
-export default function ProductCard({ listing, sessionUser, profile, complianceGrade, onClick, onEdit, onAuthorClick }) {
+export default function ProductCard({ listing, sessionUser, profile, complianceGrade, hasOptedIntoGamma = false, onClick, onEdit, onAuthorClick }) {
   const { decoded } = listing
   const cover = decoded.images?.[0]?.url
   const safeCover = cover && isSafeUrl(cover) ? cover : null
@@ -125,7 +125,7 @@ export default function ProductCard({ listing, sessionUser, profile, complianceG
               </span>
             )}
             {complianceGrade && (
-              <ComplianceDot grade={complianceGrade} />
+              <ComplianceDot grade={complianceGrade} hasOptedIntoGamma={hasOptedIntoGamma} />
             )}
           </div>
         </div>
@@ -293,43 +293,59 @@ function StockLine({ stock }) {
 }
 
 /**
- * Owner-only compliance pill on the cover. Mirrors the dot language
- * from the Shipping options tab + ProfileEditor: green = ready, amber
- * = warning gaps, red = error gaps. Tooltip lists the gaps so the
- * seller doesn't need to open the panel to know what's wrong.
+ * Owner-only Gamma readiness pill. Intent-aware — only shows when there's
+ * something meaningful to surface:
+ *
+ *   - Listing IS checkout-ready (no warning/error gaps) → "✓ Checkout-ready"
+ *     pill in green. Positive signal: this listing supports automated
+ *     checkout in Gamma marketplace apps.
+ *   - Listing has a hard gap (broken data: free-text shipping marker,
+ *     unresolved ref) → amber "Needs attention" pill regardless of shop
+ *     intent. Hard gaps mean the seller showed intent but didn't finish
+ *     or has corrupted data.
+ *   - Listing is missing shipping AND the shop opted in via the other
+ *     signal (has 30406s, or has payment_preference set) → amber
+ *     "Add shipping" pill. Same idea: the OTHER half of the Gamma setup
+ *     is missing.
+ *   - Listing is missing shipping AND the shop hasn't opted in at all →
+ *     no pill. Classified-style ("DM me") is a perfectly valid NIP-99
+ *     use case; we don't flag it.
  *
  * Visitor-side cards never receive a `complianceGrade` prop, so this
  * component is owner-only by construction — no extra gate needed.
  */
-function ComplianceDot({ grade }) {
-  const errors   = grade.gaps.filter(g => g.severity === 'error').length
-  const warnings = grade.gaps.filter(g => g.severity === 'warning').length
+function ComplianceDot({ grade, hasOptedIntoGamma }) {
+  // Codes always treated as hard regardless of shop intent.
+  const HARD_CODES = new Set(['FREE_TEXT_ONLY_SHIPPING', 'SHIPPING_REF_UNRESOLVED'])
+  const hasHardCode = grade.gaps.some(g => HARD_CODES.has(g.code))
+  const hasErrors   = grade.gaps.some(g => g.severity === 'error')
+  const isMissingShipping = grade.gaps.some(g => g.code === 'NO_SHIPPING_OPTION')
 
-  let tone, label
-  if (errors > 0) {
-    tone = 'bg-rose-900/80 text-rose-100 border-rose-700'
-    label = 'Spec gap'
-  } else if (warnings > 0) {
-    tone = 'bg-amber-900/80 text-amber-100 border-amber-700'
-    label = 'Manual only'
-  } else {
-    tone = 'bg-emerald-900/80 text-emerald-100 border-emerald-700'
-    label = 'Checkout-ready'
+  if (grade.ready) {
+    return (
+      <span
+        className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-emerald-900/80 text-emerald-100 border-emerald-700"
+        title="Supports automated checkout in Gamma marketplace apps."
+      >
+        ✓ Checkout-ready
+      </span>
+    )
   }
 
-  // Tooltip lists the exact gaps so the seller can see what's needed
-  // without opening the compliance panel. Single line — wrapping in a
-  // native title attr is best-effort by the browser anyway.
-  const tooltip = grade.gaps.length > 0
-    ? grade.gaps.map(g => g.label).join(' · ')
-    : 'This listing meets the Gamma checkout-ready spec.'
+  if (hasErrors || hasHardCode || (isMissingShipping && hasOptedIntoGamma)) {
+    const tooltip = grade.gaps.length > 0
+      ? grade.gaps.map(g => g.label).join(' · ')
+      : 'Open the Gamma checkout setup panel for details.'
+    return (
+      <span
+        className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-amber-900/80 text-amber-100 border-amber-700"
+        title={tooltip}
+      >
+        Needs attention
+      </span>
+    )
+  }
 
-  return (
-    <span
-      className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${tone}`}
-      title={tooltip}
-    >
-      {label}
-    </span>
-  )
+  // Soft state on a not-opted-in shop — DM-only is fine, no pill.
+  return null
 }

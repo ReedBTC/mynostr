@@ -4,7 +4,7 @@ import { nip19 } from 'nostr-tools'
 import { useSelling } from '../../../../lib/useSelling.js'
 import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
 import { getNDK } from '../../../../lib/ndk.js'
-import { gradeMerchant, gradeListing } from '../../../../lib/gammaCompliance.js'
+import { gradeMerchant, gradeListing, hasOptedIntoGamma } from '../../../../lib/gammaCompliance.js'
 import { useSessionShippingOptions } from '../../../../lib/sessionShippingOptionsContext.jsx'
 import { useNip15Scan } from '../../../../lib/useNip15Scan.js'
 import ProductCard from './ProductCard.jsx'
@@ -92,6 +92,15 @@ export default function SellingTab({
       shippingOptions: shippingOptions.map(o => o.decoded),
     })
   }, [isOwner, profileEvent, listings, shippingOptions])
+
+  // Shop intent — has the seller taken any positive Gamma opt-in
+  // action (published a 30406 OR set payment_preference)? Computed
+  // from already-loaded data; banner/dot/chip all read from this so
+  // the UI is consistent about whether to nag or stay quiet.
+  const optedIn = useMemo(() => {
+    if (!isOwner) return false
+    return hasOptedIntoGamma({ profile: profileEvent, shippingOptions })
+  }, [isOwner, profileEvent, shippingOptions])
 
   // Per-listing grades indexed by event id so each ProductCard can
   // render its own compliance dot without re-grading on every render.
@@ -243,9 +252,10 @@ export default function SellingTab({
             <div className="text-xs text-neutral-500 flex-shrink-0">
               {loading ? 'Loading…' : `${visible.length} listing${visible.length === 1 ? '' : 's'}`}
             </div>
-            {isOwner && verdict && verdict.listingCount > 0 && (
+            {isOwner && verdict && verdict.listingCount > 0 && (optedIn || verdict.listingReadyCount > 0) && (
               <ComplianceScoreChip
                 verdict={verdict}
+                optedIn={optedIn}
                 onClick={() => setPanelOpen(true)}
               />
             )}
@@ -284,6 +294,7 @@ export default function SellingTab({
           {isOwner && verdict && listings.length > 0 && (
             <ComplianceBanner
               verdict={verdict}
+              hasOptedIn={optedIn}
               onOpen={() => setPanelOpen(true)}
             />
           )}
@@ -330,6 +341,7 @@ export default function SellingTab({
                   sessionUser={sessionUser}
                   profile={profileMap.get(l.event.pubkey)}
                   complianceGrade={isOwner ? listingGrades.get(l.event.id) : null}
+                  hasOptedIntoGamma={isOwner ? optedIn : false}
                   onClick={() => openDrawer(l)}
                   onEdit={onEdit}
                 />
@@ -376,35 +388,41 @@ export default function SellingTab({
 }
 
 /**
- * Compact compliance score for the My Selling header. Same color
- * language as the per-card dots so the seller can correlate at a
- * glance: full green = nothing to fix, amber = some listings need
- * attention, red = nothing checkout-ready yet.
+ * Header chip for Gamma checkout readiness. Tone is intent-aware:
+ *   - Fully ready (every listing checkout-ready) → emerald ✓ "All N support checkout"
+ *   - Some ready, some not, shop has opted in → amber, "X of Y support checkout"
+ *   - Some ready, others bare, shop hasn't opted in elsewhere → neutral sky chrome
+ *     ("opt-in is per-listing, not a deficiency")
  *
- * Click opens the full CompliancePanel — useful even after the
- * banner is dismissed for the session.
+ * Never red. The chip is a status, not an alarm — alarms live in the
+ * banner when there are real hard gaps. SellingTab also hides the chip
+ * entirely when there's nothing to score (no ready listings AND no shop
+ * opt-in) so a brand-new seller doesn't see a stat tracker for a feature
+ * they haven't engaged with.
+ *
+ * Click opens the CompliancePanel — useful even after the banner is
+ * dismissed for the session.
  */
-function ComplianceScoreChip({ verdict, onClick }) {
+function ComplianceScoreChip({ verdict, optedIn, onClick }) {
   const ready  = verdict.listingReadyCount
   const total  = verdict.listingCount
   const allOk  = ready === total
-  const noneOk = ready === 0
 
   const tone = allOk
     ? 'border-emerald-800 text-emerald-300 bg-emerald-950/30 hover:bg-emerald-900/40'
-    : noneOk
-      ? 'border-rose-800 text-rose-300 bg-rose-950/30 hover:bg-rose-900/40'
-      : 'border-amber-800 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40'
+    : optedIn
+      ? 'border-amber-800 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40'
+      : 'border-sky-800 text-sky-200 bg-sky-950/30 hover:bg-sky-900/40'
 
   return (
     <button
       type="button"
       onClick={onClick}
-      title="Open compliance check"
+      title="Open Gamma checkout setup"
       className={`text-[11px] font-medium px-2 py-0.5 rounded border transition-colors flex items-center gap-1 ${tone}`}
     >
-      <span aria-hidden>{allOk ? '✓' : '⚠'}</span>
-      <span>{ready}/{total} checkout-ready</span>
+      <span aria-hidden>✓</span>
+      <span>{allOk ? `All ${total} support checkout` : `${ready} of ${total} support checkout`}</span>
     </button>
   )
 }

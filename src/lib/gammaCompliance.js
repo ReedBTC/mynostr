@@ -48,6 +48,73 @@ export const GAP_NO_PAYMENT_PREFERENCE          = 'NO_PAYMENT_PREFERENCE'
 export const GAP_INVALID_PAYMENT_PREFERENCE     = 'INVALID_PAYMENT_PREFERENCE'
 export const GAP_NO_CHECKOUT_APP_RECOMMENDATION = 'NO_CHECKOUT_APP_RECOMMENDATION'
 
+// ── Intent-aware rendering helpers ───────────────────────────────────────────
+// The grader stays spec-faithful — it reports every gap regardless of whether
+// the seller cares about Gamma checkout. UI components use these helpers to
+// soften the *visual* presentation when the seller hasn't opted in: classified-
+// style listings ("DM me to buy") are a perfectly valid NIP-99 use case and
+// shouldn't be flagged as broken.
+
+// Codes that always represent broken or contradictory state — not just
+// "you haven't opted in." Surfaced in warning chrome regardless of intent.
+//   - FREE_TEXT_ONLY_SHIPPING: seller wrote shipping prose, signaled intent,
+//     but didn't structure it (the original "fix this" case the migrator solves)
+//   - SHIPPING_REF_UNRESOLVED: listing references a 30406 that doesn't exist
+//     anymore (deleted, foreign, never published) — really broken
+//   - INVALID_PAYMENT_PREFERENCE: published value isn't in the spec enum —
+//     typo in committed data, not absence
+//   - SHIPPING_OPTION_*: a published 30406 has bad data (per-option grader)
+const ALWAYS_HARD_GAP_CODES = new Set([
+  GAP_FREE_TEXT_ONLY_SHIPPING,
+  GAP_SHIPPING_REF_UNRESOLVED,
+  GAP_INVALID_PAYMENT_PREFERENCE,
+  GAP_SHIPPING_OPTION_INVALID_SERVICE,
+  GAP_SHIPPING_OPTION_MISSING_COUNTRY,
+])
+
+/**
+ * Has the shop signaled commerce intent? Two opt-in actions count:
+ *   1. Has at least one published kind 30406 (shipping option) — they
+ *      set up structured shipping
+ *   2. Has `payment_preference` tag set on kind 0 (any value, even
+ *      `manual`) — they explicitly told buyers' clients how to pay
+ *
+ * Either action means "I'm doing commerce." Neither action means
+ * "classified-style is fine for me." Used by UI components to decide
+ * whether soft gaps render as warnings ("fix this") or info ("here's
+ * how to opt in if you want to").
+ *
+ * @param {object} args
+ * @param {object|null} args.profile — kind 0 NDKEvent or POJO with `tags`
+ * @param {Array} [args.shippingOptions=[]] — any non-empty array of the
+ *   seller's shipping options. Shape doesn't matter (decoded or wrapped);
+ *   non-empty length is the signal.
+ */
+export function hasOptedIntoGamma({ profile, shippingOptions = [] } = {}) {
+  if (Array.isArray(shippingOptions) && shippingOptions.length > 0) return true
+  const tags = Array.isArray(profile?.tags) ? profile.tags : []
+  const pref = tags.find(t => Array.isArray(t) && t[0] === 'payment_preference')
+  return Boolean(pref && typeof pref[1] === 'string' && pref[1].trim())
+}
+
+/**
+ * Render-time severity for a gap given shop-level intent. Soft gaps —
+ * `NO_SHIPPING_OPTION`, `NO_PAYMENT_PREFERENCE` — are rendered as info
+ * ("opt in if you want") on shops that haven't opted in. Once the shop
+ * opts in via either signal, those same gaps escalate to warnings
+ * (the seller has shown intent and now the OTHER half of the setup
+ * is missing). Always-hard codes (broken data, free-text shipping)
+ * keep their severity regardless of intent.
+ */
+export function effectiveSeverity(gap, hasOptedIn) {
+  if (!gap) return 'info'
+  if (ALWAYS_HARD_GAP_CODES.has(gap.code)) return gap.severity
+  if (gap.code === GAP_NO_SHIPPING_OPTION || gap.code === GAP_NO_PAYMENT_PREFERENCE) {
+    return hasOptedIn ? 'warning' : 'info'
+  }
+  return gap.severity
+}
+
 // Per-severity score weight. Centralised so future tuning is one place.
 const WEIGHT = { error: 50, warning: 20, info: 0 }
 
