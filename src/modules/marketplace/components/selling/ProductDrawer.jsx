@@ -15,6 +15,11 @@ import {
 } from '../../../../lib/currency.js'
 import { deleteProduct } from '../../../../lib/deleteProduct.js'
 import { KIND_PRODUCT, buildProductCoord } from '../../../../lib/gamma.js'
+import {
+  isClassifiedOnly,
+  unmarkClassifiedOnly,
+  onClassifiedChange,
+} from '../../../../lib/gammaClassified.js'
 import { useSessionCollections } from '../../../../lib/sessionCollectionsContext.jsx'
 import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
 import ProductActionsMenu from './ProductActionsMenu.jsx'
@@ -79,6 +84,18 @@ export default function ProductDrawer({
     })
     setLiking(false)
   }
+
+  // Owner-only: surface the classified-only mark inside the drawer so
+  // a seller who hid this listing from compliance can still see why no
+  // pill appears + how to put it back into checkout setup.
+  // Tied to a tick so unmark from anywhere (this banner, the compliance
+  // panel) updates without a re-fetch.
+  const [classifiedTick, setClassifiedTick] = useState(0)
+  useEffect(() => onClassifiedChange(() => setClassifiedTick(t => t + 1)), [])
+  const isClassified = useMemo(
+    () => isOwner && !previewMode && isClassifiedOnly(pubkey, dTag),
+    [isOwner, previewMode, pubkey, dTag, classifiedTick]
+  )
 
   // Active hero image index — multi-image listings get a thumbnail
   // strip below the hero that swaps which image is shown big.
@@ -158,6 +175,35 @@ export default function ProductDrawer({
         {/* Body — scrollable */}
         <div className="flex-1 overflow-auto">
           <div className="p-4 sm:p-6 space-y-5">
+
+            {/* Owner-only — this listing is marked classified-only.
+                The compliance panel's amber pill is suppressed for it;
+                this banner reminds the seller why and how to opt back
+                into checkout setup. Hidden for non-owners and previews. */}
+            {isClassified && (
+              <div className="px-3 py-2.5 rounded border border-neutral-800 bg-neutral-900/40 flex items-start gap-2.5">
+                <span className="text-base leading-none mt-0.5" aria-hidden>📋</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-medium text-neutral-200">
+                    Marked as not a checkout product
+                  </p>
+                  <p className="text-[11px] text-neutral-400 mt-0.5 leading-relaxed">
+                    Gamma checkout warnings are hidden for this listing — buyers
+                    contact you directly (DM, the contact info in your description,
+                    etc.). To make this listing checkout-ready in marketplace apps
+                    like Shopstr or Plebeian, undo this and add a structured
+                    shipping option from the Shipping tab.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => unmarkClassifiedOnly(pubkey, dTag)}
+                  className="text-[11px] px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 bg-neutral-900/40 hover:bg-neutral-800/60 hover:text-neutral-100 hover:border-neutral-600 transition-colors flex-shrink-0"
+                >
+                  Undo
+                </button>
+              </div>
+            )}
 
             {/* Hero image */}
             {safeImages.length > 0 && (

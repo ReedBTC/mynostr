@@ -44,18 +44,22 @@ export default function ComplianceBanner({ verdict, hasOptedIn, onOpen }) {
   }
 
   // Two visual states. Copy is meaningfully different — the soft state
-  // is an opt-in invitation, the hard state is a punch list.
+  // is an opt-in invitation, the hard state is a punch list. Both
+  // intentionally render in neutral chrome (no amber/red): "missing
+  // checkout setup" is a soft prompt the seller may legitimately
+  // never want to complete (services, classifieds, etc.). The amber
+  // alarm is reserved for the per-listing pill where it's actionable.
   const tone = isHardState
-    ? { box: 'border-amber-900/60 bg-amber-950/20', icon: '⚠', headline: 'text-amber-100',
-        button: 'border-amber-700 text-amber-100 bg-amber-900/30 hover:bg-amber-900/50' }
-    : { box: 'border-sky-900/60 bg-sky-950/20', icon: '🛒', headline: 'text-sky-100',
-        button: 'border-sky-700 text-sky-100 bg-sky-900/30 hover:bg-sky-900/50' }
+    ? { box: 'border-neutral-800 bg-neutral-900/40', icon: '🛒', headline: 'text-neutral-100',
+        button: 'border-purple-700 text-purple-200 bg-purple-950/30 hover:bg-purple-900/40 hover:text-purple-100' }
+    : { box: 'border-neutral-800 bg-neutral-900/40', icon: '🛒', headline: 'text-neutral-100',
+        button: 'border-purple-700 text-purple-200 bg-purple-950/30 hover:bg-purple-900/40 hover:text-purple-100' }
 
   // Hard-state numbers come from the grader's listingReadyCount math.
   // Soft-state copy doesn't quote numbers — it's a prompt, not a punch list.
   const unreadyCount = verdict.listingCount - verdict.listingReadyCount
   const headline = isHardState
-    ? `${unreadyCount} of your ${verdict.listingCount} listing${verdict.listingCount === 1 ? '' : 's'} ${unreadyCount === 1 ? 'needs' : 'need'} attention to be checkout-ready`
+    ? `${unreadyCount} of your ${verdict.listingCount} listing${verdict.listingCount === 1 ? '' : 's'} ${unreadyCount === 1 ? 'needs' : 'need'} additional information to be checkout-ready (Gamma spec)`
     : 'Want your listings to support automated checkout?'
 
   return (
@@ -82,7 +86,7 @@ export default function ComplianceBanner({ verdict, hasOptedIn, onOpen }) {
           onClick={onOpen}
           className={`text-[11px] px-2.5 py-1 rounded border transition-colors ${tone.button}`}
         >
-          {isHardState ? 'Review' : 'Set up checkout'}
+          {isHardState ? 'Complete setup' : 'Set up checkout'}
         </button>
         <button
           type="button"

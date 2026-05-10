@@ -5,6 +5,7 @@ import { useSelling } from '../../../../lib/useSelling.js'
 import { useListingProfiles } from '../../../../lib/useListingProfiles.js'
 import { getNDK } from '../../../../lib/ndk.js'
 import { gradeMerchant, gradeListing, hasOptedIntoGamma } from '../../../../lib/gammaCompliance.js'
+import { readClassifiedSet, onClassifiedChange } from '../../../../lib/gammaClassified.js'
 import { useSessionShippingOptions } from '../../../../lib/sessionShippingOptionsContext.jsx'
 import { useNip15Scan } from '../../../../lib/useNip15Scan.js'
 import ProductCard from './ProductCard.jsx'
@@ -55,8 +56,30 @@ export default function SellingTab({
   const [profileEvent, setProfileEvent] = useState(null)
   const [profileToken, setProfileToken] = useState(0)
   const [panelOpen, setPanelOpen] = useState(false)
+  // When the panel opens via a per-card "Needs attention" click, scroll
+  // the panel to that listing's row instead of just opening the panel.
+  const [panelFocusListingId, setPanelFocusListingId] = useState(null)
   const [legacyModalOpen, setLegacyModalOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
+
+  // Per-pubkey set of listings the seller has marked classified-only.
+  // Re-reads on any toggle anywhere (mark/unmark in panel or drawer)
+  // so the cards, banner, and chip stay in sync without a refresh.
+  const [classifiedTick, setClassifiedTick] = useState(0)
+  useEffect(() => onClassifiedChange(() => setClassifiedTick(t => t + 1)), [])
+  const classifiedSet = useMemo(
+    () => isOwner && pubkey ? readClassifiedSet(pubkey) : new Set(),
+    [isOwner, pubkey, classifiedTick]
+  )
+
+  // Listings the compliance layer should consider. A classified-only
+  // listing is hidden from the panel/banner counts AND from per-card
+  // dots — the grader stays spec-faithful on the underlying listing,
+  // we just stop surfacing the gap to the user.
+  const complianceListings = useMemo(
+    () => isOwner ? listings.filter(l => !classifiedSet.has(l.decoded.dTag)) : listings,
+    [isOwner, listings, classifiedSet]
+  )
 
   // Legacy NIP-15 detection (owner-only). The hook gates its own fetch
   // on a per-pubkey scanFlag so this is essentially free for sellers
@@ -88,10 +111,10 @@ export default function SellingTab({
     if (!isOwner) return null
     return gradeMerchant({
       profile:         profileEvent,
-      listings:        listings.map(l => l.decoded),
+      listings:        complianceListings.map(l => l.decoded),
       shippingOptions: shippingOptions.map(o => o.decoded),
     })
-  }, [isOwner, profileEvent, listings, shippingOptions])
+  }, [isOwner, profileEvent, complianceListings, shippingOptions])
 
   // Shop intent — has the seller taken any positive Gamma opt-in
   // action (published a 30406 OR set payment_preference)? Computed
@@ -110,10 +133,13 @@ export default function SellingTab({
     const decodedOptions = shippingOptions.map(o => o.decoded)
     const m = new Map()
     for (const l of listings) {
+      // Skip grading classified-only listings — the card dot reads
+      // from this map, so absence == no pill rendered.
+      if (classifiedSet.has(l.decoded.dTag)) continue
       m.set(l.event.id, gradeListing(l.decoded, decodedOptions))
     }
     return m
-  }, [isOwner, listings, shippingOptions])
+  }, [isOwner, listings, shippingOptions, classifiedSet])
 
   // Batch-fetch the seller profile (just one author here, but reusing
   // the shared hook keeps the rendering path identical to the search +
@@ -344,6 +370,10 @@ export default function SellingTab({
                   hasOptedIntoGamma={isOwner ? optedIn : false}
                   onClick={() => openDrawer(l)}
                   onEdit={onEdit}
+                  onOpenCompliance={isOwner ? () => {
+                    setPanelFocusListingId(l.event.id)
+                    setPanelOpen(true)
+                  } : null}
                 />
               ))}
             </div>
@@ -369,7 +399,8 @@ export default function SellingTab({
           listings={listings}
           shippingOptions={shippingOptions}
           profileLud16={user?.profile?.lud16 || ''}
-          onClose={() => setPanelOpen(false)}
+          focusListingId={panelFocusListingId}
+          onClose={() => { setPanelOpen(false); setPanelFocusListingId(null) }}
           onProfileUpdated={() => setProfileToken(t => t + 1)}
           onListingsUpdated={reload}
         />
@@ -408,11 +439,13 @@ function ComplianceScoreChip({ verdict, optedIn, onClick }) {
   const total  = verdict.listingCount
   const allOk  = ready === total
 
+  // Tones are deliberately quiet: only fully-ready earns a colored chip
+  // (positive signal). Partial-progress and not-opted-in both render
+  // neutral so the header doesn't scream "your shop is broken" to a
+  // seller who hasn't finished (or doesn't want) Gamma checkout.
   const tone = allOk
     ? 'border-emerald-800 text-emerald-300 bg-emerald-950/30 hover:bg-emerald-900/40'
-    : optedIn
-      ? 'border-amber-800 text-amber-200 bg-amber-950/30 hover:bg-amber-900/40'
-      : 'border-sky-800 text-sky-200 bg-sky-950/30 hover:bg-sky-900/40'
+    : 'border-neutral-700 text-neutral-300 bg-neutral-900/40 hover:bg-neutral-800/60'
 
   return (
     <button

@@ -27,7 +27,7 @@ import AddToCollectionModal from '../collections/AddToCollectionModal.jsx'
  *   • visibility='pre-order' → "Pre-order" badge
  *   • otherwise (active + on-sale) → no badge
  */
-export default function ProductCard({ listing, sessionUser, profile, complianceGrade, hasOptedIntoGamma = false, onClick, onEdit, onAuthorClick }) {
+export default function ProductCard({ listing, sessionUser, profile, complianceGrade, hasOptedIntoGamma = false, onClick, onEdit, onAuthorClick, onOpenCompliance }) {
   const { decoded } = listing
   const cover = decoded.images?.[0]?.url
   const safeCover = cover && isSafeUrl(cover) ? cover : null
@@ -107,27 +107,6 @@ export default function ProductCard({ listing, sessionUser, profile, complianceG
             </div>
           )}
 
-          {/* Badges — top-left, stacked */}
-          <div className="absolute top-2 left-2 flex flex-col gap-1 items-start">
-            {sold && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-900/80 text-red-100 border border-red-700">
-                Sold
-              </span>
-            )}
-            {!sold && hidden && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-neutral-800/90 text-neutral-300 border border-neutral-600">
-                Hidden
-              </span>
-            )}
-            {!sold && !hidden && preorder && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/80 text-amber-100 border border-amber-700">
-                Pre-order
-              </span>
-            )}
-            {complianceGrade && (
-              <ComplianceDot grade={complianceGrade} hasOptedIntoGamma={hasOptedIntoGamma} />
-            )}
-          </div>
         </div>
 
         {/* Body */}
@@ -139,6 +118,36 @@ export default function ProductCard({ listing, sessionUser, profile, complianceG
           <StockLine stock={decoded.stock} />
         </div>
       </button>
+
+      {/* Badge stack — sibling of the outer card button so ComplianceDot
+          can be a real button (button-in-button is invalid HTML).
+          pointer-events-none on the wrapper means the static badge spans
+          don't intercept the card click; ComplianceDot re-enables
+          pointer events on itself so it remains clickable. */}
+      <div className="absolute top-2 left-2 flex flex-col gap-1 items-start pointer-events-none">
+        {sold && (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-900/80 text-red-100 border border-red-700">
+            Sold
+          </span>
+        )}
+        {!sold && hidden && (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-neutral-800/90 text-neutral-300 border border-neutral-600">
+            Hidden
+          </span>
+        )}
+        {!sold && !hidden && preorder && (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-900/80 text-amber-100 border border-amber-700">
+            Pre-order
+          </span>
+        )}
+        {complianceGrade && (
+          <ComplianceDot
+            grade={complianceGrade}
+            hasOptedIntoGamma={hasOptedIntoGamma}
+            onOpenCompliance={onOpenCompliance}
+          />
+        )}
+      </div>
 
       {/* Seller row — sibling of the main button (avoids nested
           buttons). Click filters search to this seller in SearchTab,
@@ -314,7 +323,7 @@ function StockLine({ stock }) {
  * Visitor-side cards never receive a `complianceGrade` prop, so this
  * component is owner-only by construction — no extra gate needed.
  */
-function ComplianceDot({ grade, hasOptedIntoGamma }) {
+function ComplianceDot({ grade, hasOptedIntoGamma, onOpenCompliance }) {
   // Codes always treated as hard regardless of shop intent.
   const HARD_CODES = new Set(['FREE_TEXT_ONLY_SHIPPING', 'SHIPPING_REF_UNRESOLVED'])
   const hasHardCode = grade.gaps.some(g => HARD_CODES.has(g.code))
@@ -322,9 +331,11 @@ function ComplianceDot({ grade, hasOptedIntoGamma }) {
   const isMissingShipping = grade.gaps.some(g => g.code === 'NO_SHIPPING_OPTION')
 
   if (grade.ready) {
+    // Ready pill is informational — no review needed, render as a span
+    // so it doesn't compete with the card click for attention.
     return (
       <span
-        className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-emerald-900/80 text-emerald-100 border-emerald-700"
+        className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-emerald-900/80 text-emerald-100 border-emerald-700 pointer-events-auto"
         title="Supports automated checkout in Gamma marketplace apps."
       >
         ✓ Checkout-ready
@@ -334,15 +345,23 @@ function ComplianceDot({ grade, hasOptedIntoGamma }) {
 
   if (hasErrors || hasHardCode || (isMissingShipping && hasOptedIntoGamma)) {
     const tooltip = grade.gaps.length > 0
-      ? grade.gaps.map(g => g.label).join(' · ')
+      ? `${grade.gaps.map(g => g.label).join(' · ')} · Click to review`
       : 'Open the Gamma checkout setup panel for details.'
+    // Click opens the compliance panel scrolled to this listing's row.
+    // stopPropagation so the click doesn't bubble to the card's outer
+    // button (which would open the product drawer instead).
     return (
-      <span
-        className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-amber-900/80 text-amber-100 border-amber-700"
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onOpenCompliance?.()
+        }}
         title={tooltip}
+        className="text-[10px] font-medium px-1.5 py-0.5 rounded border bg-amber-900/80 text-amber-100 border-amber-700 hover:bg-amber-900 hover:border-amber-600 transition-colors pointer-events-auto"
       >
-        Needs attention
-      </span>
+        Review Listing
+      </button>
     )
   }
 

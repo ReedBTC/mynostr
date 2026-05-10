@@ -18,7 +18,7 @@
  * in stay info-toned, while broken state (free-text shipping, unresolved
  * refs, invalid values) stays warning regardless of intent.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { publishProfile } from '../../../../lib/publishProfile.js'
 import {
   gradeMerchant,
@@ -26,6 +26,12 @@ import {
   effectiveSeverity,
   PAYMENT_PREFERENCE_VALUES,
 } from '../../../../lib/gammaCompliance.js'
+import {
+  readClassifiedSet,
+  markClassifiedOnly,
+  unmarkClassifiedOnly,
+  onClassifiedChange,
+} from '../../../../lib/gammaClassified.js'
 import MigrateShippingModal from './MigrateShippingModal.jsx'
 import WhatIsGammaPopover from './WhatIsGammaPopover.jsx'
 
@@ -45,18 +51,46 @@ export default function CompliancePanel({
   listings = [],                // [{ event, decoded }] from useSelling
   shippingOptions = [],         // [{ event, decoded }] from useSessionShippingOptions
   profileLud16,                 // for gating the inline lud16 radio
+  focusListingId,               // optional event id to scroll to on open
   onClose,
   onProfileUpdated,             // called after a payment_preference write
   onListingsUpdated,            // called after one or more listings republish
 }) {
+  // Owner pubkey is consistent across listings (panel is owner-only).
+  // Falls back to the kind-0 author if the listings array is empty
+  // (initial pre-populate pass, etc.).
+  const ownerPubkey = listings[0]?.event?.pubkey || profileEvent?.pubkey || null
+
+  // Subscribe to classified-only mutations so marking/unmarking from
+  // anywhere (this panel, the drawer, future drawers) re-renders.
+  const [classifiedTick, setClassifiedTick] = useState(0)
+  useEffect(() => onClassifiedChange(() => setClassifiedTick(t => t + 1)), [])
+  const classifiedSet = useMemo(
+    () => ownerPubkey ? readClassifiedSet(ownerPubkey) : new Set(),
+    [ownerPubkey, classifiedTick]
+  )
+
+  // Listings split: visible (compliance-relevant) vs marked-classified.
+  // Verdict + per-row rendering use the visible list; the panel surfaces
+  // a footer counter so the seller can find / undo their marks.
+  const visibleListings = useMemo(
+    () => listings.filter(l => !classifiedSet.has(l.decoded?.dTag)),
+    [listings, classifiedSet]
+  )
+  const hiddenClassifiedListings = useMemo(
+    () => listings.filter(l => classifiedSet.has(l.decoded?.dTag)),
+    [listings, classifiedSet]
+  )
+
   // Compute the verdict synchronously from current data — caller is
-  // expected to pass the latest snapshots. The panel re-renders when
-  // state below changes (after writes).
+  // expected to pass the latest snapshots. Classified-only listings
+  // are excluded so the score and counts reflect what the seller
+  // actually wants graded.
   const verdict = useMemo(() => gradeMerchant({
     profile:         profileEvent,
-    listings:        listings.map(l => l.decoded),
+    listings:        visibleListings.map(l => l.decoded),
     shippingOptions: shippingOptions.map(o => o.decoded),
-  }), [profileEvent, listings, shippingOptions])
+  }), [profileEvent, visibleListings, shippingOptions])
 
   const optedIn = useMemo(() => hasOptedIntoGamma({
     profile:         profileEvent,
@@ -76,6 +110,8 @@ export default function CompliancePanel({
 
   // Listing-level gaps need to know which listing they belong to; the
   // grader returns a `listingIndex` pointer back into the input array.
+  // Index is into visibleListings (what we passed to gradeMerchant),
+  // not the full listings array.
   const listingsWithGaps = useMemo(() => {
     const byIdx = new Map()
     for (const g of verdict.gaps) {
@@ -85,24 +121,37 @@ export default function CompliancePanel({
       byIdx.set(g.listingIndex, arr)
     }
     return [...byIdx.entries()].map(([idx, gaps]) => ({
-      listing: listings[idx],
+      listing: visibleListings[idx],
       gaps,
     })).filter(x => x.listing)
-  }, [verdict.gaps, listings])
+  }, [verdict.gaps, visibleListings])
 
   const profileGaps = verdict.gaps.filter(g => g.scope === 'profile')
 
   // Listings that have NO shipping_option ref yet — used by the migrate
   // modal's "apply to all" bulk option. Computed once so a per-row
   // open of the modal can pass siblings without redoing the work.
+  // Excludes classified-only listings — bulk migrate shouldn't drag
+  // explicitly opted-out listings into a checkout flow.
   const listingsMissingShipping = useMemo(() => {
-    return listings.filter(l => {
+    return visibleListings.filter(l => {
       const refs = l.decoded?.shippingOptionRefs || []
       return refs.length === 0
     })
-  }, [listings])
+  }, [visibleListings])
 
   const [migrateTarget, setMigrateTarget] = useState(null)  // listing object
+
+  // Scroll to the focused listing's row on first paint when the panel
+  // was opened via a per-card "Needs attention" click.
+  const rowRefs = useRef(new Map())
+  useEffect(() => {
+    if (!focusListingId) return
+    const el = rowRefs.current.get(focusListingId)
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }
+  }, [focusListingId, listingsWithGaps])
 
   return (
     <>
@@ -197,7 +246,17 @@ export default function CompliancePanel({
                       listing={listing}
                       gaps={gaps}
                       optedIn={optedIn}
+                      isFocused={focusListingId === listing.event.id}
+                      registerRef={(el) => {
+                        if (el) rowRefs.current.set(listing.event.id, el)
+                        else rowRefs.current.delete(listing.event.id)
+                      }}
                       onMigrate={() => setMigrateTarget(listing)}
+                      onMarkClassified={() => {
+                        if (ownerPubkey && listing.decoded?.dTag) {
+                          markClassifiedOnly(ownerPubkey, listing.decoded.dTag)
+                        }
+                      }}
                     />
                   ))}
                 </div>
@@ -223,6 +282,17 @@ export default function CompliancePanel({
                   Buyers in any Gamma marketplace app can complete automated checkout on every listing.
                 </p>
               </div>
+            )}
+
+            {/* Hidden classified-only listings — escape hatch so the
+                seller can find marks they made, see what's hidden, and
+                undo individual ones. Collapsed by default to keep the
+                panel focused on actionable gaps. */}
+            {hiddenClassifiedListings.length > 0 && ownerPubkey && (
+              <HiddenClassifiedSection
+                listings={hiddenClassifiedListings}
+                onUnmark={(dTag) => unmarkClassifiedOnly(ownerPubkey, dTag)}
+              />
             )}
           </div>
 
@@ -407,7 +477,7 @@ function PrefRadio({ checked, onChange, disabled, label, hint }) {
  * so a listing with both NO_SHIPPING_OPTION and (hypothetical future)
  * INVALID_TYPE_FORM gets one fix flow rather than two stacked rows.
  */
-function ListingGapRow({ listing, gaps, optedIn, onMigrate }) {
+function ListingGapRow({ listing, gaps, optedIn, isFocused, registerRef, onMigrate, onMarkClassified }) {
   const title = listing.decoded?.title || '(untitled)'
   // Render severity using the intent-aware helper so a bare classified
   // listing on a non-opted-in shop reads as a soft prompt, not a warning.
@@ -425,24 +495,96 @@ function ListingGapRow({ listing, gaps, optedIn, onMigrate }) {
   ])
   const canMigrate = gaps.some(g => migrationCodes.has(g.code))
 
+  // The opt-out is offered for the same gap codes the migrator handles —
+  // they're the soft "your shop opted in but this listing didn't follow
+  // through" cases where "I just don't want this listing in checkout"
+  // is a legitimate answer. Hard data-corruption codes (invalid service,
+  // missing country on a published 30406) aren't user-intent issues so
+  // the opt-out wouldn't help anyway.
+  const canMarkClassified = canMigrate
+
   return (
-    <div className="px-3 py-2.5 rounded border border-neutral-800 bg-neutral-900/40 flex items-start gap-2">
+    <div
+      ref={registerRef}
+      className={`px-3 py-2.5 rounded border ${
+        isFocused
+          ? 'border-amber-700 bg-amber-950/20 ring-1 ring-amber-700/50'
+          : 'border-neutral-800 bg-neutral-900/40'
+      } flex items-start gap-2 flex-wrap`}
+    >
       <span className={`mt-1 w-2 h-2 rounded-full flex-shrink-0 ${SEVERITY_DOT[topSeverity]}`} />
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 basis-full sm:basis-auto">
         <p className="text-sm text-neutral-100 truncate">{title}</p>
         <ul className="text-[11px] text-neutral-400 mt-0.5 space-y-0.5">
           {gaps.map((g, i) => <li key={i}>· {g.label}</li>)}
         </ul>
       </div>
-      {canMigrate && (
-        <button
-          type="button"
-          onClick={onMigrate}
-          className="text-[11px] px-2.5 py-1 rounded border border-purple-700 text-purple-200 bg-purple-950/30 hover:bg-purple-900/40 hover:text-purple-100 transition-colors flex-shrink-0"
-        >
-          Migrate
-        </button>
-      )}
+      <div className="flex items-center gap-1.5 flex-shrink-0 ml-auto">
+        {canMarkClassified && (
+          <button
+            type="button"
+            onClick={onMarkClassified}
+            title="Hide this listing from checkout-readiness — useful for services or DM-to-buy classifieds that don't ship"
+            className="text-[11px] px-2.5 py-1 rounded border border-neutral-700 text-neutral-300 bg-neutral-900/40 hover:bg-neutral-800/60 hover:text-neutral-100 hover:border-neutral-600 transition-colors"
+          >
+            Not a checkout product
+          </button>
+        )}
+        {canMigrate && (
+          <button
+            type="button"
+            onClick={onMigrate}
+            className="text-[11px] px-2.5 py-1 rounded border border-purple-700 text-purple-200 bg-purple-950/30 hover:bg-purple-900/40 hover:text-purple-100 transition-colors"
+          >
+            Migrate
+          </button>
+        )}
+      </div>
     </div>
+  )
+}
+
+/**
+ * Footer section — listings the seller has marked classified-only.
+ * Collapsed by default so the panel stays focused on actionable gaps;
+ * expanding lists each hidden listing with an Undo button so the
+ * mark is reversible.
+ */
+function HiddenClassifiedSection({ listings, onUnmark }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <section className="rounded border border-neutral-800 bg-neutral-900/30">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-3 py-2 flex items-center justify-between gap-2 text-left hover:bg-neutral-900/60 transition-colors"
+      >
+        <span className="text-[11px] text-neutral-400">
+          {listings.length} listing{listings.length === 1 ? '' : 's'} hidden as classified-only
+        </span>
+        <span className="text-[11px] text-neutral-500">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && (
+        <div className="px-3 pb-2.5 pt-0 space-y-1.5">
+          {listings.map(l => (
+            <div
+              key={l.event.id}
+              className="px-2.5 py-1.5 rounded border border-neutral-800 bg-neutral-900/40 flex items-center gap-2"
+            >
+              <span className="text-xs text-neutral-300 truncate flex-1 min-w-0">
+                {l.decoded?.title || '(untitled)'}
+              </span>
+              <button
+                type="button"
+                onClick={() => onUnmark(l.decoded?.dTag)}
+                className="text-[11px] px-2 py-0.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-100 hover:border-neutral-500 transition-colors flex-shrink-0"
+              >
+                Undo
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
