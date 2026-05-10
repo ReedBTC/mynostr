@@ -26,6 +26,7 @@ import { fetchProfiles } from '../../../../lib/primal.js'
 import UserSearch from '../../../../components/UserSearch.jsx'
 import ProductCard from '../selling/ProductCard.jsx'
 import ProductDrawer from '../selling/ProductDrawer.jsx'
+import WhatIsGammaPopover from '../compliance/WhatIsGammaPopover.jsx'
 
 const SEARCH_DEBOUNCE_MS = 300
 
@@ -424,7 +425,7 @@ export default function SearchTab({ sessionUser }) {
             </label>
             <label
               className="flex items-center gap-1.5 text-neutral-300 cursor-pointer hover:text-neutral-100 transition-colors"
-              title="Show only listings carrying a structured shipping option — Shopstr / Plebeian / etc. can quote checkout against them automatically."
+              title="Listings with a structured shipping option attached so apps like Shopstr / Plebeian can quote checkout. Seller-level Gamma setup (payment, DM relays) isn't checked at search time."
             >
               <input
                 type="checkbox"
@@ -432,8 +433,9 @@ export default function SearchTab({ sessionUser }) {
                 onChange={(e) => setCheckoutReady(e.target.checked)}
                 className="accent-purple-600"
               />
-              <span>NIP-99 checkout-ready</span>
+              <span>Gamma checkout-ready</span>
             </label>
+            <WhatIsGammaPopover />
             <label className="flex items-center gap-1.5 text-neutral-400 cursor-pointer hover:text-neutral-200 transition-colors">
               <input
                 type="checkbox"
