@@ -433,9 +433,8 @@ export default function SearchTab({ sessionUser }) {
                 onChange={(e) => setCheckoutReady(e.target.checked)}
                 className="accent-purple-600"
               />
-              <span>Gamma checkout-ready</span>
+              <span>Gamma checkout-ready<WhatIsGammaPopover /></span>
             </label>
-            <WhatIsGammaPopover />
             <label className="flex items-center gap-1.5 text-neutral-400 cursor-pointer hover:text-neutral-200 transition-colors">
               <input
                 type="checkbox"
