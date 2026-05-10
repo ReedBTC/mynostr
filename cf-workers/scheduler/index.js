@@ -409,18 +409,20 @@ async function handleCron(env) {
   const { keys } = await env.SCHEDULED_NOTES.list({ prefix: 'sched:' })
 
   // Track subrequests used this tick. Starts at 1 for the KV.list
-  // above. Each event costs 1 (KV.get) + relayCount (WS) + 1 (KV op)
-  // = 2 + relayCount. We stop the loop when the worst-case cost of
-  // the NEXT event (2 + MAX_RELAYS_PER_EVENT) would exceed the
-  // budget, so we never overrun the runtime cap mid-publish.
+  // above. Each event costs 2 (KV.get + cancel-recheck KV.get) +
+  // relayCount (WS) + 1 (KV op) = 3 + relayCount. We stop the loop
+  // when the worst-case cost of the NEXT event (3 + MAX_RELAYS_PER_EVENT)
+  // would exceed the budget, so we never overrun the runtime cap
+  // mid-publish.
   let subreqUsed = 1
-  const worstCasePerEvent = 2 + MAX_RELAYS_PER_EVENT
+  const worstCasePerEvent = 3 + MAX_RELAYS_PER_EVENT
 
   let published = 0
   let failedFinal = 0
   let stillPending = 0
   let skipped = 0
   let deferred = 0
+  let raceCancelled = 0
 
   for (const { name } of keys) {
     // Budget guard — if even the worst-case next event won't fit,
@@ -444,6 +446,21 @@ async function handleCron(env) {
     try { parsed = JSON.parse(raw) } catch { skipped++; continue }
 
     if (parsed.status === 'failed') { skipped++; continue }   // already gave up; UI will surface
+
+    // Cancel-vs-publish race recheck. KV reads are eventually consistent
+    // globally — both the KV.list at the top of this tick and the
+    // KV.get above can serve a value that was deleted up to ~60s ago.
+    // A second get immediately before publish narrows the unsafe
+    // window from "tens of seconds" to "the few ms between this
+    // recheck and the first WS send," which is enough to honour a
+    // cancel that landed meaningfully ahead of the tick.
+    const recheckRaw = await env.SCHEDULED_NOTES.get(name)
+    subreqUsed += 1
+    if (!recheckRaw) {
+      raceCancelled++
+      console.log(`[scheduler] cancel-race: ${parsed.event.id.slice(0, 12)}… deleted between list and publish, skipping`)
+      continue
+    }
 
     const relayCount = (parsed.relays || []).length
     const okCount = await publishToRelays(parsed.event, parsed.relays || [])
@@ -475,7 +492,7 @@ async function handleCron(env) {
     }
   }
 
-  console.log(`[scheduler] tick ${nowBucket}: published=${published} failedFinal=${failedFinal} stillPending=${stillPending} skipped=${skipped} deferred=${deferred} subreq=${subreqUsed}/${MAX_TICK_SUBREQ_BUDGET}`)
+  console.log(`[scheduler] tick ${nowBucket}: published=${published} failedFinal=${failedFinal} stillPending=${stillPending} skipped=${skipped} deferred=${deferred} raceCancelled=${raceCancelled} subreq=${subreqUsed}/${MAX_TICK_SUBREQ_BUDGET}`)
 }
 
 // ─── WS publish (one event → N relays) ───────────────────────────────────────
