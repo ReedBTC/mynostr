@@ -158,15 +158,14 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
           </p>
         </div>
 
-        {/* ── Mobile-first Login CTA ────────────────────────────────
-             Before the search bar on mobile only — the login button
-             buried in the Session CTA at the bottom of the page is the
-             #1 thing people want from the homepage on first visit, and
-             on phones it's below the fold (search + featured grid sit
-             above it). On desktop the original bottom CTA stays put;
-             the search bar is the natural primary action there. */}
-        {!sessionUser && isMobile && (
-          <div className="md:hidden">
+        {/* ── Login CTA ─────────────────────────────────────────────
+             Above the search bar on every viewport — it's the #1
+             thing first-time visitors want from the homepage and
+             burying it in the bottom Session CTA was hurting both
+             mobile and desktop conversion. The search bar sits right
+             below as the secondary "browse without an account" path. */}
+        {!sessionUser && (
+          <div>
             <button
               type="button"
               onClick={openLogin}
