@@ -6,13 +6,12 @@ import { uploadToBlossom } from '../../../lib/blossom.js'
 import { useImageUploadFlow } from '../../../components/ImageUploadConfirm.jsx'
 import { exportEpub } from '../../../lib/epub.js'
 import { getNDK, connectAndWait } from '../../../lib/ndk.js'
-import { useIsMobile } from '../../../hooks/useIsMobile.js'
 import EditorPreview from './EditorPreview.jsx'
+import ImportExportDisclosure from '../../../components/ImportExportDisclosure.jsx'
 
 const MAX_MD_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB — generous for long articles, guards against accidental large file drops
 
 export default function Editor({ content, onChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr, onOpenDraftDrawer, onToggleMetadata, metadataOpen, metadataButtonRef }) {
-  const fileInputRef = useRef(null)
   const imageInputRef = useRef(null)
   const [clearPending, setClearPending] = useState(false)
   const [epubExporting, setEpubExporting] = useState(false)
@@ -26,13 +25,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
   const [previewMode, setPreviewMode] = useState(false)
   const [coverBroken, setCoverBroken] = useState(false)
   const [fileError, setFileError] = useState('')
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuButtonRef = useRef(null)
-  const menuPanelRef  = useRef(null)
-  const [exportOpen, setExportOpen] = useState(false)
-  const exportButtonRef = useRef(null)
-  const exportPanelRef  = useRef(null)
-  const isMobile = useIsMobile()
   const contentRef = useRef(content)
   contentRef.current = content
   const uploadingRef = useRef(false)
@@ -53,32 +45,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
   // Re-show the cover image when the URL changes (load article → swap cover).
   useEffect(() => { setCoverBroken(false) }, [metadata?.image])
 
-  // Mobile overflow menu: close when the viewport widens back to desktop or
-  // when the user clicks outside the trigger/panel.
-  useEffect(() => { if (!isMobile) setMenuOpen(false) }, [isMobile])
-  useEffect(() => {
-    if (!menuOpen) return
-    function handleClick(e) {
-      if (menuButtonRef.current?.contains(e.target)) return
-      if (menuPanelRef.current?.contains(e.target)) return
-      setMenuOpen(false)
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [menuOpen])
-
-  // Desktop Export dropdown — same outside-click pattern as the mobile menu.
-  useEffect(() => {
-    if (!exportOpen) return
-    function handleClick(e) {
-      if (exportButtonRef.current?.contains(e.target)) return
-      if (exportPanelRef.current?.contains(e.target)) return
-      setExportOpen(false)
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [exportOpen])
-
   function handleClearClick() {
     if (!clearPending) { setClearPending(true); return }
     setClearPending(false)
@@ -89,9 +55,7 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
   const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0
   const readTime = Math.ceil(wordCount / 200)
 
-  function handleFileUpload(e) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
+  function handleFileUpload(file) {
     if (!file) return
     if (file.size > MAX_MD_UPLOAD_BYTES) {
       setFileError('File too large — 5 MB max.')
@@ -293,169 +257,39 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
       {/* Toolbar — matches editor column width so the Metadata drawer can sit
           beside it without covering buttons. */}
       <div className="border-b border-neutral-800 flex-shrink-0 relative">
-        <div className="w-full max-w-4xl mx-auto px-4 pt-4 pb-2 flex items-center gap-1">
-          {isMobile ? (
-            <>
+        <div className="w-full max-w-4xl mx-auto px-4 pt-4 pb-2 flex items-center gap-1 flex-wrap">
+          <button
+            onClick={onOpenDraftDrawer}
+            disabled={readOnly || !onOpenDraftDrawer}
+            className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+              readOnly || !onOpenDraftDrawer
+                ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
+                : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
+            }`}
+          >
+            My Drafts
+          </button>
+          {(() => {
+            const clearEnabled = !readOnly && !!(content || metadata?.title)
+            return (
               <button
-                ref={menuButtonRef}
-                onClick={() => setMenuOpen(o => !o)}
-                aria-label="Toolbar actions"
-                aria-expanded={menuOpen}
-                className="p-1.5 rounded text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-colors"
-              >
-                <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <path d="M2 4h12M2 8h12M2 12h12" />
-                </svg>
-              </button>
-              {(() => {
-                const clearEnabled = !readOnly && !!(content || metadata?.title)
-                if (!clearEnabled) return null
-                return (
-                  <button
-                    onClick={handleClearClick}
-                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      clearPending
-                        ? 'border-red-800 text-red-400 hover:bg-red-950'
-                        : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                    }`}
-                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
-                  >
-                    {clearPending ? 'Sure?' : 'Clear'}
-                  </button>
-                )
-              })()}
-            </>
-          ) : (
-            <>
-              {/* Order: Upload → naddr → Drafts → Clear → Export → Write/Preview → Publishing Details */}
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={readOnly}
+                onClick={handleClearClick}
+                disabled={!clearEnabled}
                 className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                  readOnly
+                  !clearEnabled
                     ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
+                    : clearPending
+                      ? 'border-red-800 text-red-400 hover:bg-red-950'
+                      : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
                 }`}
+                aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
               >
-                Upload .md
+                {clearPending ? 'Sure?' : 'Clear'}
               </button>
-              {fileError && (
-                <span className="text-xs text-red-400 ml-1">{fileError}</span>
-              )}
-              <form
-                onSubmit={e => { e.preventDefault(); handleNaddrLoad() }}
-                className="flex items-center gap-1"
-              >
-                <input
-                  type="text"
-                  value={naddrInput}
-                  onChange={e => { setNaddrInput(e.target.value); if (naddrError) setNaddrError('') }}
-                  placeholder="Paste article naddr…"
-                  disabled={readOnly || naddrLoading}
-                  className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-500 w-36 disabled:opacity-40"
-                />
-                <button
-                  type="submit"
-                  disabled={readOnly || naddrLoading || !naddrInput.trim()}
-                  className="px-2.5 py-1 text-xs rounded border border-neutral-700 text-neutral-500 hover:text-neutral-300 hover:border-neutral-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {naddrLoading ? '…' : 'Load'}
-                </button>
-                {naddrError && (
-                  <span className="text-xs text-red-400 ml-1">{naddrError}</span>
-                )}
-              </form>
-              <button
-                onClick={onOpenDraftDrawer}
-                disabled={readOnly || !onOpenDraftDrawer}
-                className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                  readOnly || !onOpenDraftDrawer
-                    ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
-                }`}
-              >
-                My Drafts
-              </button>
-              {(() => {
-                const clearEnabled = !readOnly && !!(content || metadata?.title)
-                return (
-                  <button
-                    onClick={handleClearClick}
-                    disabled={!clearEnabled}
-                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      !clearEnabled
-                        ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                        : clearPending
-                          ? 'border-red-800 text-red-400 hover:bg-red-950'
-                          : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                    }`}
-                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
-                  >
-                    {clearPending ? 'Sure?' : 'Clear'}
-                  </button>
-                )
-              })()}
-              {(() => {
-                const exportEnabled = !!(content || metadata?.title)
-                return (
-                  <div className="relative">
-                    <button
-                      ref={exportButtonRef}
-                      onClick={() => setExportOpen(o => !o)}
-                      disabled={!exportEnabled}
-                      aria-haspopup="menu"
-                      aria-expanded={exportOpen}
-                      className={`px-2.5 py-1 text-xs rounded border transition-colors flex items-center gap-1 ${
-                        !exportEnabled
-                          ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                          : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
-                      }`}
-                    >
-                      Export <span className="text-[10px] leading-none">▾</span>
-                    </button>
-                    {exportOpen && exportEnabled && (
-                      <div
-                        ref={exportPanelRef}
-                        role="menu"
-                        className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 min-w-[160px] py-1"
-                      >
-                        <button
-                          role="menuitem"
-                          onClick={() => { setExportOpen(false); handleExport() }}
-                          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
-                        >
-                          Markdown (.md)
-                        </button>
-                        <button
-                          role="menuitem"
-                          onClick={() => { setExportOpen(false); handleEpubExport() }}
-                          disabled={epubExporting}
-                          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          {epubExporting ? 'Exporting…' : 'EPUB (.epub)'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
-              {epubError && (
-                <span className="text-xs text-red-400 ml-1">{epubError}</span>
-              )}
-            </>
-          )}
+            )
+          })()}
 
-          {/* Hidden file input — shared between desktop inline button and mobile menu item */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".md,.markdown,text/markdown,text/plain"
-            onChange={handleFileUpload}
-            className="hidden"
-            aria-hidden="true"
-          />
-
-          {/* Right: Write/Preview toggle + Metadata (always visible on both breakpoints) */}
+          {/* Right: Write/Preview toggle + Metadata */}
           <div className="ml-auto flex items-center gap-1">
             <div className="flex items-center bg-neutral-900 border border-neutral-800 rounded p-0.5">
               {toggleBtn(!previewMode, 'Write',   () => setPreviewMode(false))}
@@ -479,85 +313,39 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
           </div>
         </div>
 
-        {/* Mobile: error banner for actions that fire after the menu closes */}
-        {isMobile && (fileError || epubError) && (
-          <div className="w-full px-4 pb-2 text-xs text-red-400">
-            {fileError || epubError}
-          </div>
-        )}
-
-        {/* Mobile overflow menu — contains every secondary action collapsed from the top bar */}
-        {isMobile && menuOpen && (
-          <div
-            ref={menuPanelRef}
-            className="absolute top-full left-4 z-30 mt-1 bg-neutral-900 border border-neutral-700 rounded shadow-xl min-w-[240px] py-1"
-          >
-            <button
-              onClick={() => { setMenuOpen(false); fileInputRef.current?.click() }}
-              disabled={readOnly}
-              className={`w-full text-left px-3 py-2.5 text-xs transition-colors ${
-                readOnly
-                  ? 'text-neutral-700 cursor-not-allowed'
-                  : 'text-neutral-300 hover:bg-neutral-800'
-              }`}
-            >
-              Upload .md
-            </button>
-            <button
-              onClick={() => { setMenuOpen(false); onOpenDraftDrawer?.() }}
-              disabled={readOnly || !onOpenDraftDrawer}
-              className={`w-full text-left px-3 py-2.5 text-xs transition-colors ${
-                readOnly || !onOpenDraftDrawer
-                  ? 'text-neutral-700 cursor-not-allowed'
-                  : 'text-neutral-300 hover:bg-neutral-800'
-              }`}
-            >
-              My Drafts
-            </button>
-            <div className="border-t border-neutral-800 my-1" />
-            <form
-              onSubmit={e => { e.preventDefault(); handleNaddrLoad() }}
-              className="flex items-center gap-1 px-3 py-2"
-            >
-              <input
-                type="text"
-                value={naddrInput}
-                onChange={e => { setNaddrInput(e.target.value); if (naddrError) setNaddrError('') }}
-                placeholder="Paste naddr…"
-                disabled={readOnly || naddrLoading}
-                className="flex-1 min-w-0 bg-neutral-950 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-500 disabled:opacity-40"
+        {/* Import / Export — collapsed by default. Frames the .md upload,
+            paste-naddr loader, and .md/.epub export as opt-in actions
+            instead of leaving the paste input inline (testers read the
+            bare field as a required draft field). */}
+        <div className="w-full max-w-4xl mx-auto px-4 pb-3">
+          {(() => {
+            const exportEnabled = !!(content || metadata?.title)
+            return (
+              <ImportExportDisclosure
+                acceptedFileTypes=".md,.markdown,text/markdown,text/plain"
+                onImportFile={(file) => handleFileUpload(file)}
+                importLabel="Upload .md"
+                importTitle="Load an article from a Markdown file"
+                importError={fileError}
+                pasteIdValue={naddrInput}
+                onPasteIdChange={(v) => { setNaddrInput(v); if (naddrError) setNaddrError('') }}
+                onLoadId={handleNaddrLoad}
+                pasteIdPlaceholder="Paste article naddr…"
+                loadLoading={naddrLoading}
+                loadError={naddrError}
+                exportLabel="Export"
+                exportDisabled={!exportEnabled}
+                exportMenuItems={[
+                  { label: 'Markdown (.md)', onClick: handleExport },
+                  { label: epubExporting ? 'Exporting…' : 'EPUB (.epub)', onClick: handleEpubExport, disabled: epubExporting },
+                ]}
               />
-              <button
-                type="submit"
-                disabled={readOnly || naddrLoading || !naddrInput.trim()}
-                className="px-2.5 py-1 text-xs rounded border border-neutral-700 text-neutral-500 hover:text-neutral-300 hover:border-neutral-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {naddrLoading ? '…' : 'Load'}
-              </button>
-            </form>
-            {naddrError && (
-              <div className="px-3 pb-2 text-xs text-red-400">{naddrError}</div>
-            )}
-            {(content || metadata?.title) && (
-              <>
-                <div className="border-t border-neutral-800 my-1" />
-                <button
-                  onClick={() => { setMenuOpen(false); handleExport() }}
-                  className="w-full text-left px-3 py-2.5 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors"
-                >
-                  Export .md
-                </button>
-                <button
-                  onClick={() => { setMenuOpen(false); handleEpubExport() }}
-                  disabled={epubExporting}
-                  className="w-full text-left px-3 py-2.5 text-xs text-neutral-300 hover:bg-neutral-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {epubExporting ? 'Exporting…' : 'Export .epub'}
-                </button>
-              </>
-            )}
-          </div>
-        )}
+              )
+          })()}
+          {epubError && (
+            <div className="mt-1.5 text-xs text-red-400">{epubError}</div>
+          )}
+        </div>
       </div>
 
       {/* Editor / Preview body — centered column, swaps on toggle */}
