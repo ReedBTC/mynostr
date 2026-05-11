@@ -300,44 +300,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
             </>
           ) : (
             <>
-              {/* Order: Upload → naddr → Drafts → Clear → Export → Write/Preview → Publishing Details */}
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={readOnly}
-                className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                  readOnly
-                    ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
-                }`}
-              >
-                Upload .md
-              </button>
-              {fileError && (
-                <span className="text-xs text-red-400 ml-1">{fileError}</span>
-              )}
-              <form
-                onSubmit={e => { e.preventDefault(); handleNaddrLoad() }}
-                className="flex items-center gap-1"
-              >
-                <input
-                  type="text"
-                  value={naddrInput}
-                  onChange={e => { setNaddrInput(e.target.value); if (naddrError) setNaddrError('') }}
-                  placeholder="Paste article naddr…"
-                  disabled={readOnly || naddrLoading}
-                  className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-500 w-36 disabled:opacity-40"
-                />
-                <button
-                  type="submit"
-                  disabled={readOnly || naddrLoading || !naddrInput.trim()}
-                  className="px-2.5 py-1 text-xs rounded border border-neutral-700 text-neutral-500 hover:text-neutral-300 hover:border-neutral-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {naddrLoading ? '…' : 'Load'}
-                </button>
-                {naddrError && (
-                  <span className="text-xs text-red-400 ml-1">{naddrError}</span>
-                )}
-              </form>
               <button
                 onClick={onOpenDraftDrawer}
                 disabled={readOnly || !onOpenDraftDrawer}
@@ -368,53 +330,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
                   </button>
                 )
               })()}
-              {(() => {
-                const exportEnabled = !!(content || metadata?.title)
-                return (
-                  <div className="relative">
-                    <button
-                      ref={exportButtonRef}
-                      onClick={() => setExportOpen(o => !o)}
-                      disabled={!exportEnabled}
-                      aria-haspopup="menu"
-                      aria-expanded={exportOpen}
-                      className={`px-2.5 py-1 text-xs rounded border transition-colors flex items-center gap-1 ${
-                        !exportEnabled
-                          ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                          : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
-                      }`}
-                    >
-                      Export <span className="text-[10px] leading-none">▾</span>
-                    </button>
-                    {exportOpen && exportEnabled && (
-                      <div
-                        ref={exportPanelRef}
-                        role="menu"
-                        className="absolute left-0 top-full mt-1 bg-neutral-800 border border-neutral-700 rounded shadow-xl z-30 min-w-[160px] py-1"
-                      >
-                        <button
-                          role="menuitem"
-                          onClick={() => { setExportOpen(false); handleExport() }}
-                          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors"
-                        >
-                          Markdown (.md)
-                        </button>
-                        <button
-                          role="menuitem"
-                          onClick={() => { setExportOpen(false); handleEpubExport() }}
-                          disabled={epubExporting}
-                          className="w-full text-left px-3 py-2 text-xs text-neutral-300 hover:bg-neutral-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                        >
-                          {epubExporting ? 'Exporting…' : 'EPUB (.epub)'}
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
-              {epubError && (
-                <span className="text-xs text-red-400 ml-1">{epubError}</span>
-              )}
             </>
           )}
 
