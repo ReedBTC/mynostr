@@ -8,6 +8,7 @@ import { exportEpub } from '../../../lib/epub.js'
 import { getNDK, connectAndWait } from '../../../lib/ndk.js'
 import { useIsMobile } from '../../../hooks/useIsMobile.js'
 import EditorPreview from './EditorPreview.jsx'
+import ImportExportDisclosure from '../../../components/ImportExportDisclosure.jsx'
 
 const MAX_MD_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB — generous for long articles, guards against accidental large file drops
 
@@ -558,6 +559,40 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
             )}
           </div>
         )}
+
+        {/* BISECT 5a — disclosure added below the existing toolbar
+            as a pure-addition test. If this 500s in production, the
+            trigger is something about rendering the disclosure inside
+            Editor.jsx (likely the exportMenuItems dropdown variant). */}
+        <div className="w-full max-w-4xl mx-auto px-4 pb-3">
+          {(() => {
+            const exportEnabled = !!(content || metadata?.title)
+            return (
+              <ImportExportDisclosure
+                acceptedFileTypes=".md,.markdown,text/markdown,text/plain"
+                onImportFile={(file) => {
+                  // Adapter: existing handler still expects an event.
+                  handleFileUpload({ target: { files: [file], value: '' } })
+                }}
+                importLabel="Upload .md"
+                importTitle="Load an article from a Markdown file"
+                importError={fileError}
+                pasteIdValue={naddrInput}
+                onPasteIdChange={(v) => { setNaddrInput(v); if (naddrError) setNaddrError('') }}
+                onLoadId={handleNaddrLoad}
+                pasteIdPlaceholder="Paste article naddr…"
+                loadLoading={naddrLoading}
+                loadError={naddrError}
+                exportLabel="Export"
+                exportDisabled={!exportEnabled}
+                exportMenuItems={[
+                  { label: 'Markdown (.md)', onClick: handleExport },
+                  { label: epubExporting ? 'Exporting…' : 'EPUB (.epub)', onClick: handleEpubExport, disabled: epubExporting },
+                ]}
+              />
+            )
+          })()}
+        </div>
       </div>
 
       {/* Editor / Preview body — centered column, swaps on toggle */}
