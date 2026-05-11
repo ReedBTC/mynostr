@@ -11,7 +11,6 @@ import ShippingTab from './ShippingTab.jsx'
 import AdvancedSection from './AdvancedSection.jsx'
 import LinkExistingListingModal from './LinkExistingListingModal.jsx'
 import PrePublishRelayCheckModal from './PrePublishRelayCheckModal.jsx'
-import ImportExportDisclosure from '../../../../components/ImportExportDisclosure.jsx'
 
 const PLEBEIAN_RELAY_URL = 'wss://relay.plebeian.market'
 
@@ -56,6 +55,7 @@ export default function SellComposer({
   // ── Top-row action state ───────────────────────────────────────────
   // Single-file import (replaces current draft), naddr/nevent loader,
   // and single-file export. Mirror the Articles Editor toolbar shape.
+  const importInputRef = useRef(null)
   const [importError,    setImportError]    = useState('')
   const [importLoading,  setImportLoading]  = useState(false)
   const [naddrInput,     setNaddrInput]     = useState('')
@@ -301,41 +301,91 @@ export default function SellComposer({
   return (
     <div className="flex flex-col h-full overflow-hidden">
 
-      {/* Action row — Drafts mobile chip + Import/Export disclosure.
-          Bulk multi-file ops live in the drafts tray. */}
+      {/* Action row — per-current-draft import / naddr load / export.
+          Tabs were removed in favor of a single stream below; this row
+          retains the Drafts mobile chip + import/export controls. */}
       <div className={`flex-shrink-0 px-4 pt-3 pb-4 ${published ? 'hidden' : ''}`}>
-        <div className="max-w-2xl mx-auto space-y-2">
+        <div className="max-w-2xl mx-auto flex items-center justify-end gap-2 flex-wrap">
 
-          {onOpenMobileDrafts && (
-            <div className="md:hidden">
+          {/* Per-current-draft actions: import / naddr load / export.
+              On mobile, the Drafts chip lives here (top row, always
+              visible) instead of the footer — quicker access to the
+              tray without scrolling all the way down. Hidden on md+
+              since the desktop tray is permanently open on the left. */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+
+            {onOpenMobileDrafts && (
               <button
                 onClick={onOpenMobileDrafts}
-                className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+                className="md:hidden text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
               >
                 Drafts ({draftsCount})
               </button>
-            </div>
-          )}
+            )}
 
-          <ImportExportDisclosure
-            acceptedFileTypes=".json,application/json"
-            onImportFile={handleImportFile}
-            importLabel="Upload JSON"
-            importTitle="Import a kind 30402 JSON file into the current draft"
-            importLoading={importLoading}
-            importError={importError}
-            pasteIdValue={naddrInput}
-            onPasteIdChange={(v) => { setNaddrInput(v); if (naddrError) setNaddrError('') }}
-            onLoadId={handleNaddrLoad}
-            pasteIdPlaceholder="naddr1… / nevent1…"
-            loadLoading={naddrLoading}
-            loadError={naddrError}
-            exportLabel="Export JSON"
-            onExport={onSingleExport}
-            exportDisabled={!form.title?.trim()}
-            exportTitle="Export current draft as JSON"
-          />
+            {/* Single JSON import — replaces current draft's snapshot.
+                Multi-file batch import lives in the drafts tray. */}
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                e.target.value = ''
+                if (f) handleImportFile(f)
+              }}
+            />
+            <button
+              onClick={() => importInputRef.current?.click()}
+              disabled={importLoading}
+              title="Import a kind 30402 JSON file into the current draft"
+              className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40"
+            >
+              {importLoading ? '…' : 'Import'}
+            </button>
+
+            {/* Load from Nostr — naddr / nevent into current draft */}
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleNaddrLoad() }}
+              className="flex items-center gap-1"
+            >
+              <input
+                type="text"
+                value={naddrInput}
+                onChange={(e) => { setNaddrInput(e.target.value); if (naddrError) setNaddrError('') }}
+                placeholder="naddr1… / nevent1…"
+                disabled={naddrLoading}
+                className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-500 w-36 disabled:opacity-40"
+              />
+              <button
+                type="submit"
+                disabled={naddrLoading || !naddrInput.trim()}
+                className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40"
+              >
+                {naddrLoading ? '…' : 'Load'}
+              </button>
+            </form>
+
+            {/* Single JSON export — current draft only. Bulk export lives in the tray. */}
+            <button
+              onClick={onSingleExport}
+              disabled={!form.title?.trim()}
+              title="Export current draft as JSON"
+              className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40"
+            >
+              Export
+            </button>
+          </div>
         </div>
+
+        {/* Inline error row — lives under the actions so the row above
+            stays clean when there's nothing to report. */}
+        {(importError || naddrError) && (
+          <div className="max-w-2xl mx-auto mt-1.5 text-xs text-red-400">
+            {importError || naddrError}
+          </div>
+        )}
       </div>
 
       {/* Body — scrollable. When the draft is published, the body

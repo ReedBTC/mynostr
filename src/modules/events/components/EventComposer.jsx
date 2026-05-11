@@ -27,7 +27,6 @@ import {
 import TimePicker from './TimePicker.jsx'
 import LocationAutocomplete from './LocationAutocomplete.jsx'
 import LinkExistingEventModal from './LinkExistingEventModal.jsx'
-import ImportExportDisclosure from '../../../components/ImportExportDisclosure.jsx'
 
 // Match the cap used by CollectionEditModal and the Sell composer's
 // photo upload. Blossom servers may also enforce; the client check is
@@ -47,6 +46,7 @@ export default function EventComposer({
   draftsCount = 1,           // for the mobile "Drafts (N)" chip
 }) {
   const fileInputRef = useRef(null)
+  const importInputRef = useRef(null)
 
   // ── Top-row action state (per-current-draft single ops) ───────────
   const [importError,    setImportError]    = useState('')
@@ -197,41 +197,87 @@ export default function EventComposer({
       {/* ── Action row ── Hidden in published-success state since the
           panel takes over the body. */}
       <div className={`flex-shrink-0 px-4 pt-3 pb-4 ${published ? 'hidden' : ''}`}>
-        <div className="max-w-2xl mx-auto space-y-2">
+        <div className="max-w-2xl mx-auto flex items-center justify-between gap-2 flex-wrap">
 
-          {/* Mobile drafts chip. Desktop tray is permanently visible,
-              so this stays mobile-only. */}
-          {onOpenMobileDrafts && (
-            <div className="md:hidden">
+          {/* Mobile drafts chip (left). Desktop tray is permanently
+              visible, so this stays mobile-only. */}
+          <div className="flex items-center">
+            {onOpenMobileDrafts && (
               <button
                 type="button"
                 onClick={onOpenMobileDrafts}
-                className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
+                className="md:hidden text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-500 transition-colors"
               >
                 Drafts ({draftsCount})
               </button>
-            </div>
-          )}
+            )}
+          </div>
 
-          <ImportExportDisclosure
-            acceptedFileTypes=".json,application/json"
-            onImportFile={handleImportFile}
-            importLabel="Upload JSON"
-            importTitle="Import a kind 31922/31923 JSON file into the current draft"
-            importLoading={importLoading}
-            importError={importError}
-            pasteIdValue={naddrInput}
-            onPasteIdChange={(v) => { setNaddrInput(v); if (naddrError) setNaddrError('') }}
-            onLoadId={handleNaddrLoad}
-            pasteIdPlaceholder="naddr1… / nevent1…"
-            loadLoading={naddrLoading}
-            loadError={naddrError}
-            exportLabel="Export JSON"
-            onExport={onSingleExport}
-            exportDisabled={!form.title?.trim() || !form.startDate}
-            exportTitle="Export current event as JSON"
-          />
+          {/* Single-draft actions (right). */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                e.target.value = ''
+                if (f) handleImportFile(f)
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => importInputRef.current?.click()}
+              disabled={importLoading}
+              title="Import a kind 31922/31923 JSON file into the current draft"
+              className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40"
+            >
+              {importLoading ? '…' : 'Import'}
+            </button>
+
+            <form
+              onSubmit={(e) => { e.preventDefault(); handleNaddrLoad() }}
+              className="flex items-center gap-1"
+            >
+              <input
+                type="text"
+                value={naddrInput}
+                onChange={(e) => { setNaddrInput(e.target.value); if (naddrError) setNaddrError('') }}
+                placeholder="naddr1… / nevent1…"
+                disabled={naddrLoading}
+                autoComplete="off"
+                data-lpignore="true"
+                data-1p-ignore="true"
+                data-form-type="other"
+                className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-neutral-500 w-36 disabled:opacity-40"
+              />
+              <button
+                type="submit"
+                disabled={naddrLoading || !naddrInput.trim()}
+                className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40"
+              >
+                {naddrLoading ? '…' : 'Load'}
+              </button>
+            </form>
+
+            <button
+              type="button"
+              onClick={onSingleExport}
+              disabled={!form.title?.trim() || !form.startDate}
+              title="Export current event as JSON"
+              className="text-xs px-2.5 py-1.5 rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors disabled:opacity-40"
+            >
+              Export
+            </button>
+          </div>
         </div>
+
+        {(importError || naddrError) && (
+          <div className="max-w-2xl mx-auto mt-1.5 text-xs text-red-400">
+            {importError || naddrError}
+          </div>
+        )}
       </div>
 
       {/* ── Body ── */}
