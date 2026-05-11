@@ -36,7 +36,7 @@ add a bullet here so the regression surfaces next time.
       within 5 sec; sidebar shows your pfp.
 - [ ] Refresh — session persists, no re-sign-in needed.
 - [ ] Paste another user's npub into homepage search → their
-      `/profile` loads.
+      `/notes` loads.
 
 ### Composer state without publishing (~5 min)
 
