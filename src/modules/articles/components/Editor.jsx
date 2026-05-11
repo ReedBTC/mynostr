@@ -6,14 +6,12 @@ import { uploadToBlossom } from '../../../lib/blossom.js'
 import { useImageUploadFlow } from '../../../components/ImageUploadConfirm.jsx'
 import { exportEpub } from '../../../lib/epub.js'
 import { getNDK, connectAndWait } from '../../../lib/ndk.js'
-import { useIsMobile } from '../../../hooks/useIsMobile.js'
 import EditorPreview from './EditorPreview.jsx'
 import ImportExportDisclosure from '../../../components/ImportExportDisclosure.jsx'
 
 const MAX_MD_UPLOAD_BYTES = 5 * 1024 * 1024 // 5 MB — generous for long articles, guards against accidental large file drops
 
 export default function Editor({ content, onChange, metadata, source, onClear, onFileLoad, readOnly, user, naddr, onOpenDraftDrawer, onToggleMetadata, metadataOpen, metadataButtonRef }) {
-  const fileInputRef = useRef(null)
   const imageInputRef = useRef(null)
   const [clearPending, setClearPending] = useState(false)
   const [epubExporting, setEpubExporting] = useState(false)
@@ -27,10 +25,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
   const [previewMode, setPreviewMode] = useState(false)
   const [coverBroken, setCoverBroken] = useState(false)
   const [fileError, setFileError] = useState('')
-  const [exportOpen, setExportOpen] = useState(false)
-  const exportButtonRef = useRef(null)
-  const exportPanelRef  = useRef(null)
-  const isMobile = useIsMobile()
   const contentRef = useRef(content)
   contentRef.current = content
   const uploadingRef = useRef(false)
@@ -50,18 +44,6 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
 
   // Re-show the cover image when the URL changes (load article → swap cover).
   useEffect(() => { setCoverBroken(false) }, [metadata?.image])
-
-  // Desktop Export dropdown — outside-click handler.
-  useEffect(() => {
-    if (!exportOpen) return
-    function handleClick(e) {
-      if (exportButtonRef.current?.contains(e.target)) return
-      if (exportPanelRef.current?.contains(e.target)) return
-      setExportOpen(false)
-    }
-    document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [exportOpen])
 
   function handleClearClick() {
     if (!clearPending) { setClearPending(true); return }
@@ -278,70 +260,36 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
           beside it without covering buttons. */}
       <div className="border-b border-neutral-800 flex-shrink-0 relative">
         <div className="w-full max-w-4xl mx-auto px-4 pt-4 pb-2 flex items-center gap-1">
-          {false ? (
-            <>
-              {(() => {
-                const clearEnabled = !readOnly && !!(content || metadata?.title)
-                if (!clearEnabled) return null
-                return (
-                  <button
-                    onClick={handleClearClick}
-                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      clearPending
-                        ? 'border-red-800 text-red-400 hover:bg-red-950'
-                        : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                    }`}
-                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
-                  >
-                    {clearPending ? 'Sure?' : 'Clear'}
-                  </button>
-                )
-              })()}
-            </>
-          ) : (
-            <>
+          <button
+            onClick={onOpenDraftDrawer}
+            disabled={readOnly || !onOpenDraftDrawer}
+            className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+              readOnly || !onOpenDraftDrawer
+                ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
+                : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
+            }`}
+          >
+            My Drafts
+          </button>
+          {(() => {
+            const clearEnabled = !readOnly && !!(content || metadata?.title)
+            return (
               <button
-                onClick={onOpenDraftDrawer}
-                disabled={readOnly || !onOpenDraftDrawer}
+                onClick={handleClearClick}
+                disabled={!clearEnabled}
                 className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                  readOnly || !onOpenDraftDrawer
+                  !clearEnabled
                     ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
+                    : clearPending
+                      ? 'border-red-800 text-red-400 hover:bg-red-950'
+                      : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
                 }`}
+                aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
               >
-                My Drafts
+                {clearPending ? 'Sure?' : 'Clear'}
               </button>
-              {(() => {
-                const clearEnabled = !readOnly && !!(content || metadata?.title)
-                return (
-                  <button
-                    onClick={handleClearClick}
-                    disabled={!clearEnabled}
-                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      !clearEnabled
-                        ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                        : clearPending
-                          ? 'border-red-800 text-red-400 hover:bg-red-950'
-                          : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                    }`}
-                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
-                  >
-                    {clearPending ? 'Sure?' : 'Clear'}
-                  </button>
-                )
-              })()}
-            </>
-          )}
-
-          {/* Hidden file input — shared between desktop inline button and mobile menu item */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".md,.markdown,text/markdown,text/plain"
-            onChange={handleFileUpload}
-            className="hidden"
-            aria-hidden="true"
-          />
+            )
+          })()}
 
           {/* Right: Write/Preview toggle + Metadata (always visible on both breakpoints) */}
           <div className="ml-auto flex items-center gap-1">
