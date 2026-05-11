@@ -15,6 +15,7 @@ import MentionAutocomplete from './MentionAutocomplete.jsx'
 import EditorMirror from './EditorMirror.jsx'
 import { EmbeddedNoteCard } from './EntityCard.jsx'
 import RelayOverrideSection from './RelayOverrideSection.jsx'
+import ImportExportDisclosure from '../../../components/ImportExportDisclosure.jsx'
 import { nip19 } from 'nostr-tools'
 import { extractTags, mergeTags, validateKind1Event } from '../../../lib/noteParser.js'
 import { buildDraftSnapshotFromEvent } from '../../../lib/draftFromEvent.js'
@@ -82,7 +83,6 @@ export default function NoteComposer({
 }) {
   const readOnly = !!user?.readOnly
   const isMobile = useIsMobile()
-  const fileRef = useRef(null)
   const [idCopied, setIdCopied] = useState(false)
 
   const initial = draft?.snapshot || {}
@@ -126,7 +126,7 @@ export default function NoteComposer({
   const [mentionActive, setMentionActive] = useState(false)
   const [importLoading, setImportLoading] = useState(false)
   const [importError, setImportError] = useState('')
-  const importInputRef = useRef(null)
+  const [noteIdInput, setNoteIdInput] = useState('')
   const [clearPending, setClearPending] = useState(false)
   const clearTimerRef = useRef(null)
 
@@ -295,24 +295,18 @@ export default function NoteComposer({
       // nevent. Saves the user from re-typing it when they want to
       // refetch the latest version, share the link, or otherwise act
       // on the same event after importing.
-      if (event?.id && importInputRef.current) {
+      if (event?.id) {
         try {
-          importInputRef.current.value = nip19.neventEncode({
+          setNoteIdInput(nip19.neventEncode({
             id: event.id,
             author: event.pubkey || undefined,
-          })
+          }))
         } catch {}
       }
     } catch (e) {
       setUploadError(`Invalid JSON: ${e.message}`)
     }
   }, [loadEventIntoEditor])
-
-  const handleFileSelect = useCallback((e) => {
-    const file = e.target.files?.[0]
-    if (file) handleFileUpload(file)
-    e.target.value = ''
-  }, [handleFileUpload])
 
   const handleClear = useCallback(() => {
     setContent('')
@@ -324,6 +318,7 @@ export default function NoteComposer({
     setShowRelayOptions(false)
     setPreviewMode(false)
     setImportError('')
+    setNoteIdInput('')
     setClearPending(false)
     setReplyToInput('')
     setQuoteInput('')
@@ -404,7 +399,7 @@ export default function NoteComposer({
         content: event.content,
         tags: event.tags || [],
       })
-      if (importInputRef.current) importInputRef.current.value = ''
+      setNoteIdInput('')
     } catch (e) {
       setImportError(e.message || 'Failed to import note')
     } finally {
@@ -1187,63 +1182,26 @@ export default function NoteComposer({
           </button>
         )}
 
-        {/* Hidden file input */}
-        <input
-          ref={fileRef}
-          type="file"
-          accept=".json,application/json"
-          className="hidden"
-          onChange={handleFileSelect}
-        />
-
-        {/* Action row — source controls + inline search-by-ID field on the
-            left, Clear pinned to the right. */}
-        <div className="flex items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <button
-              onClick={() => fileRef.current?.click()}
-              className="flex items-center gap-1.5 px-2.5 py-2 sm:py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors text-xs text-neutral-400 shrink-0"
-              title="Load a kind 1 event from a JSON file"
-              aria-label="Load a kind 1 event from a JSON file"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 sm:w-3.5 sm:h-3.5">
-                <path d="M9.25 13.25a.75.75 0 0 0 1.5 0V4.636l2.955 3.129a.75.75 0 0 0 1.09-1.03l-4.25-4.5a.75.75 0 0 0-1.09 0l-4.25 4.5a.75.75 0 1 0 1.09 1.03L9.25 4.636v8.614Z" />
-                <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
-                </svg>
-              <span className="hidden sm:inline">JSON</span>
-            </button>
-            <div className="relative w-28 shrink">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none">
-                <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM2 9a7 7 0 1 1 12.452 4.391l3.328 3.329a.75.75 0 1 1-1.06 1.06l-3.329-3.328A7 7 0 0 1 2 9Z" clipRule="evenodd" />
-              </svg>
-              <input
-                ref={importInputRef}
-                type="text"
-                placeholder="note ID"
-                className="w-full bg-neutral-900 border border-neutral-700 rounded-lg pl-8 pr-2 py-2 sm:py-1 text-xs text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:border-purple-600 disabled:opacity-50"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    handleImportById(e.target.value)
-                  }
-                }}
-                disabled={importLoading}
-                aria-label="Search for a note by ID"
-              />
-            </div>
-            <button
-              onClick={handleExportJson}
-              disabled={!content.trim()}
-              className="flex items-center gap-1.5 px-2.5 py-2 sm:py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 rounded-lg transition-colors text-xs text-neutral-400 disabled:opacity-30 disabled:pointer-events-none shrink-0"
-              title="Export note as JSON file"
-              aria-label="Export note as JSON file"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 sm:w-3.5 sm:h-3.5">
-                <path d="M10.75 2.75a.75.75 0 0 0-1.5 0v8.614L6.295 8.235a.75.75 0 1 0-1.09 1.03l4.25 4.5a.75.75 0 0 0 1.09 0l4.25-4.5a.75.75 0 0 0-1.09-1.03l-2.955 3.129V2.75Z" />
-                <path d="M3.5 12.75a.75.75 0 0 0-1.5 0v2.5A2.75 2.75 0 0 0 4.75 18h10.5A2.75 2.75 0 0 0 18 15.25v-2.5a.75.75 0 0 0-1.5 0v2.5c0 .69-.56 1.25-1.25 1.25H4.75c-.69 0-1.25-.56-1.25-1.25v-2.5Z" />
-              </svg>
-              <span className="hidden sm:inline">Export</span>
-            </button>
+        {/* Action row — Import/Export disclosure on the left, Clear
+            pinned to the right. */}
+        <div className="flex items-start justify-between gap-2 mb-3">
+          <div className="flex-1 min-w-0">
+            <ImportExportDisclosure
+              acceptedFileTypes=".json,application/json"
+              onImportFile={(file) => handleFileUpload(file)}
+              importLabel="Upload JSON"
+              importTitle="Load a kind 1 event from a JSON file"
+              pasteIdValue={noteIdInput}
+              onPasteIdChange={(v) => { setNoteIdInput(v); if (importError) setImportError('') }}
+              onLoadId={() => handleImportById(noteIdInput)}
+              pasteIdPlaceholder="Paste note1… / nevent1… / naddr1…"
+              loadLoading={importLoading}
+              loadError={importError}
+              exportLabel="Export JSON"
+              onExport={handleExportJson}
+              exportDisabled={!content.trim()}
+              exportTitle="Export note as JSON file"
+            />
           </div>
 
           {!publishResult && !readOnly && (
@@ -1266,13 +1224,8 @@ export default function NoteComposer({
           )}
         </div>
 
-        {/* Import-by-ID status messages (the input itself lives in the
-            action row above). */}
         {importLoading && (
           <p className="text-neutral-500 text-xs mb-3 italic">Loading note…</p>
-        )}
-        {importError && (
-          <p className="text-red-400 text-xs mb-3">{importError}</p>
         )}
 
         {/* Publish result */}
