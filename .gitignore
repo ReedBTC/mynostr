@@ -44,3 +44,4 @@ docs/v4v-2.0-spec.md
 
 # ── Bug-watcher runtime state (seen-ids, logs) ─────────────
 scripts/bug-watcher/state/
+.reverted-patches/
