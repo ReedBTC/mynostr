@@ -46,7 +46,8 @@ export default function BookmarksTab({ user, isOwner }) {
   const {
     categories,
     loading: bookmarksLoading,
-    privateDecryptFailed,
+    privateDecryptInProgress,
+    retryDecrypt,
     createCategory,
     bulkMove,
     bulkRemove,
@@ -475,23 +476,55 @@ export default function BookmarksTab({ user, isOwner }) {
   // hasn't been granted the nip44.decrypt permission for this site.
   // The banner sits above the chip bar so it's visible regardless of
   // which category the user lands on.
-  const totalPrivate = useMemo(
-    () => categories.reduce((n, c) => n + (c.privateItems?.length || 0), 0),
+  // Categories that have a ciphertext blob but no decrypted items yet.
+  // Drives the banner state machine below — we always know how many
+  // private categories are "still pending" regardless of which phase
+  // (initial sweep, between retries, post-failure) we're in.
+  const pendingDecryptCount = useMemo(
+    () => categories.filter(c => c.privateCiphertext && !c.readOnly && (c.privateItems?.length || 0) === 0).length,
     [categories],
   )
-  const showDecryptBanner = isOwner && isPrivate && privateDecryptFailed > 0 && totalPrivate === 0
+  // Banner is only relevant on the Private tab for the owner, and only
+  // when there's actually something to decrypt that hasn't decrypted.
+  // Three states: in-flight (Decrypting…), failed-after-retries (Retry),
+  // and pending-no-attempts-in-flight (also Retry — covers the silent-
+  // fail case on mobile Firefox where the cold-load sweep rejected
+  // without ever surfacing a prompt to the user).
+  const showDecryptBanner = isOwner && isPrivate && pendingDecryptCount > 0
   const decryptBanner = showDecryptBanner ? (
     <div className="max-w-xl mx-auto w-full px-4 pt-2">
       <div className="px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-start gap-2">
-        <span className="text-base leading-none mt-0.5" aria-hidden>⚠</span>
-        <span>
-          Couldn't decrypt your private bookmarks ({privateDecryptFailed}
-          {' '}{privateDecryptFailed === 1 ? 'category' : 'categories'}).
-          Your signer extension may need permission to read encrypted
-          content. On nos2x-fox: open the extension's options, find
-          authorized sites, and grant <code className="font-mono text-amber-100">nip44.decrypt</code>
-          {' '}for this site (then reload).
+        <span className="text-base leading-none mt-0.5" aria-hidden>
+          {privateDecryptInProgress ? '🔒' : '⚠'}
         </span>
+        <div className="flex-1">
+          {privateDecryptInProgress ? (
+            <span>
+              Decrypting your private bookmarks
+              {pendingDecryptCount > 1 ? ` (${pendingDecryptCount} categories)` : ''}…
+              Your signer extension may prompt you to approve.
+            </span>
+          ) : (
+            <>
+              <span>
+                Couldn't decrypt {pendingDecryptCount}
+                {' '}{pendingDecryptCount === 1 ? 'private category' : 'private categories'}.
+                {' '}Your signer needs to approve a decrypt prompt — try the button below.
+                On mobile Firefox, the prompt sometimes doesn't render unless you tap to trigger it.
+              </span>
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => { retryDecrypt?.() }}
+                  disabled={privateDecryptInProgress}
+                  className="px-2.5 py-1 rounded bg-amber-700/40 hover:bg-amber-700/60 disabled:opacity-50 text-amber-100 text-[11px] font-medium border border-amber-700/40"
+                >
+                  Tap to decrypt
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   ) : null

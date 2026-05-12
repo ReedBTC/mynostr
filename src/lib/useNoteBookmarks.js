@@ -242,6 +242,14 @@ export function useNoteBookmarks(user) {
   // "your signer may need permission to read encrypted content" banner
   // instead of a misleading "0 private bookmarks" empty state.
   const [privateDecryptFailed, setPrivateDecryptFailed] = useState(0)
+  // True while runDecryptPass is mid-flight. The UI uses this to render
+  // a "Decrypting…" state on the Private tab during the retry window
+  // instead of an empty list that misleads the user.
+  const [privateDecryptInProgress, setPrivateDecryptInProgress] = useState(false)
+  // Guards against overlapping decrypt runs (cold-load + user-triggered
+  // retry firing simultaneously). Ref instead of state so the flag is
+  // consulted synchronously before kicking off a new pass.
+  const decryptInFlightRef = useRef(false)
   // Split by privacy view. Consumers pick `hiddenIdsByView[privacyView]`
   // when they know which bucket they're rendering; cross-cutting consumers
   // (e.g., the Add-to-bookmarks picker inside a note's three-dot menu) can
@@ -298,6 +306,61 @@ export function useNoteBookmarks(user) {
       return next
     })
   }, [pubkey])
+
+  // Sequential decrypt sweep with backoff retries. Exposed as `retryDecrypt`
+  // for a manual "tap to retry" from the UI, and invoked from the loading
+  // effect once categories have arrived from relays. Re-entrant guard so a
+  // user tap during the cold-load sweep doesn't double-run.
+  //
+  // Why manual retry matters: on Firefox Android, nos2x-fox can't reliably
+  // render a decrypt permission popup from page-load-time code. A user
+  // gesture (button click) gives the extension a fighting chance to surface
+  // its prompt — and at the very least, makes the failure mode visible
+  // instead of silent.
+  const runDecryptPass = useCallback(async () => {
+    if (!pubkey || readOnly) return
+    if (decryptInFlightRef.current) return
+    decryptInFlightRef.current = true
+    setPrivateDecryptInProgress(true)
+    try {
+      const ndk = getNDK()
+      function nextPending() {
+        const live = categoriesRef.current
+        return live.filter(c => c.privateCiphertext && !c.readOnly && (c.privateItems?.length || 0) === 0)
+      }
+      let pending = nextPending()
+      if (pending.length === 0) {
+        setPrivateDecryptFailed(0)
+        return
+      }
+      for (let attempt = 0; ; attempt++) {
+        const failures = []
+        for (const cat of pending) {
+          if (!ndk.signer) { failures.push(cat); continue }
+          const tagArray = await decryptPrivateTagArray(cat.privateCiphertext, ndk)
+          if (!tagArray) { failures.push(cat); continue }
+          const privateItems = tagArrayToNoteItems(tagArray)
+          setCategories(prev => prev.map(c =>
+            c.id === cat.id ? { ...c, privateItems } : c
+          ))
+        }
+        if (failures.length === 0) {
+          setPrivateDecryptFailed(0)
+          return
+        }
+        const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
+        if (nextDelay == null) {
+          setPrivateDecryptFailed(failures.length)
+          return
+        }
+        await new Promise(r => setTimeout(r, nextDelay))
+        pending = nextPending()
+      }
+    } finally {
+      decryptInFlightRef.current = false
+      setPrivateDecryptInProgress(false)
+    }
+  }, [pubkey, readOnly])
 
   useEffect(() => {
     if (!pubkey) {
@@ -385,58 +448,10 @@ export function useNoteBookmarks(user) {
         setCategories(result)
         if (!readOnly) saveToStorage(pubkey, result)
 
-        // Async decrypt pass for NIP-51 private items. Sequential (not
-        // parallel) so a bunker that prompts per request doesn't flood the
-        // signer app with N concurrent approvals. We only decrypt for the
-        // owner — visitors can't read anyone else's private items, period.
-        //
-        // After the initial sweep, retry any failures with backoff (1s,
-        // 3s). Catches two real-world cases:
-        //   - cold-start signer race (mobile Firefox extensions can take
-        //     a beat to wake after page load)
-        //   - user denying then granting an extension permission popup
-        //     mid-flight (the cached grant lands by the second retry)
-        // Categories that still fail after the retry pass get counted in
-        // `privateDecryptFailed` so the UI can surface a useful banner
-        // instead of silently showing "0 private bookmarks."
-        if (!readOnly) {
-          // Re-read pendingCats from latest state on each pass — earlier
-          // passes' successes are already reflected in `categories`.
-          async function decryptPass() {
-            const live = categoriesRef.current
-            return live.filter(c => c.privateCiphertext && !c.readOnly && (c.privateItems?.length || 0) === 0)
-          }
-          let pending = await decryptPass()
-          for (let attempt = 0; ; attempt++) {
-            if (cancelled) return
-            const failures = []
-            for (const cat of pending) {
-              if (cancelled) return
-              if (!ndk.signer) { failures.push(cat); continue }
-              const tagArray = await decryptPrivateTagArray(cat.privateCiphertext, ndk)
-              if (cancelled) return
-              if (!tagArray) { failures.push(cat); continue }
-              const privateItems = tagArrayToNoteItems(tagArray)
-              setCategories(prev => prev.map(c =>
-                c.id === cat.id ? { ...c, privateItems } : c
-              ))
-            }
-            if (failures.length === 0) {
-              if (!cancelled) setPrivateDecryptFailed(0)
-              break
-            }
-            const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
-            if (nextDelay == null) {
-              // Out of retries — record the failure count for the UI
-              // and stop retrying. The user can manually refresh the
-              // page once they've sorted out their signer permissions.
-              if (!cancelled) setPrivateDecryptFailed(failures.length)
-              break
-            }
-            await new Promise(r => setTimeout(r, nextDelay))
-            pending = await decryptPass()
-          }
-        }
+        // Kick off the async decrypt sweep — see runDecryptPass above for
+        // strategy. Don't await: categories are usable as-is right now, and
+        // the decrypt pass updates state incrementally.
+        if (!readOnly) runDecryptPass()
       } catch {
         if (cancelled) return
         // On failure, stick with whatever was cached.
@@ -445,7 +460,7 @@ export function useNoteBookmarks(user) {
       }
     })()
     return () => { cancelled = true }
-  }, [pubkey, readOnly])
+  }, [pubkey, readOnly, runDecryptPass])
 
   // Publish a category. Two content strategies coexist:
   //
@@ -1123,7 +1138,7 @@ export function useNoteBookmarks(user) {
     return true
   }, [readOnly, pubkey, publishCategory])
 
-  return { categories, loading, privateDecryptFailed, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
+  return { categories, loading, privateDecryptFailed, privateDecryptInProgress, retryDecrypt: runDecryptPass, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
 }
 
 export const NOTE_PRIMARY_CATEGORY_ID = PRIMARY_CATEGORY_ID

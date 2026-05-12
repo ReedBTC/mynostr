@@ -135,7 +135,7 @@ function dedupeReplaceable(events) {
   return Array.from(best.values())
 }
 
-export default function DiscoverView({ user, lists, privateDecryptFailed = 0, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+export default function DiscoverView({ user, lists, privateDecryptFailed = 0, privateDecryptInProgress = false, retryDecrypt, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
   // Session-scoped bookmark writers live in ArticleBookmarksContext so any
   // descendant (the three-dot menu on an author's bookmarked item, the
   // reader-pane bookmark button, the bulk-action bar on a search feed)
@@ -867,27 +867,56 @@ export default function DiscoverView({ user, lists, privateDecryptFailed = 0, re
         )}
       </div>
 
-      {/* Decrypt-failure banner — sits between the toolbar and the body.
-          Same pattern + copy as Notes' BookmarksTab; surfaces the case
-          where every private list's ciphertext came back undecryptable
-          (most often a signer-permission gap on mobile signers like
-          nos2x-fox, where the per-call permission popup doesn't reliably
-          render). Without this we'd silently render "Private (0)". */}
-      {!readOnly && privacyView === 'private' && privateDecryptFailed > 0 && privateCount === 0 && (
-        <div className="px-4 pt-2 flex-shrink-0">
-          <div className="px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-start gap-2">
-            <span className="text-base leading-none mt-0.5" aria-hidden>⚠</span>
-            <span>
-              Couldn't decrypt your private bookmarks ({privateDecryptFailed}
-              {' '}{privateDecryptFailed === 1 ? 'list' : 'lists'}). Your signer
-              extension may need permission to read encrypted content. On
-              nos2x-fox: open the extension's options, find authorized
-              sites, and grant <code className="font-mono text-amber-100">nip44.decrypt</code>
-              {' '}for this site (then reload).
-            </span>
+      {/* Decrypt state banner — three modes:
+          1. In-progress: "Decrypting…" while runDecryptPass is sweeping.
+          2. Pending-no-attempts-in-flight: "Tap to decrypt" — covers the
+             silent-fail case on mobile Firefox where the cold-load
+             sweep rejected without ever surfacing a prompt.
+          3. (Same UI as #2 when the retry loop has finished with failures.)
+          Mirrors the BookmarksTab pattern. */}
+      {!readOnly && privacyView === 'private' && (() => {
+        const pendingDecryptCount = lists.filter(
+          l => l.privateCiphertext && (l.privateArticles?.length || 0) === 0,
+        ).length
+        if (pendingDecryptCount === 0) return null
+        return (
+          <div className="px-4 pt-2 flex-shrink-0">
+            <div className="px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-start gap-2">
+              <span className="text-base leading-none mt-0.5" aria-hidden>
+                {privateDecryptInProgress ? '🔒' : '⚠'}
+              </span>
+              <div className="flex-1">
+                {privateDecryptInProgress ? (
+                  <span>
+                    Decrypting your private bookmarks
+                    {pendingDecryptCount > 1 ? ` (${pendingDecryptCount} lists)` : ''}…
+                    Your signer extension may prompt you to approve.
+                  </span>
+                ) : (
+                  <>
+                    <span>
+                      Couldn't decrypt {pendingDecryptCount}
+                      {' '}{pendingDecryptCount === 1 ? 'private list' : 'private lists'}.
+                      {' '}Your signer needs to approve a decrypt prompt — try the button below.
+                      On mobile Firefox, the prompt sometimes doesn't render unless you tap to trigger it.
+                    </span>
+                    <div className="mt-2">
+                      <button
+                        type="button"
+                        onClick={() => { retryDecrypt?.() }}
+                        disabled={privateDecryptInProgress}
+                        className="px-2.5 py-1 rounded bg-amber-700/40 hover:bg-amber-700/60 disabled:opacity-50 text-amber-100 text-[11px] font-medium border border-amber-700/40"
+                      >
+                        Tap to decrypt
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* ── Body — feed + reader, 50/50 default on desktop; on mobile either
           feed OR reader (controlled by whether an article is selected). ── */}
