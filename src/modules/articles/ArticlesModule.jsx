@@ -99,7 +99,7 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
   // live into the Collection view), viewed hook when visiting someone
   // else (readOnly; owner mutators become no-ops automatically).
   const {
-    lists, privateDecryptFailed, privateDecryptInProgress, retryDecrypt,
+    lists, privateDecryptFailed, privateDecryptInProgress, decryptDiagnostic, retryDecrypt,
     removeArticle, removeArticlesBulk,
     moveArticle, moveArticlesBulk,
     movePrivacy, bulkMovePrivacy,
@@ -306,6 +306,7 @@ export default function ArticlesModule({ user, sessionUser, subtab }) {
           lists={lists}
           privateDecryptFailed={privateDecryptFailed}
           privateDecryptInProgress={privateDecryptInProgress}
+          decryptDiagnostic={decryptDiagnostic}
           retryDecrypt={retryDecrypt}
           removeArticle={removeArticle}
           removeArticlesBulk={removeArticlesBulk}

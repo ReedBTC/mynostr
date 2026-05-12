@@ -135,7 +135,7 @@ function dedupeReplaceable(events) {
   return Array.from(best.values())
 }
 
-export default function DiscoverView({ user, lists, privateDecryptFailed = 0, privateDecryptInProgress = false, retryDecrypt, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
+export default function DiscoverView({ user, lists, privateDecryptFailed = 0, privateDecryptInProgress = false, decryptDiagnostic = null, retryDecrypt, removeArticle, removeArticlesBulk, moveArticle, moveArticlesBulk, movePrivacy, bulkMovePrivacy, deleteList, renameList, reorderLists, hiddenIdsByView, hideList, unhideList, onLoadInEditor, feedMode, onFeedModeChange, readOnly, requestedAuthor, onRequestedAuthorConsumed }) {
   // Session-scoped bookmark writers live in ArticleBookmarksContext so any
   // descendant (the three-dot menu on an author's bookmarked item, the
   // reader-pane bookmark button, the bulk-action bar on a search feed)
@@ -900,7 +900,7 @@ export default function DiscoverView({ user, lists, privateDecryptFailed = 0, pr
                       {' '}Your signer needs to approve a decrypt prompt — try the button below.
                       On mobile Firefox, the prompt sometimes doesn't render unless you tap to trigger it.
                     </span>
-                    <div className="mt-2">
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
                       <button
                         type="button"
                         onClick={() => { retryDecrypt?.() }}
@@ -910,6 +910,19 @@ export default function DiscoverView({ user, lists, privateDecryptFailed = 0, pr
                         Tap to decrypt
                       </button>
                     </div>
+                    {decryptDiagnostic && (
+                      <details className="mt-2 text-[10px] text-amber-300/80">
+                        <summary className="cursor-pointer hover:text-amber-200">Details for support</summary>
+                        <div className="mt-1 space-y-0.5 font-mono">
+                          <div>nip04 exposed: {String(decryptDiagnostic.available?.nip04)}</div>
+                          <div>nip44 exposed: {String(decryptDiagnostic.available?.nip44)}</div>
+                          <div>signer attached: {String(decryptDiagnostic.available?.hasSigner)}</div>
+                          {decryptDiagnostic.errors?.map((e, i) => (
+                            <div key={i} className="break-all">• {e}</div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </>
                 )}
               </div>

@@ -33,6 +33,7 @@ import {
   looksEncrypted,
   encryptPrivateTagArray,
   decryptPrivateTagArray,
+  decryptPrivateTagArrayDetailed,
 } from './privateItems.js'
 import {
   makeTombstoneStore,
@@ -351,26 +352,28 @@ async function enrichBookmarkItems(lists) {
 // empty array if decryption fails or the blob contains no `a` tags.
 // Enrichment re-fetches title/image/author post-decrypt.
 async function decryptPrivateArticles(ciphertext, ndk) {
-  if (!ciphertext) return []
-  const tagArray = await decryptPrivateTagArray(ciphertext, ndk)
-  if (!Array.isArray(tagArray)) return []
+  const { articles } = await decryptPrivateArticlesDetailed(ciphertext, ndk)
+  return articles
+}
+
+// Variant that also returns the underlying decrypt diagnostic so the
+// UI can surface what actually went wrong on failure.
+async function decryptPrivateArticlesDetailed(ciphertext, ndk) {
+  if (!ciphertext) return { articles: [], diagnostic: null }
+  const detailed = await decryptPrivateTagArrayDetailed(ciphertext, ndk)
+  if (!Array.isArray(detailed.result)) return { articles: [], diagnostic: detailed }
   const out = []
   const seen = new Set()
-  for (const t of tagArray) {
+  for (const t of detailed.result) {
     if (!Array.isArray(t) || t[0] !== 'a' || typeof t[1] !== 'string') continue
     const aTag = t[1]
     if (!aTag.includes(':') || seen.has(aTag)) continue
     const aKind = aTag.split(':')[0]
     if (aKind !== '30023' && aKind !== '30078') continue
     seen.add(aTag)
-    // `addedAt` is not preserved through the encrypted blob (we only store
-    // `['a', aTag]` to keep the payload minimal and interop-friendly), so
-    // leave it at 0. The downstream sort in DiscoverView falls through to
-    // `publishedAt` (the article's own `published_at` tag) when `addedAt`
-    // is missing, which is the "sort by created at" behavior we want.
     out.push(stubFromATag(aTag, 0))
   }
-  return out
+  return { articles: out, diagnostic: detailed }
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -400,6 +403,9 @@ export function useReadingLists(user) {
   // Re-entrancy guard for cold-load + user-triggered retry running
   // simultaneously. Ref so the check is synchronous before kicking off.
   const decryptInFlightRef = useRef(false)
+  // Last decrypt failure diagnostic — surfaced to the UI for mobile
+  // triage where the user can't open devtools.
+  const [decryptDiagnostic, setDecryptDiagnostic] = useState(null)
   const enrichingRef = useRef(false)
   // Mirror of `lists` so async flows (deleteList) can read the current
   // value without wrapping logic in a setState reducer.
@@ -452,14 +458,17 @@ export function useReadingLists(user) {
       let pending = pendingPass()
       if (pending.length === 0) {
         setPrivateDecryptFailed(0)
+        setDecryptDiagnostic(null)
         return
       }
+      let lastDiagnostic = null
       for (let attempt = 0; ; attempt++) {
         const failures = []
         for (const list of pending) {
           if (!ndk.signer) { failures.push(list); continue }
-          const privateArticles = await decryptPrivateArticles(list.privateCiphertext, ndk)
+          const { articles: privateArticles, diagnostic } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
           if (privateArticles.length === 0) {
+            if (diagnostic) lastDiagnostic = diagnostic
             failures.push(list)
             continue
           }
@@ -479,11 +488,13 @@ export function useReadingLists(user) {
         }
         if (failures.length === 0) {
           setPrivateDecryptFailed(0)
+          setDecryptDiagnostic(null)
           return
         }
         const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
         if (nextDelay == null) {
           setPrivateDecryptFailed(failures.length)
+          if (lastDiagnostic) setDecryptDiagnostic(lastDiagnostic)
           return
         }
         await new Promise(r => setTimeout(r, nextDelay))
@@ -1296,7 +1307,7 @@ export function useReadingLists(user) {
   }, [readOnly, pubkey])
 
   return {
-    lists, loading, privateDecryptFailed, privateDecryptInProgress,
+    lists, loading, privateDecryptFailed, privateDecryptInProgress, decryptDiagnostic,
     retryDecrypt: runDecryptPass,
     createList,
     addArticle, addArticlesBulk,

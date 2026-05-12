@@ -21,6 +21,7 @@ const NoteBookmarksContext = createContext({
   loading: false,
   privateDecryptFailed: 0,
   privateDecryptInProgress: false,
+  decryptDiagnostic: null,
   retryDecrypt: async () => {},
   createCategory: async () => null,
   addNote: async () => {},

@@ -34,6 +34,7 @@ import {
   looksEncrypted,
   encryptPrivateTagArray,
   decryptPrivateTagArray,
+  decryptPrivateTagArrayDetailed,
   noteItemsToTagArray,
   tagArrayToNoteItems,
 } from './privateItems.js'
@@ -250,6 +251,11 @@ export function useNoteBookmarks(user) {
   // retry firing simultaneously). Ref instead of state so the flag is
   // consulted synchronously before kicking off a new pass.
   const decryptInFlightRef = useRef(false)
+  // Diagnostic snapshot from the most recent decrypt failure. Lets the
+  // banner show "extension returned nothing" / "nip04 missing" instead
+  // of just "tap to retry" — critical for triaging mobile-signer issues
+  // where the user can't open devtools.
+  const [decryptDiagnostic, setDecryptDiagnostic] = useState(null)
   // Split by privacy view. Consumers pick `hiddenIdsByView[privacyView]`
   // when they know which bucket they're rendering; cross-cutting consumers
   // (e.g., the Add-to-bookmarks picker inside a note's three-dot menu) can
@@ -331,26 +337,34 @@ export function useNoteBookmarks(user) {
       let pending = nextPending()
       if (pending.length === 0) {
         setPrivateDecryptFailed(0)
+        setDecryptDiagnostic(null)
         return
       }
+      let lastDetailed = null
       for (let attempt = 0; ; attempt++) {
         const failures = []
         for (const cat of pending) {
           if (!ndk.signer) { failures.push(cat); continue }
-          const tagArray = await decryptPrivateTagArray(cat.privateCiphertext, ndk)
-          if (!tagArray) { failures.push(cat); continue }
-          const privateItems = tagArrayToNoteItems(tagArray)
+          const detailed = await decryptPrivateTagArrayDetailed(cat.privateCiphertext, ndk)
+          if (!detailed.result) {
+            lastDetailed = detailed
+            failures.push(cat)
+            continue
+          }
+          const privateItems = tagArrayToNoteItems(detailed.result)
           setCategories(prev => prev.map(c =>
             c.id === cat.id ? { ...c, privateItems } : c
           ))
         }
         if (failures.length === 0) {
           setPrivateDecryptFailed(0)
+          setDecryptDiagnostic(null)
           return
         }
         const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
         if (nextDelay == null) {
           setPrivateDecryptFailed(failures.length)
+          if (lastDetailed) setDecryptDiagnostic(lastDetailed)
           return
         }
         await new Promise(r => setTimeout(r, nextDelay))
@@ -1138,7 +1152,7 @@ export function useNoteBookmarks(user) {
     return true
   }, [readOnly, pubkey, publishCategory])
 
-  return { categories, loading, privateDecryptFailed, privateDecryptInProgress, retryDecrypt: runDecryptPass, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
+  return { categories, loading, privateDecryptFailed, privateDecryptInProgress, decryptDiagnostic, retryDecrypt: runDecryptPass, createCategory, addNote, removeNote, movePrivacy, deleteCategory, renameCategory, bulkMove, bulkRemove, bulkMovePrivacy, bulkMoveToNew, hiddenIdsByView, hideCategory, unhideCategory }
 }
 
 export const NOTE_PRIMARY_CATEGORY_ID = PRIMARY_CATEGORY_ID

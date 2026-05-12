@@ -101,25 +101,66 @@ export async function encryptPrivateTagArray(tagArray, ndk) {
  * items rather than revealing internals.
  */
 export async function decryptPrivateTagArray(ciphertext, ndk) {
-  if (!ciphertext || typeof ciphertext !== 'string') return null
-  if (!ndk?.signer) return null
+  const { result } = await decryptPrivateTagArrayDetailed(ciphertext, ndk)
+  return result
+}
+
+/**
+ * Same as `decryptPrivateTagArray` but also returns per-scheme error
+ * strings so the UI can surface what actually went wrong. Useful for
+ * diagnosing the "extension never showed a prompt" case on mobile —
+ * we get to see whether the call rejected, returned empty, hit a
+ * TypeError, or never reached the extension at all.
+ *
+ * Returns `{ result, errors, available }`:
+ *   - result: parsed tag array, or null on failure
+ *   - errors: array of "<scheme>: <message>" strings, one per failed attempt
+ *   - available: { nip04, nip44, hasSigner, pubkey } — capability snapshot
+ *     of window.nostr at call time
+ */
+export async function decryptPrivateTagArrayDetailed(ciphertext, ndk) {
+  const available = {
+    nip04: typeof window?.nostr?.nip04?.decrypt === 'function',
+    nip44: typeof window?.nostr?.nip44?.decrypt === 'function',
+    hasSigner: !!ndk?.signer,
+    pubkey: null,
+  }
+  if (!ciphertext || typeof ciphertext !== 'string') {
+    return { result: null, errors: ['input: empty ciphertext'], available }
+  }
+  if (!ndk?.signer) {
+    return { result: null, errors: ['signer: not attached to NDK'], available }
+  }
   let self
-  try { self = await getSelfRecipient(ndk) } catch { return null }
+  try {
+    self = await getSelfRecipient(ndk)
+    available.pubkey = self?.pubkey || null
+  } catch (e) {
+    return { result: null, errors: [`recipient: ${e?.message || String(e)}`], available }
+  }
 
   const looksNip04 = /\?iv=[A-Za-z0-9+/=]+$/.test(ciphertext)
   const order = looksNip04 ? ['nip04', 'nip44'] : ['nip44', 'nip04']
+  const errors = []
   for (const scheme of order) {
     try {
       const plaintext = await ndk.signer.decrypt(self, ciphertext, scheme)
-      if (!plaintext) continue
-      const parsed = JSON.parse(plaintext)
-      if (Array.isArray(parsed)) return parsed
-      return null
-    } catch {
-      // try the other scheme
+      if (!plaintext) {
+        errors.push(`${scheme}: empty result (extension returned nothing — often a silent permission denial)`)
+        continue
+      }
+      try {
+        const parsed = JSON.parse(plaintext)
+        if (Array.isArray(parsed)) return { result: parsed, errors, available }
+        errors.push(`${scheme}: decrypted but not a JSON array`)
+      } catch (e) {
+        errors.push(`${scheme}: decrypted but JSON parse failed (${e?.message || String(e)})`)
+      }
+    } catch (e) {
+      errors.push(`${scheme}: ${e?.message || String(e)}`)
     }
   }
-  return null
+  return { result: null, errors, available }
 }
 
 // ─── Item <-> NIP-51 tag-array converters ────────────────────────────────

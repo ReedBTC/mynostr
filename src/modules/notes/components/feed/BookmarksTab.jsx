@@ -47,6 +47,7 @@ export default function BookmarksTab({ user, isOwner }) {
     categories,
     loading: bookmarksLoading,
     privateDecryptInProgress,
+    decryptDiagnostic,
     retryDecrypt,
     createCategory,
     bulkMove,
@@ -512,7 +513,7 @@ export default function BookmarksTab({ user, isOwner }) {
                 {' '}Your signer needs to approve a decrypt prompt — try the button below.
                 On mobile Firefox, the prompt sometimes doesn't render unless you tap to trigger it.
               </span>
-              <div className="mt-2">
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => { retryDecrypt?.() }}
@@ -522,6 +523,19 @@ export default function BookmarksTab({ user, isOwner }) {
                   Tap to decrypt
                 </button>
               </div>
+              {decryptDiagnostic && (
+                <details className="mt-2 text-[10px] text-amber-300/80">
+                  <summary className="cursor-pointer hover:text-amber-200">Details for support</summary>
+                  <div className="mt-1 space-y-0.5 font-mono">
+                    <div>nip04 exposed: {String(decryptDiagnostic.available?.nip04)}</div>
+                    <div>nip44 exposed: {String(decryptDiagnostic.available?.nip44)}</div>
+                    <div>signer attached: {String(decryptDiagnostic.available?.hasSigner)}</div>
+                    {decryptDiagnostic.errors?.map((e, i) => (
+                      <div key={i} className="break-all">• {e}</div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </>
           )}
         </div>
