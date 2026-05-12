@@ -8,6 +8,7 @@ import { useOwnerContext } from '../lib/ownerContext.jsx'
 import { useLoginModal } from './LoginModalContext.jsx'
 import BoostModal from './BoostModal.jsx'
 import BugReportModal from './BugReportModal.jsx'
+import KnownIssuesModal from './KnownIssuesModal.jsx'
 import HelpModal from '../modules/articles/components/HelpModal.jsx'
 import MobileNavDrawer from './MobileNavDrawer.jsx'
 import ShareButton from './ShareButton.jsx'
@@ -48,6 +49,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [walletOpen, setWalletOpen] = useState(false)
   const [bugOpen,    setBugOpen]    = useState(false)
+  const [knownIssuesOpen, setKnownIssuesOpen] = useState(false)
   const walletStatus = useWalletStatus()
   // Hide the wallet row entirely for logged-out and read-only sessions —
   // NWC encryption needs a signer, and a connect attempt would just error.
@@ -97,18 +99,29 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             >
               Boost MyNostr
             </button>
-            <button
-              onClick={() => {
-                if (sessionUser?.pubkey && !sessionUser.readOnly) setBugOpen(true)
-                else openLogin()
-              }}
-              className="text-xs text-green-500 hover:text-green-300 transition-colors px-2 py-1.5 rounded border border-green-900 hover:border-green-700 inline-flex items-center justify-center gap-1.5"
-              title="Apologies — alpha testing in progress"
-              aria-label="Report a bug"
-            >
-              <span aria-hidden>🐛</span>
-              <span>Report a Bug</span>
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => {
+                  if (sessionUser?.pubkey && !sessionUser.readOnly) setBugOpen(true)
+                  else openLogin()
+                }}
+                className="text-xs text-green-500 hover:text-green-300 transition-colors px-2 py-1.5 rounded border border-green-900 hover:border-green-700 inline-flex items-center justify-center gap-1.5 min-w-0"
+                title="Apologies — alpha testing in progress"
+                aria-label="Report a bug"
+              >
+                <span aria-hidden>🐛</span>
+                <span className="truncate">Report a Bug</span>
+              </button>
+              <button
+                onClick={() => setKnownIssuesOpen(true)}
+                className="text-xs text-neutral-300 hover:text-neutral-100 transition-colors px-2 py-1.5 rounded border border-neutral-800 hover:border-neutral-700 inline-flex items-center justify-center gap-1.5 min-w-0"
+                title="Things we already know are broken"
+                aria-label="Known issues"
+              >
+                <span aria-hidden>📋</span>
+                <span className="truncate">Known Issues</span>
+              </button>
+            </div>
           </div>
 
           {/* Middle: module tabs. "Stats & Relays" is a sidebar alias for the
@@ -306,6 +319,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
             if (sessionUser?.pubkey && !sessionUser.readOnly) setBugOpen(true)
             else openLogin()
           }}
+          onKnownIssues={() => setKnownIssuesOpen(true)}
           onHelp={() => setHelpOpen(true)}
           onLogout={onLogout}
           onLogin={handleLoginClick}
@@ -328,6 +342,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
         />
       )}
       {bugOpen && <BugReportModal user={sessionUser} onClose={() => setBugOpen(false)} />}
+      {knownIssuesOpen && <KnownIssuesModal onClose={() => setKnownIssuesOpen(false)} />}
     </div>
   )
 }

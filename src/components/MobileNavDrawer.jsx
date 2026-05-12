@@ -16,6 +16,7 @@ export default function MobileNavDrawer({
   onModuleChange,
   onBoost,
   onReportBug,
+  onKnownIssues,
   onHelp,
   onLogout,
   onLogin,
@@ -229,6 +230,14 @@ export default function MobileNavDrawer({
           >
             <span>🐛</span>
             <span>Report a Bug</span>
+          </button>
+          <button
+            onClick={() => { onKnownIssues?.(); onClose() }}
+            title="Things we already know are broken"
+            className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-neutral-300 hover:bg-neutral-900 rounded transition-colors"
+          >
+            <span>📋</span>
+            <span>Known Issues</span>
           </button>
           {showHelp && (
             <button
