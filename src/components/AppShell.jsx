@@ -110,7 +110,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 aria-label="Report a bug"
               >
                 <span aria-hidden>🐛</span>
-                <span className="truncate">Report a Bug</span>
+                <span className="truncate">Bugs?</span>
               </button>
               <button
                 onClick={() => setKnownIssuesOpen(true)}
@@ -119,7 +119,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                 aria-label="Known issues"
               >
                 <span aria-hidden>📋</span>
-                <span className="truncate">Known Issues</span>
+                <span className="truncate">Issues</span>
               </button>
             </div>
           </div>
