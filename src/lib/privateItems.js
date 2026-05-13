@@ -45,6 +45,24 @@ export function looksEncrypted(content) {
   return s.length >= 88 && s.length % 4 === 0 && /^[A-Za-z0-9+/=]+$/.test(s)
 }
 
+// Identify which kind of signer is wired into NDK without relying on
+// constructor.name (mangled to single letters by Vite's minifier in
+// production). We branch on stable internal properties:
+//   - Nip46BunkerSigner is our wrapper class in src/lib/nip46Signer.js;
+//     `_bs` holds the nostr-tools BunkerSigner, `_userPubkey` is the
+//     authoritative pubkey from get_public_key.
+//   - NDKPrivateKeySigner stores the key on `.privateKey` (NDK ≥ 2.x).
+//   - NDKNip07Signer has no distinctive props but it's the only signer
+//     that delegates to window.nostr, so we fall to that branch when
+//     the extension is exposed.
+function detectSignerType(signer) {
+  if (!signer) return null
+  if (signer._bs && signer._userPubkey) return 'NIP-46 bunker (Amber/Primal/nsec.app)'
+  if (signer.privateKey || signer._privateKey) return 'private key (raw nsec)'
+  if (typeof window !== 'undefined' && window.nostr) return 'NIP-07 extension (window.nostr)'
+  return 'unknown'
+}
+
 // NDK's signer.encrypt/decrypt reads `.pubkey` off the recipient — passing
 // a bare hex string silently resolves to undefined and nukes encryption
 // (extension signers call window.nostr.nip44.encrypt(undefined, …) and
@@ -123,14 +141,11 @@ export async function decryptPrivateTagArrayDetailed(ciphertext, ndk) {
     nip04: typeof window?.nostr?.nip04?.decrypt === 'function',
     nip44: typeof window?.nostr?.nip44?.decrypt === 'function',
     hasSigner: !!ndk?.signer,
-    // signerType pins which decrypt path actually ran:
-    //   - NDKNip07Signer = window.nostr (browser extension)
-    //   - Nip46BunkerSigner = Amber/Primal/nsec.app over NIP-46
-    //   - NDKPrivateKeySigner = raw nsec held in memory
-    // Without this, a failure message naming "nos2x-fox" looked like
-    // it could only come from Amber; really it's diagnostic of which
-    // signer was wired up at the time.
-    signerType: ndk?.signer?.constructor?.name || null,
+    // signerType pins which decrypt path actually ran. We duck-type
+    // instead of reading constructor.name — Vite minifies class names
+    // in production, so NDKNip07Signer becomes "Ee" and the field
+    // becomes useless for triage. Properties are stable across builds.
+    signerType: detectSignerType(ndk?.signer),
     pubkey: null,
   }
   if (!ciphertext || typeof ciphertext !== 'string') {
