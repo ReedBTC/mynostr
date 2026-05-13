@@ -159,13 +159,16 @@ export async function restoreSession(record) {
       // login screen can re-auth as whoever the extension is currently set to.
       if (ndkUser.pubkey !== record.pubkey) return null
       await connectAndWait(ndk)
-      // Batch-authorize every NIP-07 permission we'll ever need so the
-      // user sees one popup at login (matching Coracle/Snort UX) instead
-      // of nos2x-fox throwing cryptic internal errors when the cold-load
-      // bookmark decrypt sweep hits an unauthorized state with no
-      // user-gesture context. Awaited but ignores its own errors —
-      // login proceeds regardless.
-      await warmupNip07Permissions()
+      // Warmup intentionally NOT called here: it was added to batch
+      // permission popups Coracle-style, but on a tester's Firefox
+      // Android the warmup's nip44 call was the FIRST nip44 hit to a
+      // cold-woken nos2x-fox background script and left the extension
+      // in a state where every subsequent nip44 failed. Removing the
+      // warmup restores the pre-May-13 flow where the first nip44
+      // call happens only when the user opens the Private bookmarks
+      // tab — by which point the extension is warm and the call works.
+      // If we re-introduce warmup, it must NOT fire nip44 calls
+      // immediately at login.
       await ensureUserWriteRelays(ndk, ndkUser.pubkey)
       return await fetchUserProfile(ndk, ndkUser.pubkey)
     } catch {

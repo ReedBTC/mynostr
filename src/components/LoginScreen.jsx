@@ -305,11 +305,10 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       setLoadingStep('Connecting to relays…')
       await connectAndWait(ndk)
       const pubkey = await signer.user()
-      // Batch-authorize every NIP-07 permission upfront so the
-      // bookmark decrypt sweep doesn't trip nos2x-fox into a
-      // "secretsCache is undefined" failure later. See
-      // warmupNip07Permissions in ndk.js for the full rationale.
-      await warmupNip07Permissions()
+      // Warmup intentionally NOT called here — see the matching
+      // comment in sessionPersistence.js's extension restore branch.
+      // Short version: firing nip44 calls at login was the regression
+      // that broke the bookmark decrypt sweep on Firefox Android.
       await ensureUserWriteRelays(ndk, pubkey.pubkey)
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
       saveSession(buildExtensionRecord(pubkey.pubkey))
