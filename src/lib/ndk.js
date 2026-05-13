@@ -86,33 +86,26 @@ export async function warmupNip07Permissions() {
     const pubkey = await window.nostr.getPublicKey()
     if (!pubkey || typeof pubkey !== 'string') return
 
-    // Stage 1: encrypts in parallel. nos2x-fox queues concurrent
-    // permission requests into one popup; if the user authorizes
-    // forever, stage 2 (decrypts) succeeds silently.
-    const has04Encrypt = typeof window.nostr.nip04?.encrypt === 'function'
-    const has44Encrypt = typeof window.nostr.nip44?.encrypt === 'function'
-    const encryptResults = await Promise.allSettled([
-      has04Encrypt ? window.nostr.nip04.encrypt(pubkey, 'mynostr-warmup') : Promise.reject(new Error('nip04 unavailable')),
-      has44Encrypt ? window.nostr.nip44.encrypt(pubkey, 'mynostr-warmup') : Promise.reject(new Error('nip44 unavailable')),
-    ])
-
-    // Stage 2: decrypts in parallel, using the freshly-encrypted blobs
-    // as valid ciphertexts. Catch each individually so one scheme's
-    // failure doesn't short-circuit the other.
-    const decryptCalls = []
-    const has04Decrypt = typeof window.nostr.nip04?.decrypt === 'function'
-    const has44Decrypt = typeof window.nostr.nip44?.decrypt === 'function'
-    if (has04Decrypt && encryptResults[0].status === 'fulfilled' && typeof encryptResults[0].value === 'string') {
-      decryptCalls.push(
-        window.nostr.nip04.decrypt(pubkey, encryptResults[0].value).catch(() => {}),
-      )
+    // Sequential calls — NOT Promise.all. Concurrent calls to window.nostr
+    // have been observed to leave nos2x-fox in a broken state on Firefox
+    // Android where subsequent decrypts fail with "secretsCache is
+    // undefined" even when permissions are granted. Welshman (Coracle's
+    // signer) serializes every extension call with a lock for the same
+    // reason. We mirror that here so the bookmark decrypt sweep later
+    // doesn't inherit a corrupted extension state.
+    let c04, c44
+    if (typeof window.nostr.nip04?.encrypt === 'function') {
+      try { c04 = await window.nostr.nip04.encrypt(pubkey, 'mynostr-warmup') } catch {}
     }
-    if (has44Decrypt && encryptResults[1].status === 'fulfilled' && typeof encryptResults[1].value === 'string') {
-      decryptCalls.push(
-        window.nostr.nip44.decrypt(pubkey, encryptResults[1].value).catch(() => {}),
-      )
+    if (typeof window.nostr.nip44?.encrypt === 'function') {
+      try { c44 = await window.nostr.nip44.encrypt(pubkey, 'mynostr-warmup') } catch {}
     }
-    if (decryptCalls.length) await Promise.all(decryptCalls)
+    if (c04 && typeof window.nostr.nip04?.decrypt === 'function') {
+      try { await window.nostr.nip04.decrypt(pubkey, c04) } catch {}
+    }
+    if (c44 && typeof window.nostr.nip44?.decrypt === 'function') {
+      try { await window.nostr.nip44.decrypt(pubkey, c44) } catch {}
+    }
   } catch {
     // Swallow — login proceeds either way. If the user rejected the
     // popup, the existing decrypt-failure banner will surface the
