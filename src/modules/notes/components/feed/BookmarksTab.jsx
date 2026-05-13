@@ -68,6 +68,13 @@ export default function BookmarksTab({ user, isOwner }) {
   // this, so switching privacy always wipes the selection.
   const [privacyView, setPrivacyView] = useState('public')
   const isPrivate = privacyView === 'private'
+  // Auto-fire one decrypt retry the FIRST time the user lands on
+  // the Private view in this session. Cold-load runDecryptPass in the
+  // hook fires before the bunker relay subscription is fully warm
+  // (NIP-46 sessions especially — Amber/Primal) so the retry-on-gesture
+  // catches the bunker once relays have actually settled. Fires once
+  // per mount to avoid an infinite-retry loop on genuine failures.
+  const autoRetryFiredRef = useRef(false)
 
   // Hiding is per-privacy-view: a category hidden on public can still be
   // visible on private (e.g., a "Sensitive" set you never want on your
@@ -496,6 +503,23 @@ export default function BookmarksTab({ user, isOwner }) {
     () => categories.filter(c => c.privateCiphertext && !c.readOnly && !c.privateDecrypted).length,
     [categories],
   )
+
+  // First-visit auto-retry. The hook's cold-load decrypt sweep fires
+  // before the bunker relay subscription has fully connected on NIP-46
+  // sessions (Amber, Primal, nsec.app) — by the time the user navigates
+  // to Private, relays are warm and a single retry succeeds where the
+  // initial pass failed. Without this, users had to manually click
+  // "Retry" on the banner every page-load to actually see their
+  // private bookmarks. Fires once per mount; subsequent failures stay
+  // manual to avoid hammering the bunker on a real problem.
+  useEffect(() => {
+    if (!isOwner || !isPrivate) return
+    if (autoRetryFiredRef.current) return
+    if (pendingDecryptCount === 0) return
+    if (privateDecryptInProgress) return
+    autoRetryFiredRef.current = true
+    retryDecrypt?.()
+  }, [isOwner, isPrivate, pendingDecryptCount, privateDecryptInProgress, retryDecrypt])
   // Banner is only relevant on the Private tab for the owner, and only
   // when there's actually something to decrypt that hasn't decrypted.
   // Three states: in-flight (Decrypting…), failed-after-retries (Retry),

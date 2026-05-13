@@ -173,11 +173,29 @@ export default function DiscoverView({ user, lists, privateDecryptFailed = 0, pr
   // so genuine failures still surface on the next visit. Matches the
   // pattern in BookmarksTab.
   const [decryptBannerDismissed, setDecryptBannerDismissed] = useState(false)
+  // First-visit auto-retry ref — see useEffect below.
+  const autoRetryFiredRef = useRef(false)
   // Leaving the Collection tab resets privacyView so a stale 'private'
   // selection doesn't bleed into the next visit.
   useEffect(() => {
     if (feedMode !== 'collection') setPrivacyView('public')
   }, [feedMode])
+
+  // First-visit auto-retry. The hook's cold-load decrypt sweep fires
+  // before the bunker relay subscription has fully warmed up on
+  // NIP-46 sessions (Amber/Primal/nsec.app). By the time the user
+  // navigates to Private, relays are connected and a single retry
+  // succeeds. Without this, NIP-46 users had to manually click
+  // "Retry" on the banner every page load. Fires once per mount.
+  useEffect(() => {
+    if (readOnly || privacyView !== 'private') return
+    if (autoRetryFiredRef.current) return
+    const pending = lists.filter(l => l.privateCiphertext && !l.privateDecrypted).length
+    if (pending === 0) return
+    if (privateDecryptInProgress) return
+    autoRetryFiredRef.current = true
+    retryDecrypt?.()
+  }, [readOnly, privacyView, lists, privateDecryptInProgress, retryDecrypt])
 
   const pubkey = user?.pubkey || ''
 
