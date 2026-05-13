@@ -137,11 +137,18 @@ async function tryNip44Decrypt(pubkey, ciphertext) {
   }
 }
 
+// A known-valid hex pubkey to test nip44-to-other-peer with. fiatjaf's
+// pubkey — a well-known on-curve point that ECDH will accept. Used only
+// to isolate whether nip44 fails universally on this extension or
+// specifically when peer==self (which would point at a buggy self-ECDH
+// path inside the extension).
+const NIP44_PROBE_OTHER_PUBKEY = '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d'
+
 export async function warmupNip07Permissions() {
   if (typeof window === 'undefined' || !window?.nostr) return
   const result = {
     ran: false, c04ok: false, c44ok: false, d04ok: false, d44ok: false,
-    nip44Attempts: 0, nip44Broken: false, lastError: '',
+    c44otherOk: false, nip44Attempts: 0, nip44Broken: false, lastError: '',
   }
   try {
     const pubkey = await window.nostr.getPublicKey()
@@ -166,8 +173,8 @@ export async function warmupNip07Permissions() {
       } catch (e) { result.lastError = `nip04.decrypt: ${e?.message || String(e)}` }
     }
 
-    // nip44 path with retries — the first attempt has been observed to
-    // hit a stale extension module state and throw secretsCache undefined.
+    // nip44 path with retries — first attempt has been observed to hit
+    // a stale extension module state and throw secretsCache undefined.
     // Try up to 4 times with backoff before declaring nip44 broken.
     const enc44 = await tryNip44Encrypt(pubkey, 'mynostr-warmup')
     result.nip44Attempts = NIP44_RETRY_DELAYS_MS.length + 1
@@ -178,6 +185,18 @@ export async function warmupNip07Permissions() {
       const dec44 = await tryNip44Decrypt(pubkey, enc44.value)
       result.d44ok = dec44.ok && dec44.value === 'mynostr-warmup'
       if (!dec44.ok) result.lastError = dec44.err
+    }
+
+    // Probe: nip44.encrypt to a DIFFERENT (non-self) pubkey. If this
+    // succeeds while encrypt-to-self fails, the extension has a
+    // self-ECDH bug specifically — Coracle works because its decrypts
+    // are always against another user's pubkey. If this also fails,
+    // the extension's nip44 path is broken globally.
+    if (!enc44.ok && typeof window.nostr.nip44?.encrypt === 'function') {
+      try {
+        const v = await window.nostr.nip44.encrypt(NIP44_PROBE_OTHER_PUBKEY, 'mynostr-probe')
+        if (typeof v === 'string' && v.length > 0) result.c44otherOk = true
+      } catch (e) { result.lastError = `nip44.encrypt(other): ${e?.message || String(e)}` }
     }
 
     // nip44 is "broken" only if BOTH encrypt and decrypt failed after

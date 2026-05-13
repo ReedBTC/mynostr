@@ -582,6 +582,7 @@ export default function BookmarksTab({ user, isOwner }) {
                   <div>warmup ran: {String(warmup.ran)}</div>
                   <div>warmup nip04 enc: {String(warmup.c04ok)} dec: {String(warmup.d04ok)}</div>
                   <div>warmup nip44 enc: {String(warmup.c44ok)} dec: {String(warmup.d44ok)}</div>
+                  <div>warmup nip44 enc-to-other: {String(warmup.c44otherOk)}</div>
                   {warmup.lastError && <div className="break-all">warmup err: {warmup.lastError}</div>}
                 </>
               )}
