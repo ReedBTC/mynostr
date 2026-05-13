@@ -165,9 +165,29 @@ export async function decryptPrivateTagArrayDetailed(ciphertext, ndk) {
   const looksNip04 = /\?iv=[A-Za-z0-9+/=]+$/.test(ciphertext)
   const order = looksNip04 ? ['nip04', 'nip44'] : ['nip44', 'nip04']
   const errors = []
+
+  // Bypass NDK's queueEncryption for NIP-07 extensions and call
+  // window.nostr directly — same pattern Coracle/welshman uses
+  // (Nip07Signer just does `ext.nip44.decrypt(pubkey, message)`).
+  // NDK's queue serializes through a recursive helper and retries on
+  // "call already executing"; for nos2x-fox on mobile Firefox that
+  // extra indirection has been observed to leave decrypt in a state
+  // where the extension throws internal errors ("secretsCache is
+  // undefined") on otherwise-authorized self-decrypts. A direct call
+  // matches what works on coracle.social on the same device/extension.
+  const useDirectExtensionCall = (
+    !!window?.nostr &&
+    available.signerType === 'NIP-07 extension (window.nostr)'
+  )
+
   for (const scheme of order) {
     try {
-      const plaintext = await ndk.signer.decrypt(self, ciphertext, scheme)
+      let plaintext
+      if (useDirectExtensionCall && typeof window.nostr?.[scheme]?.decrypt === 'function') {
+        plaintext = await window.nostr[scheme].decrypt(self.pubkey, ciphertext)
+      } else {
+        plaintext = await ndk.signer.decrypt(self, ciphertext, scheme)
+      }
       if (!plaintext) {
         errors.push(`${scheme}: empty result (extension returned nothing — often a silent permission denial)`)
         continue
