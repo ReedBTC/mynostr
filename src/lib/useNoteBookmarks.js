@@ -230,15 +230,6 @@ export function parseEventToCategory(event) {
  * Returns { categories, loading, createCategory, addNote, removeNote,
  * deleteCategory, renameCategory }.
  */
-// Retry pacing for the private-decrypt pass. The first attempt may fail
-// because the signer isn't fully responsive yet (mobile Firefox extensions
-// in particular take a beat to wake their service worker after page load).
-// Two retries at 1s and 3s catch the cold-start race without hammering
-// signers that prompt the user per call (nos2x-fox: each retry could
-// trigger a permission popup; if the user denied, retries land on the
-// cached deny and resolve fast — no extra UX noise).
-const PRIVATE_DECRYPT_RETRY_DELAYS_MS = [1000, 3000]
-
 export function useNoteBookmarks(user) {
   const [categories, setCategories] = useState([])
   const [loading, setLoading] = useState(true)
@@ -317,16 +308,17 @@ export function useNoteBookmarks(user) {
     })
   }, [pubkey])
 
-  // Sequential decrypt sweep with backoff retries. Exposed as `retryDecrypt`
-  // for a manual "tap to retry" from the UI, and invoked from the loading
-  // effect once categories have arrived from relays. Re-entrant guard so a
-  // user tap during the cold-load sweep doesn't double-run.
+  // Single-pass decrypt sweep. Reverted from the multi-attempt retry
+  // version (3d7f5bf, May 9 13:08) because a tester confirmed the
+  // pre-3d7f5bf behavior was working on Firefox Android at May 9
+  // 12:46pm EDT — and the retry wrapping is the structural change
+  // between then and the broken state. Retry-on-user-tap is still
+  // available via `retryDecrypt` (the auto-retry on Private tab + the
+  // Retry button in the banner both call back into runDecryptPass).
   //
-  // Why manual retry matters: on Firefox Android, nos2x-fox can't reliably
-  // render a decrypt permission popup from page-load-time code. A user
-  // gesture (button click) gives the extension a fighting chance to surface
-  // its prompt — and at the very least, makes the failure mode visible
-  // instead of silent.
+  // Cross-module false-positive flag (`privateDecrypted: true` even
+  // when items is empty for this module) stays — that's the orthogonal
+  // fix in ded845f and unrelated to the retry regression.
   const runDecryptPass = useCallback(async () => {
     if (!pubkey || readOnly) return
     if (decryptInFlightRef.current) return
@@ -334,56 +326,37 @@ export function useNoteBookmarks(user) {
     setPrivateDecryptInProgress(true)
     try {
       const ndk = getNDK()
-      // Pending = "decrypt hasn't successfully run yet." We can't use
-      // `privateItems.length === 0` as a proxy: cross-module shared
-      // categories (notes + longform sharing 10003/30001/30003) often
-      // contain only `a` tags, which `tagArrayToNoteItems` filters out
-      // — a successful decrypt of an articles-only blob legitimately
-      // yields zero notes, and the old predicate kept retrying those
-      // forever and ultimately reporting them as "couldn't decrypt."
-      function nextPending() {
-        const live = categoriesRef.current
-        return live.filter(c => c.privateCiphertext && !c.readOnly && !c.privateDecrypted)
-      }
-      let pending = nextPending()
+      const live = categoriesRef.current
+      const pending = live.filter(c => c.privateCiphertext && !c.readOnly && !c.privateDecrypted)
       if (pending.length === 0) {
         setPrivateDecryptFailed(0)
         setDecryptDiagnostic(null)
         return
       }
       let lastDetailed = null
-      for (let attempt = 0; ; attempt++) {
-        const failures = []
-        for (const cat of pending) {
-          if (!ndk.signer) { failures.push(cat); continue }
-          const detailed = await decryptPrivateTagArrayDetailed(cat.privateCiphertext, ndk)
-          if (!Array.isArray(detailed.result)) {
-            // True decrypt failure — no tag array came back at all.
-            lastDetailed = detailed
-            failures.push(cat)
-            continue
-          }
-          // Decrypt succeeded. `privateItems` may legitimately be empty
-          // when the blob contained only `a` tags from longform — flag
-          // `privateDecrypted` so we don't retry the cross-module case.
-          const privateItems = tagArrayToNoteItems(detailed.result)
-          setCategories(prev => prev.map(c =>
-            c.id === cat.id ? { ...c, privateItems, privateDecrypted: true } : c
-          ))
+      let failureCount = 0
+      for (const cat of pending) {
+        if (!ndk.signer) { failureCount++; continue }
+        const detailed = await decryptPrivateTagArrayDetailed(cat.privateCiphertext, ndk)
+        if (!Array.isArray(detailed.result)) {
+          lastDetailed = detailed
+          failureCount++
+          continue
         }
-        if (failures.length === 0) {
-          setPrivateDecryptFailed(0)
-          setDecryptDiagnostic(null)
-          return
-        }
-        const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
-        if (nextDelay == null) {
-          setPrivateDecryptFailed(failures.length)
-          if (lastDetailed) setDecryptDiagnostic(lastDetailed)
-          return
-        }
-        await new Promise(r => setTimeout(r, nextDelay))
-        pending = nextPending()
+        // Decrypt succeeded — `privateItems` may legitimately be empty
+        // (cross-module shared categories with only `a` tags). Flag
+        // privateDecrypted=true so we don't keep retrying.
+        const privateItems = tagArrayToNoteItems(detailed.result)
+        setCategories(prev => prev.map(c =>
+          c.id === cat.id ? { ...c, privateItems, privateDecrypted: true } : c
+        ))
+      }
+      if (failureCount === 0) {
+        setPrivateDecryptFailed(0)
+        setDecryptDiagnostic(null)
+      } else {
+        setPrivateDecryptFailed(failureCount)
+        if (lastDetailed) setDecryptDiagnostic(lastDetailed)
       }
     } finally {
       decryptInFlightRef.current = false

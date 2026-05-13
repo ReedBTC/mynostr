@@ -386,12 +386,6 @@ async function decryptPrivateArticlesDetailed(ciphertext, ndk) {
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
-// Retry pacing for the private-decrypt pass (parallel to useNoteBookmarks).
-// Catches the cold-start signer race AND gives the user time to grant
-// a per-call permission popup (nos2x-fox / similar) without leaving the
-// list permanently empty.
-const PRIVATE_DECRYPT_RETRY_DELAYS_MS = [1000, 3000]
-
 export function useReadingLists(user) {
   const [lists,           setLists]           = useState([])
   const [hiddenIdsByView, setHiddenIdsByView] = useState(() => ({
@@ -436,12 +430,10 @@ export function useReadingLists(user) {
     })
   }, [pubkey])
 
-  // Sequential decrypt sweep with backoff retries (1s, 3s). Exposed as
-  // `retryDecrypt` so the UI can offer a "Tap to retry" button — useful
-  // when the cold-load sweep silently failed (e.g. nos2x-fox on Firefox
-  // Android, where decrypt prompts often don't render outside a user
-  // gesture). Re-entrant guard prevents the cold-load and a user tap
-  // from running concurrently.
+  // Single-pass decrypt sweep — see matching comment in useNoteBookmarks
+  // runDecryptPass for full rationale. Reverted from multi-attempt retry
+  // (3d7f5bf May 9 13:08) to isolate whether retry wrapping is the
+  // regression vector. retryDecrypt is still exposed for user-tap retries.
   const runDecryptPass = useCallback(async () => {
     if (!pubkey || readOnly) return
     if (decryptInFlightRef.current) return
@@ -459,66 +451,43 @@ export function useReadingLists(user) {
           if (art.aTag) cachedItemMap.set(art.aTag, art)
         }
       }
-      // Pending = "decrypt hasn't successfully run yet." Using
-      // `privateArticles.length === 0` as a proxy was wrong: cross-
-      // module shared categories (notes + longform sharing 10003/30001
-      // /30003) often contain only `e` tags, which yield zero articles
-      // after our `a`-tag filter — a legitimate success the old
-      // predicate kept retrying forever and falsely reporting as
-      // "couldn't decrypt."
-      function pendingPass() {
-        const live = listsRef.current
-        return live.filter(l => l.privateCiphertext && !l.privateDecrypted)
-      }
-      let pending = pendingPass()
+      const live = listsRef.current
+      const pending = live.filter(l => l.privateCiphertext && !l.privateDecrypted)
       if (pending.length === 0) {
         setPrivateDecryptFailed(0)
         setDecryptDiagnostic(null)
         return
       }
       let lastDiagnostic = null
-      for (let attempt = 0; ; attempt++) {
-        const failures = []
-        for (const list of pending) {
-          if (!ndk.signer) { failures.push(list); continue }
-          const { articles: privateArticles, diagnostic, decryptOk } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
-          if (!decryptOk) {
-            // True decrypt failure — capture diagnostic and retry.
-            if (diagnostic) lastDiagnostic = diagnostic
-            failures.push(list)
-            continue
-          }
-          // Decrypt succeeded. `privateArticles` may legitimately be
-          // empty when the blob held only `e` tags from the notes
-          // module — flag `privateDecrypted` so we don't keep retrying
-          // a perfectly-valid cross-module category.
-          for (const art of privateArticles) {
-            const c = cachedItemMap.get(art.aTag)
-            if (!c) continue
-            if (!art.title       && c.title)       art.title       = c.title
-            if (!art.image       && c.image)       art.image       = c.image
-            if (!art.author      && c.author)      art.author      = c.author
-            if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
-            if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
-            if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
-          }
-          setLists(prev => prev.map(l =>
-            l.id === list.id ? { ...l, privateArticles, privateDecrypted: true } : l
-          ))
+      let failureCount = 0
+      for (const list of pending) {
+        if (!ndk.signer) { failureCount++; continue }
+        const { articles: privateArticles, diagnostic, decryptOk } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
+        if (!decryptOk) {
+          if (diagnostic) lastDiagnostic = diagnostic
+          failureCount++
+          continue
         }
-        if (failures.length === 0) {
-          setPrivateDecryptFailed(0)
-          setDecryptDiagnostic(null)
-          return
+        for (const art of privateArticles) {
+          const c = cachedItemMap.get(art.aTag)
+          if (!c) continue
+          if (!art.title       && c.title)       art.title       = c.title
+          if (!art.image       && c.image)       art.image       = c.image
+          if (!art.author      && c.author)      art.author      = c.author
+          if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
+          if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
+          if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
         }
-        const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
-        if (nextDelay == null) {
-          setPrivateDecryptFailed(failures.length)
-          if (lastDiagnostic) setDecryptDiagnostic(lastDiagnostic)
-          return
-        }
-        await new Promise(r => setTimeout(r, nextDelay))
-        pending = pendingPass()
+        setLists(prev => prev.map(l =>
+          l.id === list.id ? { ...l, privateArticles, privateDecrypted: true } : l
+        ))
+      }
+      if (failureCount === 0) {
+        setPrivateDecryptFailed(0)
+        setDecryptDiagnostic(null)
+      } else {
+        setPrivateDecryptFailed(failureCount)
+        if (lastDiagnostic) setDecryptDiagnostic(lastDiagnostic)
       }
     } finally {
       decryptInFlightRef.current = false
