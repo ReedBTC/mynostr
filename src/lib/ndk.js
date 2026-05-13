@@ -80,11 +80,24 @@ export async function signWithTimeout(event, timeoutMs = SIGN_TIMEOUT_MS) {
  * Always silent on failure — login proceeds regardless of what the
  * extension or user does with the popup.
  */
+// Captured outcome of the most recent warmup. The decrypt-failure
+// diagnostic in BookmarksTab/DiscoverView pulls this so a tester
+// can see whether warmup itself succeeded — if it did, bookmark
+// decrypt failures point at something post-warmup; if it didn't,
+// the extension's nip44 path is broken for our origin and we can
+// stop hunting for app-side causes downstream.
+let _lastWarmupResult = null
+export function getLastWarmupResult() {
+  return _lastWarmupResult ? { ..._lastWarmupResult } : null
+}
+
 export async function warmupNip07Permissions() {
   if (typeof window === 'undefined' || !window?.nostr) return
+  const result = { ran: false, c04ok: false, c44ok: false, d04ok: false, d44ok: false, lastError: '' }
   try {
     const pubkey = await window.nostr.getPublicKey()
     if (!pubkey || typeof pubkey !== 'string') return
+    result.ran = true
 
     // Sequential calls — NOT Promise.all. Concurrent calls to window.nostr
     // have been observed to leave nos2x-fox in a broken state on Firefox
@@ -95,21 +108,33 @@ export async function warmupNip07Permissions() {
     // doesn't inherit a corrupted extension state.
     let c04, c44
     if (typeof window.nostr.nip04?.encrypt === 'function') {
-      try { c04 = await window.nostr.nip04.encrypt(pubkey, 'mynostr-warmup') } catch {}
+      try {
+        c04 = await window.nostr.nip04.encrypt(pubkey, 'mynostr-warmup')
+        if (typeof c04 === 'string' && c04.length > 0) result.c04ok = true
+      } catch (e) { result.lastError = `nip04.encrypt: ${e?.message || String(e)}` }
     }
     if (typeof window.nostr.nip44?.encrypt === 'function') {
-      try { c44 = await window.nostr.nip44.encrypt(pubkey, 'mynostr-warmup') } catch {}
+      try {
+        c44 = await window.nostr.nip44.encrypt(pubkey, 'mynostr-warmup')
+        if (typeof c44 === 'string' && c44.length > 0) result.c44ok = true
+      } catch (e) { result.lastError = `nip44.encrypt: ${e?.message || String(e)}` }
     }
     if (c04 && typeof window.nostr.nip04?.decrypt === 'function') {
-      try { await window.nostr.nip04.decrypt(pubkey, c04) } catch {}
+      try {
+        const r = await window.nostr.nip04.decrypt(pubkey, c04)
+        if (r === 'mynostr-warmup') result.d04ok = true
+      } catch (e) { result.lastError = `nip04.decrypt: ${e?.message || String(e)}` }
     }
     if (c44 && typeof window.nostr.nip44?.decrypt === 'function') {
-      try { await window.nostr.nip44.decrypt(pubkey, c44) } catch {}
+      try {
+        const r = await window.nostr.nip44.decrypt(pubkey, c44)
+        if (r === 'mynostr-warmup') result.d44ok = true
+      } catch (e) { result.lastError = `nip44.decrypt: ${e?.message || String(e)}` }
     }
-  } catch {
-    // Swallow — login proceeds either way. If the user rejected the
-    // popup, the existing decrypt-failure banner will surface the
-    // problem and offer Retry from the actual decrypt path.
+  } catch (e) {
+    result.lastError = `outer: ${e?.message || String(e)}`
+  } finally {
+    _lastWarmupResult = result
   }
 }
 

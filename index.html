@@ -3,7 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src * blob: data:; media-src *; connect-src *; font-src 'self'; frame-src *;" />
+    <!-- CSP: `moz-extension:` and `chrome-extension:` explicitly allowed
+         in script-src + default-src so browser-extension signers
+         (nos2x-fox, Alby, etc.) can inject their nostr-provider into
+         the page. Without these, Firefox Android quietly enforces the
+         CSP against extension-injected <script> tags from
+         moz-extension:// URLs and leaves window.nostr in a
+         partially-initialized state — decrypts then fail with cryptic
+         internal extension errors. The rest of the policy stays
+         conservative (img/media/connect are wide-open by design for
+         relay traffic + arbitrary nostr-hosted content). -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' moz-extension: chrome-extension:; script-src 'self' 'unsafe-inline' 'unsafe-eval' moz-extension: chrome-extension: https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src * blob: data:; media-src *; connect-src *; font-src 'self'; frame-src *;" />
     <!-- Icon ladder. Largest sizes first so Google + browsers pick the
          best fit for their context. The 192/512 PNGs are designed
          edge-to-edge so Google's circular favicon frame in search
