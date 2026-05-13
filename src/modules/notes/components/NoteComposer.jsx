@@ -279,9 +279,17 @@ export default function NoteComposer({
       return
     }
 
+    const text = await file.text()
+    let json
     try {
-      const text = await file.text()
-      const json = JSON.parse(text)
+      json = JSON.parse(text)
+    } catch {
+      // V8 includes the first ~10 chars of the input in the SyntaxError
+      // message — keep file contents out of the UI.
+      setUploadError('Invalid JSON file.')
+      return
+    }
+    try {
       const { valid, errors, event } = validateKind1Event(json)
 
       if (!valid) {
@@ -303,8 +311,10 @@ export default function NoteComposer({
           }))
         } catch {}
       }
-    } catch (e) {
-      setUploadError(`Invalid JSON: ${e.message}`)
+    } catch {
+      // loadEventIntoEditor / nevent encode never include file content
+      // in their errors, but stay defensive — generic message.
+      setUploadError('Could not load event from file.')
     }
   }, [loadEventIntoEditor])
 

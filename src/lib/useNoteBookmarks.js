@@ -271,6 +271,10 @@ export function useNoteBookmarks(user) {
   // current value without wrapping logic in a setState reducer.
   const categoriesRef = useRef([])
   useEffect(() => { categoriesRef.current = categories }, [categories])
+  // Tracks the live pubkey so an in-flight decrypt sweep can bail when
+  // the user signs out / switches accounts mid-pass. See runDecryptPass.
+  const pubkeyRef = useRef(pubkey)
+  useEffect(() => { pubkeyRef.current = pubkey }, [pubkey])
 
   const pubkey   = user?.pubkey
   const readOnly = !!user?.readOnly
@@ -328,6 +332,13 @@ export function useNoteBookmarks(user) {
     if (decryptInFlightRef.current) return
     decryptInFlightRef.current = true
     setPrivateDecryptInProgress(true)
+    // Capture the pubkey this sweep was started for. If the user signs
+    // out / switches accounts mid-sweep, the captured value won't match
+    // the live pubkey on the next iteration and we bail — prevents
+    // phantom decrypt prompts being fired against the new session and
+    // stale state writes against the previous account's categories.
+    const sweepPubkey = pubkey
+    const isStillForThisSession = () => pubkeyRef.current === sweepPubkey
     try {
       const ndk = getNDK()
       function nextPending() {
@@ -342,10 +353,13 @@ export function useNoteBookmarks(user) {
       }
       let lastDetailed = null
       for (let attempt = 0; ; attempt++) {
+        if (!isStillForThisSession()) return
         const failures = []
         for (const cat of pending) {
+          if (!isStillForThisSession()) return
           if (!ndk.signer) { failures.push(cat); continue }
           const detailed = await decryptPrivateTagArrayDetailed(cat.privateCiphertext, ndk)
+          if (!isStillForThisSession()) return
           if (!Array.isArray(detailed.result)) {
             lastDetailed = detailed
             failures.push(cat)
@@ -368,6 +382,7 @@ export function useNoteBookmarks(user) {
           return
         }
         await new Promise(r => setTimeout(r, nextDelay))
+        if (!isStillForThisSession()) return
         pending = nextPending()
       }
     } finally {

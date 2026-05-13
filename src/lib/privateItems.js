@@ -196,8 +196,11 @@ export async function decryptPrivateTagArrayDetailed(ciphertext, ndk) {
         const parsed = JSON.parse(plaintext)
         if (Array.isArray(parsed)) return { result: parsed, errors, available }
         errors.push(`${scheme}: decrypted but not a JSON array`)
-      } catch (e) {
-        errors.push(`${scheme}: decrypted but JSON parse failed (${e?.message || String(e)})`)
+      } catch {
+        // Deliberately omit the parser's message — V8 includes the
+        // first ~10 chars of the input in the SyntaxError text, which
+        // would echo decrypted plaintext into the diagnostic banner.
+        errors.push(`${scheme}: decrypted but JSON parse failed`)
       }
     } catch (e) {
       errors.push(`${scheme}: ${e?.message || String(e)}`)

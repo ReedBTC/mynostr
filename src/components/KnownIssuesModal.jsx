@@ -38,7 +38,7 @@ function textColorFor(hex) {
 }
 
 export default function KnownIssuesModal({ onClose }) {
-  const [state, setState] = useState({ status: 'loading', issues: [], error: '' })
+  const [state, setState] = useState({ status: 'loading', issues: [], upstreamOk: true, error: '' })
 
   useEffect(() => {
     function onKey(e) {
@@ -56,10 +56,18 @@ export default function KnownIssuesModal({ onClose }) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
         if (cancelled) return
-        setState({ status: 'ok', issues: Array.isArray(data?.issues) ? data.issues : [], error: '' })
+        // upstream_ok=false means the worker fail-opened with [] because
+        // GitHub was unreachable / rate-limited — render a different
+        // empty state so users don't misread it as "no known issues."
+        setState({
+          status: 'ok',
+          issues: Array.isArray(data?.issues) ? data.issues : [],
+          upstreamOk: data?.upstream_ok !== false,
+          error: '',
+        })
       } catch (e) {
         if (cancelled) return
-        setState({ status: 'error', issues: [], error: e?.message || 'Failed to load known issues.' })
+        setState({ status: 'error', issues: [], upstreamOk: true, error: e?.message || 'Failed to load known issues.' })
       }
     }
     load()
@@ -124,12 +132,28 @@ export default function KnownIssuesModal({ onClose }) {
               </div>
             )}
 
-            {state.status === 'ok' && state.issues.length === 0 && (
+            {state.status === 'ok' && state.issues.length === 0 && state.upstreamOk && (
               <div className="text-xs text-neutral-400 py-8 text-center space-y-2">
                 <div className="text-2xl">✨</div>
                 <p>No known issues right now.</p>
                 <p className="text-neutral-500">
                   If something's broken, the Report a Bug button is right next door.
+                </p>
+              </div>
+            )}
+
+            {state.status === 'ok' && state.issues.length === 0 && !state.upstreamOk && (
+              <div className="text-xs text-neutral-400 py-6 text-center space-y-2">
+                <p className="text-rose-300">Couldn't reach GitHub right now.</p>
+                <p>
+                  <a
+                    href="https://github.com/ReedBTC/mynostr/issues?q=is%3Aopen+label%3Aknown-issue"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-purple-300 hover:text-purple-200 underline"
+                  >
+                    Open the list on GitHub
+                  </a>
                 </p>
               </div>
             )}

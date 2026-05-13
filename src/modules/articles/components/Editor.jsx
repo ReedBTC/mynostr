@@ -278,60 +278,36 @@ export default function Editor({ content, onChange, metadata, source, onClear, o
           beside it without covering buttons. */}
       <div className="border-b border-neutral-800 flex-shrink-0 relative">
         <div className="w-full max-w-4xl mx-auto px-4 pt-4 pb-2 flex items-center gap-1">
-          {false ? (
-            <>
-              {(() => {
-                const clearEnabled = !readOnly && !!(content || metadata?.title)
-                if (!clearEnabled) return null
-                return (
-                  <button
-                    onClick={handleClearClick}
-                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      clearPending
-                        ? 'border-red-800 text-red-400 hover:bg-red-950'
-                        : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                    }`}
-                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
-                  >
-                    {clearPending ? 'Sure?' : 'Clear'}
-                  </button>
-                )
-              })()}
-            </>
-          ) : (
-            <>
+          <button
+            onClick={onOpenDraftDrawer}
+            disabled={readOnly || !onOpenDraftDrawer}
+            className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+              readOnly || !onOpenDraftDrawer
+                ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
+                : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
+            }`}
+          >
+            My Drafts
+          </button>
+          {(() => {
+            const clearEnabled = !readOnly && !!(content || metadata?.title)
+            return (
               <button
-                onClick={onOpenDraftDrawer}
-                disabled={readOnly || !onOpenDraftDrawer}
+                onClick={handleClearClick}
+                disabled={!clearEnabled}
                 className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                  readOnly || !onOpenDraftDrawer
+                  !clearEnabled
                     ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                    : 'border-neutral-700 text-neutral-500 hover:text-neutral-200 hover:border-neutral-500'
+                    : clearPending
+                      ? 'border-red-800 text-red-400 hover:bg-red-950'
+                      : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
                 }`}
+                aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
               >
-                My Drafts
+                {clearPending ? 'Sure?' : 'Clear'}
               </button>
-              {(() => {
-                const clearEnabled = !readOnly && !!(content || metadata?.title)
-                return (
-                  <button
-                    onClick={handleClearClick}
-                    disabled={!clearEnabled}
-                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
-                      !clearEnabled
-                        ? 'border-neutral-800 text-neutral-700 cursor-not-allowed'
-                        : clearPending
-                          ? 'border-red-800 text-red-400 hover:bg-red-950'
-                          : 'border-neutral-700 text-neutral-500 hover:text-red-400 hover:border-red-900'
-                    }`}
-                    aria-label={clearPending ? 'Confirm clear' : 'Clear editor and reset all fields'}
-                  >
-                    {clearPending ? 'Sure?' : 'Clear'}
-                  </button>
-                )
-              })()}
-            </>
-          )}
+            )
+          })()}
 
           {/* Hidden file input — shared between desktop inline button and mobile menu item */}
           <input

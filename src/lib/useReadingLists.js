@@ -421,6 +421,10 @@ export function useReadingLists(user) {
 
   const pubkey   = user?.pubkey
   const readOnly = !!user?.readOnly
+  // Tracks the live pubkey so an in-flight decrypt sweep can bail when
+  // the user signs out / switches accounts mid-pass. See runDecryptPass.
+  const pubkeyRef = useRef(pubkey)
+  useEffect(() => { pubkeyRef.current = pubkey }, [pubkey])
 
   // Hidden-list preference is purely client-side and per-pubkey, split by view.
   useEffect(() => {
@@ -443,6 +447,13 @@ export function useReadingLists(user) {
     if (decryptInFlightRef.current) return
     decryptInFlightRef.current = true
     setPrivateDecryptInProgress(true)
+    // Capture the pubkey this sweep was started for. If the user signs
+    // out / switches accounts mid-sweep, the captured value won't match
+    // the live pubkey on the next iteration and we bail — prevents
+    // phantom decrypt prompts being fired against the new session and
+    // stale state writes against the previous account's lists.
+    const sweepPubkey = pubkey
+    const isStillForThisSession = () => pubkeyRef.current === sweepPubkey
     try {
       const ndk = getNDK()
       // Rebuild the cached-metadata map fresh — cheap, and avoids
@@ -467,10 +478,13 @@ export function useReadingLists(user) {
       }
       let lastDiagnostic = null
       for (let attempt = 0; ; attempt++) {
+        if (!isStillForThisSession()) return
         const failures = []
         for (const list of pending) {
+          if (!isStillForThisSession()) return
           if (!ndk.signer) { failures.push(list); continue }
           const { articles: privateArticles, diagnostic, decryptOk } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
+          if (!isStillForThisSession()) return
           if (!decryptOk) {
             if (diagnostic) lastDiagnostic = diagnostic
             failures.push(list)
@@ -502,6 +516,7 @@ export function useReadingLists(user) {
           return
         }
         await new Promise(r => setTimeout(r, nextDelay))
+        if (!isStillForThisSession()) return
         pending = pendingPass()
       }
     } finally {

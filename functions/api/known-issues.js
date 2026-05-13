@@ -39,6 +39,11 @@ export async function onRequest(context) {
   } catch {}
 
   let issues = []
+  // `upstreamOk` distinguishes "GitHub returned [] for the label" from
+  // "we couldn't reach GitHub and are serving a fallback empty list."
+  // The modal renders different copy for the latter so users don't
+  // misread a rate-limit / outage as "no known issues exist."
+  let upstreamOk = false
   try {
     const upstream = await fetch(
       `https://api.github.com/repos/${REPO}/issues` +
@@ -72,28 +77,38 @@ export async function onRequest(context) {
             // so it adds noise without information.
             .filter(l => l.name !== LABEL),
         }))
+      upstreamOk = true
     }
   } catch {
     // fail-open with [] below
   }
 
-  const body = JSON.stringify({ issues, fetched_at: new Date().toISOString() })
+  const body = JSON.stringify({ issues, upstream_ok: upstreamOk, fetched_at: new Date().toISOString() })
   const response = new Response(body, {
     status: 200,
     headers: {
       'content-type': 'application/json; charset=utf-8',
-      // 10 min at the edge; browser may revalidate immediately. The
-      // edge cache is what actually shields GitHub from our traffic.
-      'cache-control': `public, max-age=60, s-maxage=${CACHE_TTL_SECONDS}`,
+      // 10 min at the edge on success; browser may revalidate
+      // immediately. On fail-open we use a much shorter TTL so a
+      // transient GitHub blip doesn't keep the "couldn't reach" copy
+      // up for 10 minutes after recovery.
+      'cache-control': upstreamOk
+        ? `public, max-age=60, s-maxage=${CACHE_TTL_SECONDS}`
+        : `public, max-age=15, s-maxage=30`,
       'access-control-allow-origin': '*',
     },
   })
 
-  try {
-    // waitUntil so the response ships immediately and the cache write
-    // doesn't block the request.
-    context.waitUntil(cache.put(cacheKey, response.clone()))
-  } catch {}
+  // Only cache successful responses — caching the fail-open empty list
+  // would pin "couldn't reach GitHub" for 10 minutes after GitHub
+  // recovers, since subsequent edge hits would serve the stale failure.
+  if (upstreamOk) {
+    try {
+      // waitUntil so the response ships immediately and the cache write
+      // doesn't block the request.
+      context.waitUntil(cache.put(cacheKey, response.clone()))
+    } catch {}
+  }
 
   return response
 }

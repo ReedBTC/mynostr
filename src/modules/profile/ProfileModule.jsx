@@ -12,6 +12,7 @@ import { fetchUserPublicListsCounts } from '../../lib/userPublicListsCounts.js'
 import { fetchProfiles, fetchUserZapAggregates, fetchAuthorPostingCadence } from '../../lib/primal.js'
 import UserSearch from '../../components/UserSearch.jsx'
 import ShareButton from '../../components/ShareButton.jsx'
+import ZapModal from '../../components/ZapModal.jsx'
 import ProfileEditor from './ProfileEditor.jsx'
 import ProfileStatsCard from './ProfileStatsCard.jsx'
 import ProfileActivityCard from './ProfileActivityCard.jsx'
@@ -338,6 +339,7 @@ export default function ProfileModule({ user, subtab }) {
   const view = (
     <ProfileView
       user={viewingUser}
+      sessionUser={sessionUser}
       isOwner={effectiveIsOwner}
       loggedIn={!!sessionUser}
       previewing={!!previewUser}
@@ -376,7 +378,7 @@ export default function ProfileModule({ user, subtab }) {
   return view
 }
 
-function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, publicListCounts, profileRefreshToken, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading, relaysRef }) {
+function ProfileView({ user, sessionUser, isOwner, loggedIn, previewing, onEdit, onPickAuthor, onClosePreview, saveNotice, onDismissSaveNotice, stats, contentCounts, bookmarkCounts, publicListCounts, profileRefreshToken, zapAggregates, zapLoading, onRefreshActivity, cadence, cadenceLoading, onRefreshCadence, loading, relaysRef }) {
   const profile = user?.profile || {}
   const displayName = profile.displayName || profile.name || 'Anonymous'
   const handle = profile.nip05 || (profile.name ? `@${profile.name}` : null)
@@ -385,6 +387,7 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
   const websiteOk = profile.website && isSafeUrl(profile.website)
 
   const [copied, setCopied] = useState(false)
+  const [zapOpen, setZapOpen] = useState(false)
   async function handleCopyNpub() {
     if (!user?.npub) return
     const ok = await copyToClipboard(user.npub)
@@ -396,6 +399,18 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
 
   return (
     <div className="flex-1 overflow-y-auto">
+      {zapOpen && profile.lud16 && (
+        <ZapModal
+          lud16={profile.lud16}
+          recipientPubkey={user?.pubkey}
+          recipientName={displayName}
+          targetEvent={null}
+          aTag={null}
+          targetKind={null}
+          user={sessionUser}
+          onClose={() => setZapOpen(false)}
+        />
+      )}
       <div className="max-w-xl mx-auto w-full px-4 py-4 space-y-4">
 
         {loggedIn && (
@@ -531,7 +546,14 @@ function ProfileView({ user, isOwner, loggedIn, previewing, onEdit, onPickAuthor
             {profile.lud16 && (
               <div className="flex items-center gap-2 text-neutral-400">
                 <span className="text-neutral-600 w-4 text-center">⚡</span>
-                <span className="text-amber-400 break-all">{profile.lud16}</span>
+                <button
+                  type="button"
+                  onClick={() => setZapOpen(true)}
+                  title={`Zap ${displayName}`}
+                  className="text-amber-400 hover:text-amber-300 break-all text-left underline decoration-amber-700/40 hover:decoration-amber-400 underline-offset-2 focus:outline-none focus:ring-1 focus:ring-amber-500/50 rounded"
+                >
+                  {profile.lud16}
+                </button>
               </div>
             )}
             <PaymentPreferenceRow pubkey={user?.pubkey} refreshToken={profileRefreshToken} />

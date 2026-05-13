@@ -124,9 +124,17 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
         result.errors.push(`${name}: over 1 MB`)
         continue
       }
+      const text = await f.text()
+      let ev
       try {
-        const text = await f.text()
-        const ev = JSON.parse(text)
+        ev = JSON.parse(text)
+      } catch {
+        // V8's SyntaxError text includes the first ~10 chars of input —
+        // keep file contents out of the diagnostic.
+        result.errors.push(`${name}: invalid JSON`)
+        continue
+      }
+      try {
         if (!ev || typeof ev !== 'object') throw new Error('not a JSON object')
         const snapshot = eventToForm(ev)
         if (!snapshot) throw new Error('not a kind 30402 event')
@@ -143,7 +151,9 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
         drafts.createDraft({ snapshot })
         result.imported++
       } catch (e) {
-        result.errors.push(`${name}: ${e?.message || 'invalid JSON'}`)
+        // JSON.parse handled above; remaining errors come from our own
+        // `new Error(...)` throws and don't include file content.
+        result.errors.push(`${name}: ${e?.message || 'unrecognized event'}`)
       }
     }
 
@@ -189,9 +199,15 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
     if (file.size > 1_000_000) {
       return { ok: false, error: 'File too large — 1 MB max.' }
     }
+    const text = await file.text()
+    let ev
     try {
-      const text = await file.text()
-      const ev = JSON.parse(text)
+      ev = JSON.parse(text)
+    } catch {
+      // V8 includes input-snippet in the parse error — generic copy only.
+      return { ok: false, error: 'Invalid JSON file.' }
+    }
+    try {
       const snapshot = eventToForm(ev)
       if (!snapshot) return { ok: false, error: 'Not a kind 30402 listing event.' }
       // Strip dTag — see handleImportDrafts above. JSON import is
@@ -201,8 +217,8 @@ export default function MarketplaceModule({ user, sessionUser, subtab }) {
       snapshot.dTag = ''
       drafts.replaceSnapshot(drafts.currentDraft.id, snapshot)
       return { ok: true }
-    } catch (e) {
-      return { ok: false, error: `Invalid JSON: ${e?.message || 'parse failed'}` }
+    } catch {
+      return { ok: false, error: 'Could not load listing from file.' }
     }
   }, [drafts])
 

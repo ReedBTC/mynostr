@@ -97,6 +97,12 @@ export function getLastWarmupResult() {
 export function isNip44Broken() {
   return !!_lastWarmupResult?.nip44Broken
 }
+// Clear at logout — booleans + extension error strings only, no key
+// material, but a fresh login as a different user shouldn't inherit
+// the previous session's diagnostic.
+export function resetWarmupResult() {
+  _lastWarmupResult = null
+}
 
 // nos2x-fox's getSharedSecret has been observed to throw "secretsCache
 // is undefined" on the FIRST call after a cold extension wake, then
