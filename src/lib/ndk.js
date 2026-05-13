@@ -84,16 +84,65 @@ export async function signWithTimeout(event, timeoutMs = SIGN_TIMEOUT_MS) {
 // diagnostic in BookmarksTab/DiscoverView pulls this so a tester
 // can see whether warmup itself succeeded — if it did, bookmark
 // decrypt failures point at something post-warmup; if it didn't,
-// the extension's nip44 path is broken for our origin and we can
-// stop hunting for app-side causes downstream.
+// the extension's nip44 path is broken for our origin.
+//
+// `nip44Broken` is a hard signal: warmup tried nip44 multiple times
+// and every attempt failed. The rest of the codebase checks this
+// before encrypting and falls back to nip04 so the user can still
+// save new private content even when the extension's nip44 is busted.
 let _lastWarmupResult = null
 export function getLastWarmupResult() {
   return _lastWarmupResult ? { ..._lastWarmupResult } : null
 }
+export function isNip44Broken() {
+  return !!_lastWarmupResult?.nip44Broken
+}
+
+// nos2x-fox's getSharedSecret has been observed to throw "secretsCache
+// is undefined" on the FIRST call after a cold extension wake, then
+// work fine on subsequent calls — module-level `const secretsCache`
+// shouldn't be undefined, but Firefox Android's extension lifecycle
+// has been observed to land messages in a partially-evaluated module.
+// Retry a few times with a small delay before declaring nip44 broken.
+const NIP44_RETRY_DELAYS_MS = [120, 500, 1500]
+
+async function tryNip44Encrypt(pubkey, plaintext) {
+  if (typeof window.nostr.nip44?.encrypt !== 'function') return { ok: false, value: null, err: 'no nip44.encrypt' }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const v = await window.nostr.nip44.encrypt(pubkey, plaintext)
+      if (typeof v === 'string' && v.length > 0) return { ok: true, value: v, err: '' }
+      // empty string treated as failure
+    } catch (e) {
+      const err = `nip44.encrypt: ${e?.message || String(e)}`
+      const delay = NIP44_RETRY_DELAYS_MS[attempt]
+      if (delay == null) return { ok: false, value: null, err }
+      await new Promise(r => setTimeout(r, delay))
+    }
+  }
+}
+
+async function tryNip44Decrypt(pubkey, ciphertext) {
+  if (typeof window.nostr.nip44?.decrypt !== 'function') return { ok: false, value: null, err: 'no nip44.decrypt' }
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const v = await window.nostr.nip44.decrypt(pubkey, ciphertext)
+      if (typeof v === 'string' && v.length > 0) return { ok: true, value: v, err: '' }
+    } catch (e) {
+      const err = `nip44.decrypt: ${e?.message || String(e)}`
+      const delay = NIP44_RETRY_DELAYS_MS[attempt]
+      if (delay == null) return { ok: false, value: null, err }
+      await new Promise(r => setTimeout(r, delay))
+    }
+  }
+}
 
 export async function warmupNip07Permissions() {
   if (typeof window === 'undefined' || !window?.nostr) return
-  const result = { ran: false, c04ok: false, c44ok: false, d04ok: false, d44ok: false, lastError: '' }
+  const result = {
+    ran: false, c04ok: false, c44ok: false, d04ok: false, d44ok: false,
+    nip44Attempts: 0, nip44Broken: false, lastError: '',
+  }
   try {
     const pubkey = await window.nostr.getPublicKey()
     if (!pubkey || typeof pubkey !== 'string') return
@@ -101,23 +150,14 @@ export async function warmupNip07Permissions() {
 
     // Sequential calls — NOT Promise.all. Concurrent calls to window.nostr
     // have been observed to leave nos2x-fox in a broken state on Firefox
-    // Android where subsequent decrypts fail with "secretsCache is
-    // undefined" even when permissions are granted. Welshman (Coracle's
-    // signer) serializes every extension call with a lock for the same
-    // reason. We mirror that here so the bookmark decrypt sweep later
-    // doesn't inherit a corrupted extension state.
-    let c04, c44
+    // Android. Welshman (Coracle's signer) serializes every extension
+    // call with a lock for the same reason.
+    let c04
     if (typeof window.nostr.nip04?.encrypt === 'function') {
       try {
         c04 = await window.nostr.nip04.encrypt(pubkey, 'mynostr-warmup')
         if (typeof c04 === 'string' && c04.length > 0) result.c04ok = true
       } catch (e) { result.lastError = `nip04.encrypt: ${e?.message || String(e)}` }
-    }
-    if (typeof window.nostr.nip44?.encrypt === 'function') {
-      try {
-        c44 = await window.nostr.nip44.encrypt(pubkey, 'mynostr-warmup')
-        if (typeof c44 === 'string' && c44.length > 0) result.c44ok = true
-      } catch (e) { result.lastError = `nip44.encrypt: ${e?.message || String(e)}` }
     }
     if (c04 && typeof window.nostr.nip04?.decrypt === 'function') {
       try {
@@ -125,14 +165,29 @@ export async function warmupNip07Permissions() {
         if (r === 'mynostr-warmup') result.d04ok = true
       } catch (e) { result.lastError = `nip04.decrypt: ${e?.message || String(e)}` }
     }
-    if (c44 && typeof window.nostr.nip44?.decrypt === 'function') {
-      try {
-        const r = await window.nostr.nip44.decrypt(pubkey, c44)
-        if (r === 'mynostr-warmup') result.d44ok = true
-      } catch (e) { result.lastError = `nip44.decrypt: ${e?.message || String(e)}` }
+
+    // nip44 path with retries — the first attempt has been observed to
+    // hit a stale extension module state and throw secretsCache undefined.
+    // Try up to 4 times with backoff before declaring nip44 broken.
+    const enc44 = await tryNip44Encrypt(pubkey, 'mynostr-warmup')
+    result.nip44Attempts = NIP44_RETRY_DELAYS_MS.length + 1
+    result.c44ok = enc44.ok
+    if (!enc44.ok) result.lastError = enc44.err
+
+    if (enc44.ok) {
+      const dec44 = await tryNip44Decrypt(pubkey, enc44.value)
+      result.d44ok = dec44.ok && dec44.value === 'mynostr-warmup'
+      if (!dec44.ok) result.lastError = dec44.err
     }
+
+    // nip44 is "broken" only if BOTH encrypt and decrypt failed after
+    // every retry. Encrypt-succeeds-decrypt-fails is a different beast
+    // (probably impossible mathematically; if it happens, treat as broken
+    // for safety so we fall back to nip04 on writes).
+    if (!result.c44ok || !result.d44ok) result.nip44Broken = true
   } catch (e) {
     result.lastError = `outer: ${e?.message || String(e)}`
+    result.nip44Broken = true
   } finally {
     _lastWarmupResult = result
   }
