@@ -123,6 +123,14 @@ export async function decryptPrivateTagArrayDetailed(ciphertext, ndk) {
     nip04: typeof window?.nostr?.nip04?.decrypt === 'function',
     nip44: typeof window?.nostr?.nip44?.decrypt === 'function',
     hasSigner: !!ndk?.signer,
+    // signerType pins which decrypt path actually ran:
+    //   - NDKNip07Signer = window.nostr (browser extension)
+    //   - Nip46BunkerSigner = Amber/Primal/nsec.app over NIP-46
+    //   - NDKPrivateKeySigner = raw nsec held in memory
+    // Without this, a failure message naming "nos2x-fox" looked like
+    // it could only come from Amber; really it's diagnostic of which
+    // signer was wired up at the time.
+    signerType: ndk?.signer?.constructor?.name || null,
     pubkey: null,
   }
   if (!ciphertext || typeof ciphertext !== 'string') {

@@ -99,6 +99,10 @@ export default function BookmarksTab({ user, isOwner }) {
   // "Confirm?  Yes / No" on first click instead of popping a native
   // browser prompt (matches the longform module's pattern).
   const [confirmBulkRemove, setConfirmBulkRemove] = useState(false)
+  // Per-session dismissal for the decrypt-failure banner. Persists
+  // across category switches in this tab but resets on reload so
+  // genuine failures still surface on the next visit.
+  const [decryptBannerDismissed, setDecryptBannerDismissed] = useState(false)
   const moveMenuRef = useRef(null)
   const newMoveInputRef = useRef(null)
 
@@ -498,55 +502,54 @@ export default function BookmarksTab({ user, isOwner }) {
   // and pending-no-attempts-in-flight (also Retry — covers the silent-
   // fail case on mobile Firefox where the cold-load sweep rejected
   // without ever surfacing a prompt to the user).
-  const showDecryptBanner = isOwner && isPrivate && pendingDecryptCount > 0
+  // Banner is gated on owner + private + something to do + not yet dismissed
+  // by the user this session. Tight one-liner layout: text on the left, retry
+  // + dismiss on the right, diagnostic tucked under a <details>. Was eating
+  // half the mobile viewport before — keep it lean.
+  const showDecryptBanner = isOwner && isPrivate && pendingDecryptCount > 0 && !decryptBannerDismissed
   const decryptBanner = showDecryptBanner ? (
     <div className="max-w-xl mx-auto w-full px-4 pt-2">
-      <div className="px-3 py-2 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-start gap-2">
-        <span className="text-base leading-none mt-0.5" aria-hidden>
+      <div className="px-2.5 py-1.5 rounded border border-amber-900/60 bg-amber-950/25 text-[11px] text-amber-200 flex items-center gap-2">
+        <span className="leading-none" aria-hidden>
           {privateDecryptInProgress ? '🔒' : '⚠'}
         </span>
-        <div className="flex-1">
-          {privateDecryptInProgress ? (
-            <span>
-              Decrypting your private bookmarks
-              {pendingDecryptCount > 1 ? ` (${pendingDecryptCount} categories)` : ''}…
-              Your signer extension may prompt you to approve.
-            </span>
-          ) : (
-            <>
-              <span>
-                Couldn't decrypt {pendingDecryptCount}
-                {' '}{pendingDecryptCount === 1 ? 'private category' : 'private categories'}.
-                {' '}Your signer needs to approve a decrypt prompt — try the button below.
-                On mobile Firefox, the prompt sometimes doesn't render unless you tap to trigger it.
-              </span>
-              <div className="mt-2 flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => { retryDecrypt?.() }}
-                  disabled={privateDecryptInProgress}
-                  className="px-2.5 py-1 rounded bg-amber-700/40 hover:bg-amber-700/60 disabled:opacity-50 text-amber-100 text-[11px] font-medium border border-amber-700/40"
-                >
-                  Tap to decrypt
-                </button>
-              </div>
-              {decryptDiagnostic && (
-                <details className="mt-2 text-[10px] text-amber-300/80">
-                  <summary className="cursor-pointer hover:text-amber-200">Details for support</summary>
-                  <div className="mt-1 space-y-0.5 font-mono">
-                    <div>nip04 exposed: {String(decryptDiagnostic.available?.nip04)}</div>
-                    <div>nip44 exposed: {String(decryptDiagnostic.available?.nip44)}</div>
-                    <div>signer attached: {String(decryptDiagnostic.available?.hasSigner)}</div>
-                    {decryptDiagnostic.errors?.map((e, i) => (
-                      <div key={i} className="break-all">• {e}</div>
-                    ))}
-                  </div>
-                </details>
-              )}
-            </>
-          )}
-        </div>
+        <span className="flex-1 truncate">
+          {privateDecryptInProgress
+            ? `Decrypting ${pendingDecryptCount > 1 ? `${pendingDecryptCount} categories` : 'private bookmarks'}…`
+            : `Couldn't decrypt ${pendingDecryptCount} ${pendingDecryptCount === 1 ? 'category' : 'categories'}.`}
+        </span>
+        {!privateDecryptInProgress && (
+          <button
+            type="button"
+            onClick={() => { retryDecrypt?.() }}
+            className="shrink-0 px-2 py-0.5 rounded bg-amber-700/40 hover:bg-amber-700/60 text-amber-100 text-[11px] font-medium border border-amber-700/40"
+          >
+            Retry
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setDecryptBannerDismissed(true)}
+          aria-label="Dismiss"
+          title="Dismiss for this session"
+          className="shrink-0 w-5 h-5 rounded text-amber-300/70 hover:text-amber-100 hover:bg-amber-900/40 transition-colors leading-none text-base"
+        >
+          ×
+        </button>
       </div>
+      {!privateDecryptInProgress && decryptDiagnostic && (
+        <details className="mt-1 text-[10px] text-amber-300/70 px-1">
+          <summary className="cursor-pointer hover:text-amber-200">Details for support</summary>
+          <div className="mt-1 space-y-0.5 font-mono">
+            <div>signer: {decryptDiagnostic.available?.signerType || '(unknown)'}</div>
+            <div>nip04 exposed: {String(decryptDiagnostic.available?.nip04)}</div>
+            <div>nip44 exposed: {String(decryptDiagnostic.available?.nip44)}</div>
+            {decryptDiagnostic.errors?.map((e, i) => (
+              <div key={i} className="break-all">• {e}</div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   ) : null
 
