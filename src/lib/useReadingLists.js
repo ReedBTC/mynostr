@@ -386,6 +386,11 @@ async function decryptPrivateArticlesDetailed(ciphertext, ndk) {
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
 
+// Retry pacing for the private-decrypt pass (parallel to useNoteBookmarks).
+// Catches the cold-start signer race AND gives the user time to grant a
+// per-call permission popup without leaving the list permanently empty.
+const PRIVATE_DECRYPT_RETRY_DELAYS_MS = [1000, 3000]
+
 export function useReadingLists(user) {
   const [lists,           setLists]           = useState([])
   const [hiddenIdsByView, setHiddenIdsByView] = useState(() => ({
@@ -430,10 +435,9 @@ export function useReadingLists(user) {
     })
   }, [pubkey])
 
-  // Single-pass decrypt sweep — see matching comment in useNoteBookmarks
-  // runDecryptPass for full rationale. Reverted from multi-attempt retry
-  // (3d7f5bf May 9 13:08) to isolate whether retry wrapping is the
-  // regression vector. retryDecrypt is still exposed for user-tap retries.
+  // Sequential decrypt sweep with backoff retries (1s, 3s). Exposed as
+  // `retryDecrypt` so the UI can offer a "Tap to retry" button. Re-entrant
+  // guard prevents the cold-load and a user tap from running concurrently.
   const runDecryptPass = useCallback(async () => {
     if (!pubkey || readOnly) return
     if (decryptInFlightRef.current) return
@@ -451,43 +455,54 @@ export function useReadingLists(user) {
           if (art.aTag) cachedItemMap.set(art.aTag, art)
         }
       }
-      const live = listsRef.current
-      const pending = live.filter(l => l.privateCiphertext && !l.privateDecrypted)
+      function pendingPass() {
+        const live = listsRef.current
+        return live.filter(l => l.privateCiphertext && !l.privateDecrypted)
+      }
+      let pending = pendingPass()
       if (pending.length === 0) {
         setPrivateDecryptFailed(0)
         setDecryptDiagnostic(null)
         return
       }
       let lastDiagnostic = null
-      let failureCount = 0
-      for (const list of pending) {
-        if (!ndk.signer) { failureCount++; continue }
-        const { articles: privateArticles, diagnostic, decryptOk } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
-        if (!decryptOk) {
-          if (diagnostic) lastDiagnostic = diagnostic
-          failureCount++
-          continue
+      for (let attempt = 0; ; attempt++) {
+        const failures = []
+        for (const list of pending) {
+          if (!ndk.signer) { failures.push(list); continue }
+          const { articles: privateArticles, diagnostic, decryptOk } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
+          if (!decryptOk) {
+            if (diagnostic) lastDiagnostic = diagnostic
+            failures.push(list)
+            continue
+          }
+          for (const art of privateArticles) {
+            const c = cachedItemMap.get(art.aTag)
+            if (!c) continue
+            if (!art.title       && c.title)       art.title       = c.title
+            if (!art.image       && c.image)       art.image       = c.image
+            if (!art.author      && c.author)      art.author      = c.author
+            if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
+            if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
+            if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
+          }
+          setLists(prev => prev.map(l =>
+            l.id === list.id ? { ...l, privateArticles, privateDecrypted: true } : l
+          ))
         }
-        for (const art of privateArticles) {
-          const c = cachedItemMap.get(art.aTag)
-          if (!c) continue
-          if (!art.title       && c.title)       art.title       = c.title
-          if (!art.image       && c.image)       art.image       = c.image
-          if (!art.author      && c.author)      art.author      = c.author
-          if (!art.authorPic   && c.authorPic)   art.authorPic   = c.authorPic
-          if (!art.publishedAt && c.publishedAt) art.publishedAt = c.publishedAt
-          if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
+        if (failures.length === 0) {
+          setPrivateDecryptFailed(0)
+          setDecryptDiagnostic(null)
+          return
         }
-        setLists(prev => prev.map(l =>
-          l.id === list.id ? { ...l, privateArticles, privateDecrypted: true } : l
-        ))
-      }
-      if (failureCount === 0) {
-        setPrivateDecryptFailed(0)
-        setDecryptDiagnostic(null)
-      } else {
-        setPrivateDecryptFailed(failureCount)
-        if (lastDiagnostic) setDecryptDiagnostic(lastDiagnostic)
+        const nextDelay = PRIVATE_DECRYPT_RETRY_DELAYS_MS[attempt]
+        if (nextDelay == null) {
+          setPrivateDecryptFailed(failures.length)
+          if (lastDiagnostic) setDecryptDiagnostic(lastDiagnostic)
+          return
+        }
+        await new Promise(r => setTimeout(r, nextDelay))
+        pending = pendingPass()
       }
     } finally {
       decryptInFlightRef.current = false

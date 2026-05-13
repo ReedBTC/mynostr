@@ -305,10 +305,11 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       setLoadingStep('Connecting to relays…')
       await connectAndWait(ndk)
       const pubkey = await signer.user()
-      // Warmup intentionally NOT called here — see the matching
-      // comment in sessionPersistence.js's extension restore branch.
-      // Short version: firing nip44 calls at login was the regression
-      // that broke the bookmark decrypt sweep on Firefox Android.
+      // Batch-authorize all NIP-07 permissions upfront in one popup
+      // (Coracle-style). See warmupNip07Permissions in ndk.js for the
+      // full rationale. Doesn't help the nos2x-fox-Firefox-Android
+      // nip44 bug, but materially improves UX on every other signer.
+      await warmupNip07Permissions()
       await ensureUserWriteRelays(ndk, pubkey.pubkey)
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
       saveSession(buildExtensionRecord(pubkey.pubkey))
