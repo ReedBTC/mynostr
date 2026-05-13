@@ -57,6 +57,69 @@ export async function signWithTimeout(event, timeoutMs = SIGN_TIMEOUT_MS) {
   }
 }
 
+/**
+ * Pre-authorize every NIP-07 permission in one batched popup at login.
+ *
+ * Coracle, Snort, and other reference clients get a single approval popup
+ * at sign-in listing every operation they'll ever need (read pubkey,
+ * sign, nip04 encrypt/decrypt, nip44 encrypt/decrypt). NDK's
+ * NDKNip07Signer.blockUntilReady only asks for read_pubkey. So our first
+ * nip44.decrypt call — fired from the page-load bookmark sweep, no
+ * user-gesture context — hits an unauthorized state. nos2x-fox on
+ * Firefox Android can't pop up the approval from that context and throws
+ * "secretsCache is undefined" instead of asking the user.
+ *
+ * Fix: right after getPublicKey, fire encrypt + decrypt for both schemes
+ * concurrently. Extensions queue parallel permission requests and show
+ * one batched popup matching Coracle's UX — user picks "Authorize
+ * forever" once, every subsequent operation sails through silently.
+ *
+ * Only safe to call for NIP-07 sessions (callers must gate). NIP-46
+ * bunkers have their own permission model and don't touch window.nostr.
+ *
+ * Always silent on failure — login proceeds regardless of what the
+ * extension or user does with the popup.
+ */
+export async function warmupNip07Permissions() {
+  if (typeof window === 'undefined' || !window?.nostr) return
+  try {
+    const pubkey = await window.nostr.getPublicKey()
+    if (!pubkey || typeof pubkey !== 'string') return
+
+    // Stage 1: encrypts in parallel. nos2x-fox queues concurrent
+    // permission requests into one popup; if the user authorizes
+    // forever, stage 2 (decrypts) succeeds silently.
+    const has04Encrypt = typeof window.nostr.nip04?.encrypt === 'function'
+    const has44Encrypt = typeof window.nostr.nip44?.encrypt === 'function'
+    const encryptResults = await Promise.allSettled([
+      has04Encrypt ? window.nostr.nip04.encrypt(pubkey, 'mynostr-warmup') : Promise.reject(new Error('nip04 unavailable')),
+      has44Encrypt ? window.nostr.nip44.encrypt(pubkey, 'mynostr-warmup') : Promise.reject(new Error('nip44 unavailable')),
+    ])
+
+    // Stage 2: decrypts in parallel, using the freshly-encrypted blobs
+    // as valid ciphertexts. Catch each individually so one scheme's
+    // failure doesn't short-circuit the other.
+    const decryptCalls = []
+    const has04Decrypt = typeof window.nostr.nip04?.decrypt === 'function'
+    const has44Decrypt = typeof window.nostr.nip44?.decrypt === 'function'
+    if (has04Decrypt && encryptResults[0].status === 'fulfilled' && typeof encryptResults[0].value === 'string') {
+      decryptCalls.push(
+        window.nostr.nip04.decrypt(pubkey, encryptResults[0].value).catch(() => {}),
+      )
+    }
+    if (has44Decrypt && encryptResults[1].status === 'fulfilled' && typeof encryptResults[1].value === 'string') {
+      decryptCalls.push(
+        window.nostr.nip44.decrypt(pubkey, encryptResults[1].value).catch(() => {}),
+      )
+    }
+    if (decryptCalls.length) await Promise.all(decryptCalls)
+  } catch {
+    // Swallow — login proceeds either way. If the user rejected the
+    // popup, the existing decrypt-failure banner will surface the
+    // problem and offer Retry from the actual decrypt path.
+  }
+}
+
 // Add the signed-in user's kind-10002 write relays to NDK's explicit pool.
 // This is the outbox model (NIP-65): events the user publishes should go
 // to the relays their followers already read from, not just our fallbacks.
