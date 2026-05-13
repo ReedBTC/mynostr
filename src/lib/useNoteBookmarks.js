@@ -96,7 +96,9 @@ function sanitizeCachedCategory(c) {
   const extraTags = Array.isArray(c.extraTags)
     ? c.extraTags.filter(t => Array.isArray(t) && typeof t[0] === 'string')
     : []
-  return { ...c, items, otherContentItems, extraTags, privateItems: [] }
+  // privateDecrypted is a runtime success flag — never trust whatever
+  // happened to be in the cache. A fresh session always re-decrypts.
+  return { ...c, items, otherContentItems, extraTags, privateItems: [], privateDecrypted: false }
 }
 function loadFromStorage(pubkey) {
   const key = storageKeyFor(pubkey)
@@ -120,7 +122,9 @@ function saveToStorage(pubkey, categories) {
     // a new private item would overwrite any private items written to the
     // same category by another module.
     const stripped = (categories || []).map(c => {
-      const { privateItems, ...rest } = c
+      // privateDecrypted is a runtime success flag — strip so a stale
+      // `true` doesn't survive into a session where decrypt hasn't run.
+      const { privateItems, privateDecrypted, ...rest } = c
       return rest
     })
     localStorage.setItem(key, JSON.stringify(stripped))
@@ -330,9 +334,16 @@ export function useNoteBookmarks(user) {
     setPrivateDecryptInProgress(true)
     try {
       const ndk = getNDK()
+      // Pending = "decrypt hasn't successfully run yet." We can't use
+      // `privateItems.length === 0` as a proxy: cross-module shared
+      // categories (notes + longform sharing 10003/30001/30003) often
+      // contain only `a` tags, which `tagArrayToNoteItems` filters out
+      // — a successful decrypt of an articles-only blob legitimately
+      // yields zero notes, and the old predicate kept retrying those
+      // forever and ultimately reporting them as "couldn't decrypt."
       function nextPending() {
         const live = categoriesRef.current
-        return live.filter(c => c.privateCiphertext && !c.readOnly && (c.privateItems?.length || 0) === 0)
+        return live.filter(c => c.privateCiphertext && !c.readOnly && !c.privateDecrypted)
       }
       let pending = nextPending()
       if (pending.length === 0) {
@@ -346,14 +357,18 @@ export function useNoteBookmarks(user) {
         for (const cat of pending) {
           if (!ndk.signer) { failures.push(cat); continue }
           const detailed = await decryptPrivateTagArrayDetailed(cat.privateCiphertext, ndk)
-          if (!detailed.result) {
+          if (!Array.isArray(detailed.result)) {
+            // True decrypt failure — no tag array came back at all.
             lastDetailed = detailed
             failures.push(cat)
             continue
           }
+          // Decrypt succeeded. `privateItems` may legitimately be empty
+          // when the blob contained only `a` tags from longform — flag
+          // `privateDecrypted` so we don't retry the cross-module case.
           const privateItems = tagArrayToNoteItems(detailed.result)
           setCategories(prev => prev.map(c =>
-            c.id === cat.id ? { ...c, privateItems } : c
+            c.id === cat.id ? { ...c, privateItems, privateDecrypted: true } : c
           ))
         }
         if (failures.length === 0) {

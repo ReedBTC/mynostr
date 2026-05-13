@@ -875,8 +875,15 @@ export default function DiscoverView({ user, lists, privateDecryptFailed = 0, pr
           3. (Same UI as #2 when the retry loop has finished with failures.)
           Mirrors the BookmarksTab pattern. */}
       {!readOnly && privacyView === 'private' && (() => {
+        // `privateDecrypted` is the runtime success flag from
+        // useReadingLists. The old `privateArticles.length === 0`
+        // proxy was the bug that flagged cross-module shared lists
+        // (notes + longform sharing 10003/30001/30003) as "couldn't
+        // decrypt" whenever the blob held only `e` tags — decrypt
+        // succeeded; the articles-side filter legitimately returned
+        // zero articles.
         const pendingDecryptCount = lists.filter(
-          l => l.privateCiphertext && (l.privateArticles?.length || 0) === 0,
+          l => l.privateCiphertext && !l.privateDecrypted,
         ).length
         if (pendingDecryptCount === 0) return null
         return (

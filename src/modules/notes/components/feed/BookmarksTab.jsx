@@ -477,12 +477,19 @@ export default function BookmarksTab({ user, isOwner }) {
   // hasn't been granted the nip44.decrypt permission for this site.
   // The banner sits above the chip bar so it's visible regardless of
   // which category the user lands on.
-  // Categories that have a ciphertext blob but no decrypted items yet.
-  // Drives the banner state machine below — we always know how many
-  // private categories are "still pending" regardless of which phase
-  // (initial sweep, between retries, post-failure) we're in.
+  // Categories that have a ciphertext blob but haven't had a successful
+  // decrypt run yet. Drives the banner state machine below — we always
+  // know how many private categories are "still pending" regardless of
+  // phase (initial sweep, between retries, post-failure).
+  //
+  // `privateDecrypted` is the runtime success flag from useNoteBookmarks.
+  // Using `privateItems.length === 0` here was the regression that
+  // surfaced cross-module shared categories (notes + longform sharing
+  // 10003/30001/30003) as "couldn't decrypt" whenever the blob held
+  // only `a` tags — decrypt actually succeeded; the notes-side filter
+  // legitimately returned zero items.
   const pendingDecryptCount = useMemo(
-    () => categories.filter(c => c.privateCiphertext && !c.readOnly && (c.privateItems?.length || 0) === 0).length,
+    () => categories.filter(c => c.privateCiphertext && !c.readOnly && !c.privateDecrypted).length,
     [categories],
   )
   // Banner is only relevant on the Private tab for the owner, and only

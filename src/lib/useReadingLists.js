@@ -78,7 +78,9 @@ function sanitizeCachedList(l) {
   const extraTags = Array.isArray(l.extraTags)
     ? l.extraTags.filter(t => Array.isArray(t) && typeof t[0] === 'string')
     : []
-  return { ...l, articles, otherContentItems, extraTags, privateArticles: [] }
+  // privateDecrypted is a runtime success flag — never trust a cached
+  // value. A fresh session always re-decrypts.
+  return { ...l, articles, otherContentItems, extraTags, privateArticles: [], privateDecrypted: false }
 }
 function loadFromStorage(pubkey) {
   const key = storageKeyFor(pubkey)
@@ -98,7 +100,9 @@ function saveToStorage(pubkey, lists) {
     // rule. The privateCiphertext blob is safe to persist (still encrypted,
     // requires the signer to decrypt).
     const stripped = (lists || []).map(l => {
-      const { privateArticles, ...rest } = l
+      // privateDecrypted is a runtime success flag — strip so a stale
+      // `true` doesn't survive into a session where decrypt hasn't run.
+      const { privateArticles, privateDecrypted, ...rest } = l
       return rest
     })
     localStorage.setItem(key, JSON.stringify(stripped))
@@ -359,9 +363,13 @@ async function decryptPrivateArticles(ciphertext, ndk) {
 // Variant that also returns the underlying decrypt diagnostic so the
 // UI can surface what actually went wrong on failure.
 async function decryptPrivateArticlesDetailed(ciphertext, ndk) {
-  if (!ciphertext) return { articles: [], diagnostic: null }
+  if (!ciphertext) return { articles: [], diagnostic: null, decryptOk: false }
   const detailed = await decryptPrivateTagArrayDetailed(ciphertext, ndk)
-  if (!Array.isArray(detailed.result)) return { articles: [], diagnostic: detailed }
+  // `decryptOk` distinguishes "decrypt failed" from "decrypted but the
+  // blob has no `a` tags" — critical when notes and longform share a
+  // category. The articles-side decrypt of a notes-only blob succeeds
+  // and returns []; callers need to know that's not a failure.
+  if (!Array.isArray(detailed.result)) return { articles: [], diagnostic: detailed, decryptOk: false }
   const out = []
   const seen = new Set()
   for (const t of detailed.result) {
@@ -373,7 +381,7 @@ async function decryptPrivateArticlesDetailed(ciphertext, ndk) {
     seen.add(aTag)
     out.push(stubFromATag(aTag, 0))
   }
-  return { articles: out, diagnostic: detailed }
+  return { articles: out, diagnostic: detailed, decryptOk: true }
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -451,9 +459,16 @@ export function useReadingLists(user) {
           if (art.aTag) cachedItemMap.set(art.aTag, art)
         }
       }
+      // Pending = "decrypt hasn't successfully run yet." Using
+      // `privateArticles.length === 0` as a proxy was wrong: cross-
+      // module shared categories (notes + longform sharing 10003/30001
+      // /30003) often contain only `e` tags, which yield zero articles
+      // after our `a`-tag filter — a legitimate success the old
+      // predicate kept retrying forever and falsely reporting as
+      // "couldn't decrypt."
       function pendingPass() {
         const live = listsRef.current
-        return live.filter(l => l.privateCiphertext && (l.privateArticles?.length || 0) === 0)
+        return live.filter(l => l.privateCiphertext && !l.privateDecrypted)
       }
       let pending = pendingPass()
       if (pending.length === 0) {
@@ -466,12 +481,17 @@ export function useReadingLists(user) {
         const failures = []
         for (const list of pending) {
           if (!ndk.signer) { failures.push(list); continue }
-          const { articles: privateArticles, diagnostic } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
-          if (privateArticles.length === 0) {
+          const { articles: privateArticles, diagnostic, decryptOk } = await decryptPrivateArticlesDetailed(list.privateCiphertext, ndk)
+          if (!decryptOk) {
+            // True decrypt failure — capture diagnostic and retry.
             if (diagnostic) lastDiagnostic = diagnostic
             failures.push(list)
             continue
           }
+          // Decrypt succeeded. `privateArticles` may legitimately be
+          // empty when the blob held only `e` tags from the notes
+          // module — flag `privateDecrypted` so we don't keep retrying
+          // a perfectly-valid cross-module category.
           for (const art of privateArticles) {
             const c = cachedItemMap.get(art.aTag)
             if (!c) continue
@@ -483,7 +503,7 @@ export function useReadingLists(user) {
             if ((!art.tTags || art.tTags.length === 0) && c.tTags?.length) art.tTags = c.tTags
           }
           setLists(prev => prev.map(l =>
-            l.id === list.id ? { ...l, privateArticles } : l
+            l.id === list.id ? { ...l, privateArticles, privateDecrypted: true } : l
           ))
         }
         if (failures.length === 0) {
