@@ -30,7 +30,13 @@ const CONFIG = {
   relay:  'wss://relay.mynostr.app',
   tag:    'mynostr-alpha',          // strict — events without this tag are ignored
   repo:   'ReedBTC/mynostr',
-  labels: ['bug', 'from-relay'],
+  // `known-issue` is the gating label for the in-app Known Issues
+  // modal. Auto-applying it surfaces every relay-reported bug to users
+  // by default — Reed manually removes the label from anything that
+  // turns out to be a dupe / user error / wontfix during triage.
+  // Flip back to ['bug', 'from-relay'] if signal-quality becomes a
+  // problem at higher volume.
+  labels: ['bug', 'from-relay', 'known-issue'],
   // First run: pull events from this many days back to seed the
   // seen-ids set without creating issues. Tune up if you have older
   // test reports on the relay you want to mark as already-handled.
