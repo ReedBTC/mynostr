@@ -14,10 +14,25 @@ import {
 } from '../lib/boostagram.js'
 import { isSafeUrl } from '../lib/utils.js'
 import * as nwc from '../lib/nwc.js'
+import * as webln from '../lib/webln.js'
 import { useWalletStatus } from '../lib/useWalletStatus.js'
 
 const POLL_INTERVAL_MS = 2500
 const PRESETS = [21, 210, 2100, 21000]
+
+// NWC takes precedence when both are connected (NWC is the explicit
+// connect path; WebLN can re-enable silently from the persisted flag).
+// Mirrors the dispatcher in ZapModal so a WebLN-only user gets the same
+// auto-pay experience the green "Pays via your connected wallet" hint
+// promises.
+function payInvoiceViaActiveWallet(bolt11) {
+  if (nwc.isReady())   return nwc.payInvoice(bolt11)
+  if (webln.isReady()) return webln.payInvoice(bolt11)
+  return Promise.reject(new Error('No wallet connected'))
+}
+function anyWalletReady() {
+  return nwc.isReady() || webln.isReady()
+}
 
 export default function BoostModal({ user, onClose, readOnly }) {
   const [amount, setAmount] = useState('21')
@@ -185,12 +200,13 @@ export default function BoostModal({ user, onClose, readOnly }) {
     const trimmedComment = maxLen > 0 ? comment.slice(0, maxLen) : comment
 
     // Pin the auto-pay branch up-front so all downstream UI decisions are
-    // consistent. With NWC connected, flip to the unified "Sending…" view
-    // BEFORE any async work — otherwise the form's stage labels ('Fetching
-    // invoice…', 'Approve in your signer app…') flash for ~100–500ms each
-    // on a fast NIP-07 signer, which reads as choppy.
-    const nwcConnected = nwc.isReady()
-    if (nwcConnected) {
+    // consistent. With a wallet (NWC or WebLN) connected, flip to the
+    // unified "Sending…" view BEFORE any async work — otherwise the form's
+    // stage labels ('Fetching invoice…', 'Approve in your signer app…')
+    // flash for ~100–500ms each on a fast NIP-07 signer, which reads as
+    // choppy.
+    const walletConnected = anyWalletReady()
+    if (walletConnected) {
       setNwcSending(true)
     } else {
       setLoading(true)
@@ -220,7 +236,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
       //    for the prompt; on the NWC path the unified "Sending…" view
       //    stays steady — most users are on fast NIP-07 extensions and the
       //    flicker isn't worth it.
-      if (!nwcConnected) {
+      if (!walletConnected) {
         setLoadingStep(anonymous
           ? 'Publishing receipt…'
           : 'Approve in your signer app…')
@@ -249,18 +265,19 @@ export default function BoostModal({ user, onClose, readOnly }) {
         // it with. User should know.
         setMetaPublished(!!published)
 
-        // 4. Pay. NWC auto-pays in foreground; non-NWC arms verify polling
-        //    so the modal can detect an external wallet's settlement.
-        if (nwcConnected) {
+        // 4. Pay. Connected wallet (NWC or WebLN) auto-pays in foreground;
+        //    no-wallet path arms verify polling so the modal can detect an
+        //    external wallet's settlement of the QR.
+        if (walletConnected) {
           const t0 = Date.now()
-          console.info('[mynostr-nwc] boost payInvoice: sending request')
+          console.info('[mynostr-boost] payInvoice: sending request')
           try {
-            await nwc.payInvoice(pr)
-            console.info(`[mynostr-nwc] boost payInvoice: settled in ${Date.now() - t0}ms`)
+            await payInvoiceViaActiveWallet(pr)
+            console.info(`[mynostr-boost] payInvoice: settled in ${Date.now() - t0}ms`)
             setPaid(true)
           } catch (e) {
             const msg = String(e?.message || e)
-            console.warn(`[mynostr-nwc] boost payInvoice failed after ${Date.now() - t0}ms:`, msg)
+            console.warn(`[mynostr-boost] payInvoice failed after ${Date.now() - t0}ms:`, msg)
             const friendly = /reply.?timeout|publish.?timeout|timeout/i.test(msg)
               ? 'Your wallet didn\'t acknowledge the payment within 25 seconds. The payment may have actually gone through — check your wallet before retrying.'
               : (msg && msg.length < 200 ? msg : 'Wallet payment failed.')
@@ -276,7 +293,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
       }
     } catch (e) {
       setError(e.message)
-      if (nwcConnected) setNwcSending(false)
+      if (walletConnected) setNwcSending(false)
     } finally {
       setLoading(false)
       setLoadingStep('')
