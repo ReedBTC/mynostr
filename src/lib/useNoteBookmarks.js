@@ -267,6 +267,9 @@ export function useNoteBookmarks(user) {
     public: new Set(),
     private: new Set(),
   }))
+  const pubkey   = user?.pubkey
+  const readOnly = !!user?.readOnly
+
   // Mirror of `categories` so async flows (deleteCategory) can read the
   // current value without wrapping logic in a setState reducer.
   const categoriesRef = useRef([])
@@ -275,9 +278,6 @@ export function useNoteBookmarks(user) {
   // the user signs out / switches accounts mid-pass. See runDecryptPass.
   const pubkeyRef = useRef(pubkey)
   useEffect(() => { pubkeyRef.current = pubkey }, [pubkey])
-
-  const pubkey   = user?.pubkey
-  const readOnly = !!user?.readOnly
 
   // Load per-pubkey hidden set whenever the session user changes.
   useEffect(() => {
