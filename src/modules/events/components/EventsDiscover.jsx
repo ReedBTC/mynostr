@@ -145,7 +145,9 @@ export default function EventsDiscover({ sessionUser }) {
     if (!tag) return
     const cleaned = tag.trim().toLowerCase()
     if (!cleaned) {
-      setSearchParams({}, { replace: true })
+      const next = new URLSearchParams(searchParams)
+      next.delete('tag')
+      setSearchParams(next, { replace: true })
       return
     }
     setSearchAuthor(null)
@@ -155,9 +157,59 @@ export default function EventsDiscover({ sessionUser }) {
       next.add(cleaned)
       return next
     })
-    setSearchParams({}, { replace: true })
+    const next = new URLSearchParams(searchParams)
+    next.delete('tag')
+    setSearchParams(next, { replace: true })
     // searchParams is intentionally the only dep — we want this to fire
     // whenever the URL gets a fresh ?tag, including subsequent clicks.
+  }, [searchParams, setSearchParams])
+
+  // ?author=<npub|nprofile> seed — set by clicking the host's name on
+  // EventDetail when the viewer is signed in. Mirrors the ?tag= pattern
+  // above: decode → set searchAuthor → strip the param. A background
+  // kind 0 fetch fills in name + picture so the ActiveAuthorChip reads
+  // cleanly instead of "Unknown author"; the feed itself only needs
+  // pubkey so it loads immediately.
+  useEffect(() => {
+    const authorParam = searchParams.get('author')
+    if (!authorParam) return
+    let decoded
+    try { decoded = nip19.decode(authorParam) } catch {}
+    const pubkey =
+      decoded?.type === 'npub'     ? decoded.data :
+      decoded?.type === 'nprofile' ? decoded.data?.pubkey :
+      null
+    const stripParam = () => {
+      const next = new URLSearchParams(searchParams)
+      next.delete('author')
+      setSearchParams(next, { replace: true })
+    }
+    if (!pubkey) { stripParam(); return }
+    setSearchAuthor({ pubkey, name: '', picture: '' })
+    setWindowFilter('all')
+    setSelectedTags(new Set())
+    stripParam()
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const ndk = getNDK()
+        await connectAndWait(ndk, 3000)
+        const ev = await ndk.fetchEvent({ kinds: [0], authors: [pubkey] })
+        if (cancelled || !ev) return
+        try {
+          const p = JSON.parse(ev.content || '{}')
+          const name = p.displayName || p.display_name || p.name || ''
+          const picture = p.picture || ''
+          // Guard against the user clearing the chip / picking a
+          // different author while the kind 0 fetch was in flight.
+          setSearchAuthor(prev => prev && prev.pubkey === pubkey
+            ? { ...prev, name, picture }
+            : prev)
+        } catch {}
+      } catch {}
+    })()
+    return () => { cancelled = true }
   }, [searchParams, setSearchParams])
 
   // Optimistic drop after a kind-5 from the card menu.

@@ -328,13 +328,27 @@ export default function EventDetail({ naddr, viewerNpub, sessionUser }) {
             body={
               <>
                 Hosted by{' '}
-                {/* Land on the host's events feed, not their profile —
-                    if you came in through an event you almost certainly
-                    want to see what else they've scheduled, not stats
-                    and relays. Works logged-out (read-only events feed)
-                    and logged-in (composer/RSVP affordances appear). */}
+                {/* Logged in: pin to the session user's events module
+                    and pre-filter Discover to the host's events. Keeps
+                    the viewer on their own page (composer/RSVP
+                    affordances stay live) instead of swapping into a
+                    view-only render of the host's account.
+                    Logged out: no session module to anchor to — land on
+                    the host's events feed directly. */}
                 <a
-                  href={`/${hostNpub}/events`}
+                  href={sessionUser?.npub
+                    ? `/${sessionUser.npub}/events/discover?author=${hostNpub}`
+                    : `/${hostNpub}/events`}
+                  onClick={(e) => {
+                    // Preserve cmd/ctrl/shift/middle-click "open in new tab"
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return
+                    e.preventDefault()
+                    if (sessionUser?.npub) {
+                      navigate(`/${sessionUser.npub}/events/discover?author=${hostNpub}`)
+                    } else {
+                      navigate(`/${hostNpub}/events`)
+                    }
+                  }}
                   className="text-purple-300 hover:text-purple-200 underline-offset-2 hover:underline"
                 >
                   {hostDisplay || `${hostNpub.slice(0, 14)}…`}
