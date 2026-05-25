@@ -1,5 +1,4 @@
 import { NDKNip07Signer } from '@nostr-dev-kit/ndk'
-import { warmupNip07Permissions } from './ndk.js'
 import { nip19 } from 'nostr-tools'
 import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from './ndk.js'
 import { fetchProfiles } from './primal.js'
@@ -159,15 +158,6 @@ export async function restoreSession(record) {
       // login screen can re-auth as whoever the extension is currently set to.
       if (ndkUser.pubkey !== record.pubkey) return null
       await connectAndWait(ndk)
-      // Batch-authorize every NIP-07 permission upfront in one popup
-      // so users see Coracle-style "Authorize forever" once at login
-      // instead of separate popups for each scheme later. Awaited but
-      // ignores its own errors — login proceeds regardless of what
-      // the extension or user does with the popup. Won't help users
-      // hitting the nos2x-fox-Firefox-Android nip44 bug — that's
-      // tracked as a known issue at the extension layer — but
-      // unambiguously helps every other signer pairing.
-      await warmupNip07Permissions()
       await ensureUserWriteRelays(ndk, ndkUser.pubkey)
       return await fetchUserProfile(ndk, ndkUser.pubkey)
     } catch {

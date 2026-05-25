@@ -3,7 +3,7 @@ import { NDKNip07Signer, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { createNostrConnectURI } from 'nostr-tools/nip46'
 import { QRCodeSVG } from 'qrcode.react'
-import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays, warmupNip07Permissions } from '../lib/ndk.js'
+import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from '../lib/ndk.js'
 import { withTimeout } from '../lib/utils.js'
 import { useIsMobile } from '../hooks/useIsMobile.js'
 import {
@@ -305,11 +305,6 @@ export default function LoginScreen({ onLogin, embedded = false }) {
       setLoadingStep('Connecting to relays…')
       await connectAndWait(ndk)
       const pubkey = await signer.user()
-      // Batch-authorize all NIP-07 permissions upfront in one popup
-      // (Coracle-style). See warmupNip07Permissions in ndk.js for the
-      // full rationale. Doesn't help the nos2x-fox-Firefox-Android
-      // nip44 bug, but materially improves UX on every other signer.
-      await warmupNip07Permissions()
       await ensureUserWriteRelays(ndk, pubkey.pubkey)
       const user = await fetchUserProfile(ndk, pubkey.pubkey)
       saveSession(buildExtensionRecord(pubkey.pubkey))

@@ -18,7 +18,7 @@ import {
   useViewedUser,
   clearViewedUserCache,
 } from './lib/ownerContext.jsx'
-import { connectAndWait, getNDK, resetNDK, resetWarmupResult } from './lib/ndk.js'
+import { connectAndWait, getNDK, resetNDK } from './lib/ndk.js'
 import { useDocumentTitle } from './hooks/useDocumentTitle.js'
 import { loadSession, clearSession, restoreSession } from './lib/sessionPersistence.js'
 import * as nwc from './lib/nwc.js'
@@ -171,7 +171,6 @@ export default function App() {
     resetMyZaps()
     resetMyLikes()
     resetNDK()
-    resetWarmupResult()
     const pk = sessionUser?.pubkey
     try {
       const suffix      = pk ? `_${pk}` : null

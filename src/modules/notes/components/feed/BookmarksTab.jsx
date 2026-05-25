@@ -31,7 +31,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
 import { fetchNotesByIds, fetchProfiles } from '../../../../lib/primal.js'
-import { getLastWarmupResult } from '../../../../lib/ndk.js'
 import { useInfiniteFeed } from '../../../../hooks/useInfiniteFeed.js'
 import { useNoteBookmarksContext } from '../../noteBookmarksContext.jsx'
 import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
@@ -562,37 +561,19 @@ export default function BookmarksTab({ user, isOwner }) {
           ×
         </button>
       </div>
-      {!privateDecryptInProgress && decryptDiagnostic && (() => {
-        // Pull the most recent warmup result so the disclosure can show
-        // whether warmup itself succeeded at login. If warmup's nip44
-        // self-round-trip worked, the extension's nip44 path is healthy
-        // and decrypt failures here point elsewhere. If warmup failed
-        // with the same error pattern, the extension is broken for our
-        // origin and no app-side change will help.
-        const warmup = getLastWarmupResult()
-        return (
-          <details className="mt-1 text-[10px] text-amber-300/70 px-1">
-            <summary className="cursor-pointer hover:text-amber-200">Details for support</summary>
-            <div className="mt-1 space-y-0.5 font-mono">
-              <div>signer: {decryptDiagnostic.available?.signerType || '(unknown)'}</div>
-              <div>nip04 exposed: {String(decryptDiagnostic.available?.nip04)}</div>
-              <div>nip44 exposed: {String(decryptDiagnostic.available?.nip44)}</div>
-              {warmup && (
-                <>
-                  <div>warmup ran: {String(warmup.ran)}</div>
-                  <div>warmup nip04 enc: {String(warmup.c04ok)} dec: {String(warmup.d04ok)}</div>
-                  <div>warmup nip44 enc: {String(warmup.c44ok)} dec: {String(warmup.d44ok)}</div>
-                  <div>warmup nip44 enc-to-other: {String(warmup.c44otherOk)}</div>
-                  {warmup.lastError && <div className="break-all">warmup err: {warmup.lastError}</div>}
-                </>
-              )}
-              {decryptDiagnostic.errors?.map((e, i) => (
-                <div key={i} className="break-all">• {e}</div>
-              ))}
-            </div>
-          </details>
-        )
-      })()}
+      {!privateDecryptInProgress && decryptDiagnostic && (
+        <details className="mt-1 text-[10px] text-amber-300/70 px-1">
+          <summary className="cursor-pointer hover:text-amber-200">Details for support</summary>
+          <div className="mt-1 space-y-0.5 font-mono">
+            <div>signer: {decryptDiagnostic.available?.signerType || '(unknown)'}</div>
+            <div>nip04 exposed: {String(decryptDiagnostic.available?.nip04)}</div>
+            <div>nip44 exposed: {String(decryptDiagnostic.available?.nip44)}</div>
+            {decryptDiagnostic.errors?.map((e, i) => (
+              <div key={i} className="break-all">• {e}</div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   ) : null
 
