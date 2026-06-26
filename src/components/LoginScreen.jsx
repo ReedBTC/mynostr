@@ -1,3 +1,4 @@
+import { storageKey } from '../lib/brand.js'
 import { useState, useEffect, useRef } from 'react'
 import { NDKNip07Signer, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
@@ -39,7 +40,7 @@ import {
 // handshake secret — both sensitive and only needed for the duration of the
 // in-flight login. sessionStorage dies with the tab, which is the right
 // lifetime.
-const PENDING_NIP46_KEY = 'mynostr_pending_nip46'
+const PENDING_NIP46_KEY = storageKey('pending_nip46')
 const PENDING_NIP46_MAX_AGE_MS = 10 * 60 * 1000
 
 function savePendingNip46(state) {

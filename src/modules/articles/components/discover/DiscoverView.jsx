@@ -1,3 +1,4 @@
+import { storageKey } from '../../../../lib/brand.js'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
@@ -29,7 +30,7 @@ function defaultFeedWidth() {
   return Math.max(MIN_FEED_W, Math.min(DEFAULT_FEED_W, available))
 }
 
-function authorKey(pubkey) { return `mynostr_last_author_${pubkey}` }
+function authorKey(pubkey) { return storageKey(`last_author_${pubkey}`) }
 
 // Recipe detection. Two match modes, any hit flips an article into the
 // Recipes bucket:
@@ -58,7 +59,7 @@ function isRecipeArticle(article) {
   }
   return false
 }
-function articleKey(pubkey) { return `mynostr_last_article_${pubkey}` }
+function articleKey(pubkey) { return storageKey(`last_article_${pubkey}`) }
 
 function loadLastAuthor(pubkey) {
   try { return JSON.parse(localStorage.getItem(authorKey(pubkey))) } catch { return null }

@@ -21,6 +21,7 @@
  * given the result.
  */
 
+import { storageKey } from './brand.js'
 import { NWCClient } from '@getalby/sdk'
 import { nip19 } from 'nostr-tools'
 import { encryptForSelf, decryptFromSelf } from './selfEncrypt.js'
@@ -29,7 +30,7 @@ import { getNDK } from './ndk.js'
 import { withTimeout } from './utils.js'
 import { bolt11PaymentHash } from './boostagram.js'
 
-const SESSION_STORAGE_KEY = 'mynostr_session'   // matches lib/sessionPersistence.js
+const SESSION_STORAGE_KEY = storageKey('session')   // matches lib/sessionPersistence.js
 
 /**
  * Strip any nostr+walletconnect:// URI fragments (which contain the

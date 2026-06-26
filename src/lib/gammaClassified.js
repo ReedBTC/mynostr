@@ -9,7 +9,7 @@
  * nagging them about THIS listing while keeping the warnings on the
  * rest of the shop.
  *
- * Storage: localStorage `mynostr_gamma_classified_<npub>` — JSON array
+ * Storage: localStorage storageKey(`gamma_classified_<npub>`) — JSON array
  * of `dTag` strings. Per-pubkey scoping matches the project rule;
  * dTag (rather than event id) survives a republish so editing the
  * listing doesn't lose the mark.
@@ -19,11 +19,12 @@
  * device sync, callers won't change because the helpers will keep the
  * same shape.
  */
+import { storageKey } from './brand.js'
 import { nip19 } from 'nostr-tools'
 
-const STORAGE_PREFIX = 'mynostr_gamma_classified_'
+const STORAGE_PREFIX = storageKey('gamma_classified_')
 
-function storageKey(pubkey) {
+function storageKeyFor(pubkey) {
   if (!pubkey) return null
   try { return `${STORAGE_PREFIX}${nip19.npubEncode(pubkey)}` }
   catch { return null }
@@ -49,7 +50,7 @@ export function onClassifiedChange(fn) {
 // ── Reads ────────────────────────────────────────────────────────────────
 
 export function readClassifiedSet(pubkey) {
-  const key = storageKey(pubkey)
+  const key = storageKeyFor(pubkey)
   if (!key) return new Set()
   try {
     const raw = localStorage.getItem(key)
@@ -68,7 +69,7 @@ export function isClassifiedOnly(pubkey, dTag) {
 // ── Writes ───────────────────────────────────────────────────────────────
 
 function writeSet(pubkey, set) {
-  const key = storageKey(pubkey)
+  const key = storageKeyFor(pubkey)
   if (!key) return
   try { localStorage.setItem(key, JSON.stringify([...set])) }
   catch {}

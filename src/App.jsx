@@ -24,6 +24,7 @@ import { loadSession, clearSession, restoreSession } from './lib/sessionPersiste
 import * as nwc from './lib/nwc.js'
 import * as webln from './lib/webln.js'
 import { loadMyZaps, resetMyZaps } from './lib/myZapStore.js'
+import { STORAGE_PREFIX, storageKey } from './lib/brand.js'
 import { loadMyLikes, resetMyLikes } from './lib/myReactionStore.js'
 
 // Lazy-load each module so only the active tab's code is fetched
@@ -178,11 +179,11 @@ export default function App() {
       const toRemove = []
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i)
-        if (!key || !key.startsWith('mynostr_')) continue
+        if (!key || !key.startsWith(STORAGE_PREFIX)) continue
         if (
-          key.startsWith('mynostr_last_author_')  ||
-          key.startsWith('mynostr_last_article_') ||
-          key.startsWith('mynostr_reading_lists:')
+          key.startsWith(storageKey('last_author_'))  ||
+          key.startsWith(storageKey('last_article_')) ||
+          key.startsWith(storageKey('reading_lists:'))
         ) { toRemove.push(key); continue }
         if (pk && (key.endsWith(suffix) || key.endsWith(colonSuffix))) toRemove.push(key)
       }

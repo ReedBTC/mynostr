@@ -20,6 +20,7 @@
  * the session user's pubkey to the event's pubkey. Visitors get the
  * read-only subset (Copy + View externally + Export).
  */
+import { storageKey } from '../../../lib/brand.js'
 import { useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { isSafeUrl } from '../../../lib/utils.js'
@@ -56,8 +57,8 @@ export default function EventCard({ parsed, summary, sessionUser, onDeleted }) {
   // "Load in editor" — owner-only. Hands the snapshot to EventsModule
   // via router state, which calls drafts.createDraft and navigates to
   // /<npub>/events/write. The previous localStorage-write approach
-  // targeted a key (singular `mynostr_event_draft_`) that the multi-
-  // draft store (plural `mynostr_event_drafts_`) doesn't read, so the
+  // targeted a key (singular storageKey(`event_draft_`)) that the multi-
+  // draft store (plural storageKey(`event_drafts_`)) doesn't read, so the
   // composer always opened blank. Mirrors EventDetail's handler +
   // NotesModule's reminder-prefill pattern.
   function handleLoadInEditor({ snapshot }) {

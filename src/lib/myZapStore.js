@@ -44,11 +44,12 @@
  * clients to providers that omit `P` will be missed.
  */
 
+import { storageKey } from './brand.js'
 import { getNDK, FALLBACK_RELAYS } from './ndk.js'
 import { withTimeout } from './utils.js'
 import { NDKRelaySet } from '@nostr-dev-kit/ndk'
 
-const STORAGE_PREFIX = 'mynostr_zapped_'
+const STORAGE_PREFIX = storageKey('zapped_')
 const FETCH_LIMIT    = 1000
 const FETCH_TIMEOUT  = 8000
 const MAX_ENTRIES    = 5000   // LRU cap per Set, oldest evicted on overflow
@@ -208,11 +209,11 @@ export function resetMyZaps() {
   notify()  // global change — every hook re-renders to reset
 }
 
-function storageKey(pk) { return `${STORAGE_PREFIX}${pk}` }
+function storageKeyFor(pk) { return `${STORAGE_PREFIX}${pk}` }
 
 function loadFromStorage(pk) {
   try {
-    const raw = localStorage.getItem(storageKey(pk))
+    const raw = localStorage.getItem(storageKeyFor(pk))
     if (!raw) return
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed?.eventIds))    parsed.eventIds.forEach(id => zappedEventIds.add(id))
@@ -224,7 +225,7 @@ function loadFromStorage(pk) {
 
 function saveToStorage(pk) {
   try {
-    localStorage.setItem(storageKey(pk), JSON.stringify({
+    localStorage.setItem(storageKeyFor(pk), JSON.stringify({
       eventIds:    [...zappedEventIds],
       addressable: [...zappedAddressable],
       savedAt:     Date.now(),

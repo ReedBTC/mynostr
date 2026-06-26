@@ -26,6 +26,7 @@
  * nwc).
  */
 
+import { storageKey } from './brand.js'
 import { nip19 } from 'nostr-tools'
 import { withTimeout } from './utils.js'
 
@@ -36,10 +37,10 @@ import { withTimeout } from './utils.js'
 //
 // Storage key uses the bech32 npub form so it ESCAPES the logout
 // wipe pattern in App.jsx (which targets keys ending in `_<hex>`).
-// Mirrors nwc.js's `mynostr_nwc_v1_<npub>` pattern — both wallet
+// Mirrors nwc.js's storageKey(`nwc_v1_<npub>`) pattern — both wallet
 // connections persist across logout/login as a result. Callers can
 // pass either hex pubkey or pre-encoded npub; we normalize.
-const STORAGE_KEY_PREFIX = 'mynostr_webln_active_'
+const STORAGE_KEY_PREFIX = storageKey('webln_active_')
 function storageKeyFor(pubkey) {
   if (!pubkey) return null
   try {

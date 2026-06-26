@@ -16,6 +16,7 @@
  * Changes that affect the relay query trigger a fresh fetch; client-
  * only changes just re-derive the displayed list (cheap).
  */
+import { storageKey } from '../../../../lib/brand.js'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
@@ -57,13 +58,13 @@ const SORT_OPTIONS = [
 // NSFW preference is intentionally NOT persisted — every session starts
 // with it unchecked so users opt in manually each time. The legacy
 // localStorage key from when it was sticky is cleaned up on mount.
-const NSFW_LEGACY_KEY = 'mynostr_search_nsfw_v1'
+const NSFW_LEGACY_KEY = storageKey('search_nsfw_v1')
 // Per-pubkey filter persistence — mirrors Articles' DiscoverView shape.
 // Stores the last-applied filter set so navigating back to Search
 // restores what the user was looking at. The seller chip is also in
 // the URL via ?seller=, so URL takes precedence on mount when present.
 function filtersKey(pubkey) {
-  return `mynostr_marketplace_search_filters_${pubkey || 'anon'}`
+  return storageKey(`marketplace_search_filters_${pubkey || 'anon'}`)
 }
 function loadSavedFilters(pubkey) {
   try {

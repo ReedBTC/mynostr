@@ -1,9 +1,10 @@
+import { storageKey } from './brand.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emptySellForm, formToGammaForm, isFormMeaningful } from './sellForm.js'
 import { publishProduct } from './publishProduct.js'
 
-const LIST_KEY    = 'mynostr_sell_drafts_'
-const CURRENT_KEY = 'mynostr_sell_current_draft_'
+const LIST_KEY    = storageKey('sell_drafts_')
+const CURRENT_KEY = storageKey('sell_current_draft_')
 const DEBOUNCE_MS = 400
 const CAP = 50
 // Same byte-budget logic as useNoteDrafts: localStorage has a per-origin

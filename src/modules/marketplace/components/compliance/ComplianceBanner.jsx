@@ -14,11 +14,12 @@
  * Severity translation lives in gammaCompliance.effectiveSeverity —
  * the grader stays spec-faithful, the UI is intent-aware.
  */
+import { storageKey } from '../../../../lib/brand.js'
 import { useState } from 'react'
 import { effectiveSeverity } from '../../../../lib/gammaCompliance.js'
 import WhatIsGammaPopover from './WhatIsGammaPopover.jsx'
 
-const DISMISS_KEY = 'mynostr_compliance_banner_dismissed_v1'
+const DISMISS_KEY = storageKey('compliance_banner_dismissed_v1')
 
 export default function ComplianceBanner({ verdict, hasOptedIn, onOpen }) {
   const [dismissed, setDismissed] = useState(() => {

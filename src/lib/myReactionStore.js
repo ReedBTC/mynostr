@@ -19,11 +19,12 @@
  * publish failure rolls back cleanly.
  */
 
+import { storageKey } from './brand.js'
 import { getNDK, FALLBACK_RELAYS } from './ndk.js'
 import { withTimeout } from './utils.js'
 import { NDKRelaySet } from '@nostr-dev-kit/ndk'
 
-const STORAGE_PREFIX = 'mynostr_liked_'
+const STORAGE_PREFIX = storageKey('liked_')
 const FETCH_LIMIT    = 1000
 const FETCH_TIMEOUT  = 8000
 const MAX_ENTRIES    = 5000
@@ -117,11 +118,11 @@ export function resetMyLikes() {
   notify()
 }
 
-function storageKey(pk) { return `${STORAGE_PREFIX}${pk}` }
+function storageKeyFor(pk) { return `${STORAGE_PREFIX}${pk}` }
 
 function loadFromStorage(pk) {
   try {
-    const raw = localStorage.getItem(storageKey(pk))
+    const raw = localStorage.getItem(storageKeyFor(pk))
     if (!raw) return
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed?.eventIds))    parsed.eventIds.forEach(id => likedEventIds.add(id))
@@ -133,7 +134,7 @@ function loadFromStorage(pk) {
 
 function saveToStorage(pk) {
   try {
-    localStorage.setItem(storageKey(pk), JSON.stringify({
+    localStorage.setItem(storageKeyFor(pk), JSON.stringify({
       eventIds:    [...likedEventIds],
       addressable: [...likedAddressable],
       savedAt:     Date.now(),

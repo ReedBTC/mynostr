@@ -15,6 +15,7 @@
  * the upgrade path for users on legacy kind 3 — an amber banner prompts
  * them, and the same Save path replaces their kind 3 with NIP-65.
  */
+import { storageKey } from '../../lib/brand.js'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { nip19 } from 'nostr-tools'
 import { useIsMobile } from '../../hooks/useIsMobile.js'
@@ -412,14 +413,14 @@ function UpgradeBanner({ onUpgrade }) {
  * kind-3 nudge is still the first thing the user sees in that case.
  */
 function RelayTipsCard({ pubkey }) {
-  const storageKey = `mynostr_relay_tips_collapsed_${pubkey}`
+  const tipsKey = storageKey(`relay_tips_collapsed_${pubkey}`)
   const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem(storageKey) === '1' } catch { return false }
+    try { return localStorage.getItem(tipsKey) === '1' } catch { return false }
   })
   function toggle() {
     setCollapsed(c => {
       const next = !c
-      try { localStorage.setItem(storageKey, next ? '1' : '0') } catch {}
+      try { localStorage.setItem(tipsKey, next ? '1' : '0') } catch {}
       return next
     })
   }

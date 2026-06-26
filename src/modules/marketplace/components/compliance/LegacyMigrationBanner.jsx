@@ -17,9 +17,10 @@
  * starts fresh, which is the right behavior (different seller, the
  * dismiss doesn't apply).
  */
+import { storageKey } from '../../../../lib/brand.js'
 import { useState } from 'react'
 
-const DISMISS_KEY = 'mynostr_legacy_banner_dismissed_v1'
+const DISMISS_KEY = storageKey('legacy_banner_dismissed_v1')
 
 export default function LegacyMigrationBanner({ count, onOpen }) {
   const [dismissed, setDismissed] = useState(() => {

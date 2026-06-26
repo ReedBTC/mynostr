@@ -26,7 +26,7 @@
  * Visitor mode: when the user is read-only (viewing someone else's page),
  * we fetch the same events but disable all mutating functions.
  */
-import { CLIENT_TAG } from './brand.js'
+import { CLIENT_TAG, storageKey } from './brand.js'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -50,10 +50,10 @@ import {
 // Shared helpers from bookmarkStorage.js — see that file for details.
 // The tombstone/hidden stores live behind hook-specific localStorage
 // prefixes so the notes and longform modules keep their own namespaces.
-const { load: loadTombstones, save: saveTombstone } = makeTombstoneStore('mynostr_note_bookmark_tombstones:')
-const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenStore('mynostr_note_hidden_bookmarks:')
+const { load: loadTombstones, save: saveTombstone } = makeTombstoneStore(storageKey('note_bookmark_tombstones:'))
+const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenStore(storageKey('note_hidden_bookmarks:'))
 
-const STORAGE_KEY_PREFIX = 'mynostr_note_bookmarks:'
+const STORAGE_KEY_PREFIX = storageKey('note_bookmarks:')
 const PRIMARY_CATEGORY_ID = '_primary'
 
 // Defense-in-depth cap on relay-sourced bookmark content before JSON.parse.

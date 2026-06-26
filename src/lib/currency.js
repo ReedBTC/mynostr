@@ -15,8 +15,10 @@
  *     My Selling list rendering simultaneously) share the same fetch.
  */
 
+import { storageKey } from './brand.js'
+
 const ENDPOINT = 'https://mempool.space/api/v1/prices'
-const STORAGE_KEY = 'mynostr_currency_rates_v1'
+const STORAGE_KEY = storageKey('currency_rates_v1')
 const TTL_MS = 5 * 60 * 1000  // 5 minutes — matches the upstream's own cache cadence
 
 const SATS_PER_BTC = 100_000_000

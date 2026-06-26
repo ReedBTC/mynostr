@@ -1,3 +1,4 @@
+import { storageKey } from './brand.js'
 import { NDKNip07Signer } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, resetNDK, connectAndWait, ensureUserWriteRelays } from './ndk.js'
@@ -29,7 +30,7 @@ function isHex64(s) {
 // nsec logins are deliberately NOT persisted — the LoginScreen warns the key
 // is in-memory only, matching the default stance of Primal / Iris / Snort.
 
-const SESSION_KEY = 'mynostr_session'
+const SESSION_KEY = storageKey('session')
 
 export function saveSession(record) {
   if (!record?.method || !record?.pubkey) return

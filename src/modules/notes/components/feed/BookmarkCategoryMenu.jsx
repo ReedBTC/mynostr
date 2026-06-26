@@ -23,13 +23,14 @@
  *
  * MRU persistence: per-pubkey list of category IDs in last-visited order
  * (oldest pushed off when capacity is hit). localStorage key
- * `mynostr_bookmarks_mru_<npub>`.
+ * storageKey(`bookmarks_mru_<npub>`).
  */
 
+import { storageKey } from '../../../../lib/brand.js'
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { NOTE_PRIMARY_CATEGORY_ID } from '../../../../lib/useNoteBookmarks.js'
 
-const MRU_PREFIX = 'mynostr_bookmarks_mru_'
+const MRU_PREFIX = storageKey('bookmarks_mru_')
 const MRU_MAX    = 8
 
 function mruKey(pubkey) { return `${MRU_PREFIX}${pubkey || 'anon'}` }

@@ -1,23 +1,24 @@
+import { storageKey } from './brand.js'
 import { useRef, useCallback } from 'react'
 
-const DRAFT_KEY_PREFIX = 'mynostr_draft_'
+const DRAFT_KEY_PREFIX = storageKey('draft_')
 const DEBOUNCE_MS = 500
 
 // Persists editor state to localStorage, keyed per pubkey so multiple
 // users on the same machine don't see each other's drafts.
 export function useDraft(pubkey) {
   const timerRef = useRef(null)
-  const storageKey = pubkey ? `${DRAFT_KEY_PREFIX}${pubkey}` : null
+  const draftKey = pubkey ? `${DRAFT_KEY_PREFIX}${pubkey}` : null
 
   const saveDraft = useCallback((content, metadata, source) => {
-    if (!storageKey) return
+    if (!draftKey) return
     // Nothing worth saving — clear any stale draft and bail
     const hasContent = content.trim().length > 0
     const hasMetadata = !!(metadata?.title || metadata?.summary || metadata?.image || metadata?.tagsRaw)
     const hasSource = !!(source?.name || source?.url)
     if (!hasContent && !hasMetadata && !hasSource) {
       clearTimeout(timerRef.current)
-      try { localStorage.removeItem(storageKey) } catch {}
+      try { localStorage.removeItem(draftKey) } catch {}
       return
     }
     // Debounce — only write after typing has paused for DEBOUNCE_MS
@@ -25,32 +26,32 @@ export function useDraft(pubkey) {
     timerRef.current = setTimeout(() => {
       try {
         const draft = { content, metadata, source, savedAt: Date.now() }
-        localStorage.setItem(storageKey, JSON.stringify(draft))
+        localStorage.setItem(draftKey, JSON.stringify(draft))
       } catch {
         // localStorage unavailable or full — fail silently
       }
     }, DEBOUNCE_MS)
-  }, [storageKey])
+  }, [draftKey])
 
   const loadDraft = useCallback(() => {
-    if (!storageKey) return null
+    if (!draftKey) return null
     try {
-      const raw = localStorage.getItem(storageKey)
+      const raw = localStorage.getItem(draftKey)
       return raw ? JSON.parse(raw) : null
     } catch {
       return null
     }
-  }, [storageKey])
+  }, [draftKey])
 
   const clearDraft = useCallback(() => {
-    if (!storageKey) return
+    if (!draftKey) return
     clearTimeout(timerRef.current)
     try {
-      localStorage.removeItem(storageKey)
+      localStorage.removeItem(draftKey)
     } catch {
       // fail silently
     }
-  }, [storageKey])
+  }, [draftKey])
 
   return { saveDraft, loadDraft, clearDraft }
 }

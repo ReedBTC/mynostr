@@ -2,7 +2,7 @@
  * Per-pubkey state for the NIP-15 → Gamma legacy migration tool.
  *
  * Storage shape:
- *   localStorage["mynostr_nip15_state_<npub>"] = JSON.stringify({
+ *   localStorage[storageKey("nip15_state_<npub>")] = JSON.stringify({
  *     scanFlag:    'clean' | 'pending' | undefined,  // 'clean' suppresses the detection fetch
  *     migratedIds: ['<30018-event-id>', ...],         // legacy products we've successfully replaced or deleted
  *     ignoredIds:  ['<30018-event-id>', ...],         // legacy products the seller chose "Ignore forever" on
@@ -23,12 +23,13 @@
  * id to the blob. Even at 50 products that's well under 4KB. Cap at
  * 64KB defensively — past that something's wrong, drop the blob.
  */
+import { storageKey } from './brand.js'
 import { nip19 } from 'nostr-tools'
 
-const STORAGE_PREFIX = 'mynostr_nip15_state_'
+const STORAGE_PREFIX = storageKey('nip15_state_')
 const MAX_BLOB_SIZE  = 64 * 1024
 
-function storageKey(pubkey) {
+function storageKeyFor(pubkey) {
   if (!pubkey) return null
   try { return `${STORAGE_PREFIX}${nip19.npubEncode(pubkey)}` }
   catch { return null }
@@ -44,7 +45,7 @@ function emptyState() {
  * is suspiciously oversized.
  */
 export function readState(pubkey) {
-  const key = storageKey(pubkey)
+  const key = storageKeyFor(pubkey)
   if (!key) return emptyState()
   try {
     const raw = localStorage.getItem(key)
@@ -67,7 +68,7 @@ export function readState(pubkey) {
 }
 
 function writeState(pubkey, next) {
-  const key = storageKey(pubkey)
+  const key = storageKeyFor(pubkey)
   if (!key) return
   try {
     localStorage.setItem(key, JSON.stringify({ ...next, savedAt: Date.now() }))

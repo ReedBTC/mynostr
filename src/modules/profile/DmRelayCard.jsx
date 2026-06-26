@@ -11,6 +11,7 @@
  * 10050 yet (with suggested URLs pre-seeded from their write relays), and
  * Save publishes a fresh kind 10050.
  */
+import { storageKey } from '../../lib/brand.js'
 import { useEffect, useRef, useState } from 'react'
 import { useOwnerContext } from '../../lib/ownerContext.jsx'
 import {
@@ -465,14 +466,14 @@ function ConfirmEmptyDmListModal({ busy, onCancel, onConfirm }) {
  * reusing the main outbox.
  */
 function DmRelayTipsCard({ pubkey }) {
-  const storageKey = `mynostr_dm_relay_tips_collapsed_${pubkey}`
+  const tipsKey = storageKey(`dm_relay_tips_collapsed_${pubkey}`)
   const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem(storageKey) === '1' } catch { return false }
+    try { return localStorage.getItem(tipsKey) === '1' } catch { return false }
   })
   function toggle() {
     setCollapsed(c => {
       const next = !c
-      try { localStorage.setItem(storageKey, next ? '1' : '0') } catch {}
+      try { localStorage.setItem(tipsKey, next ? '1' : '0') } catch {}
       return next
     })
   }

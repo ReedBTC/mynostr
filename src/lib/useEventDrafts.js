@@ -16,12 +16,13 @@
  * overwrite each other on publish — the tray's findDuplicateDTags
  * UI catches this before the publish-all confirm.
  */
+import { storageKey } from './brand.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { emptyEventForm, formToPublishShape, isEventFormMeaningful } from './eventForm.js'
 import { publishCalendarEvent } from './eventPublish.js'
 
-const LIST_KEY    = 'mynostr_event_drafts_'
-const CURRENT_KEY = 'mynostr_event_current_draft_'
+const LIST_KEY    = storageKey('event_drafts_')
+const CURRENT_KEY = storageKey('event_current_draft_')
 const DEBOUNCE_MS = 400
 const CAP = 50
 // Same byte-budget logic as useSellDrafts: localStorage has a per-origin

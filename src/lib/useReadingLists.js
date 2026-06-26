@@ -25,7 +25,7 @@
  *   (readOnly) never decrypts anyone else's items.
  */
 
-import { CLIENT_TAG } from './brand.js'
+import { CLIENT_TAG, storageKey } from './brand.js'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -46,7 +46,7 @@ import {
 
 // Per-pubkey cache so viewing multiple authors on the same machine doesn't
 // leak one person's enriched bookmarks into another's display.
-const STORAGE_KEY_PREFIX = 'mynostr_reading_lists:'
+const STORAGE_KEY_PREFIX = storageKey('reading_lists:')
 
 // The kind-10003 primary list has this synthetic id everywhere in the app.
 export const PRIMARY_LIST_ID = '_bookmarks'
@@ -118,8 +118,8 @@ function saveToStorage(pubkey, lists) {
 //   - fetchLatestPrimary: cross-module concurrency — refetches the freshest
 //     kind 10003 immediately before publishing so we don't silently clobber
 //     data the notes module wrote since our load.
-const { load: loadTombstones, save: saveTombstone } = makeTombstoneStore('mynostr_reading_tombstones:')
-const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenStore('mynostr_reading_hidden:')
+const { load: loadTombstones, save: saveTombstone } = makeTombstoneStore(storageKey('reading_tombstones:'))
+const { load: loadHiddenFromStorage, save: saveHiddenToStorage } = makeHiddenStore(storageKey('reading_hidden:'))
 
 // ── Nostr event helpers ───────────────────────────────────────────────────────
 

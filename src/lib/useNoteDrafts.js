@@ -1,9 +1,10 @@
+import { storageKey } from './brand.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { publishNote } from './publishNote.js'
 import { clearThreadCache } from './useNoteThread.js'
 
-const LIST_KEY = 'mynostr_notes_drafts_'
-const CURRENT_KEY = 'mynostr_notes_current_draft_'
+const LIST_KEY = storageKey('notes_drafts_')
+const CURRENT_KEY = storageKey('notes_current_draft_')
 const DEBOUNCE_MS = 400
 const CAP = 50
 // localStorage has a per-origin budget (~5 MB in most browsers, often less

@@ -24,6 +24,7 @@
  * recent publishes that happen to be for events months out; an explicit
  * `since` filter would miss old-publish + future-event combos.
  */
+import { storageKey } from '../../../lib/brand.js'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
@@ -59,7 +60,7 @@ const TOP_TAG_LIMIT = 12
 // across users. Restored on mount via useMemo (synchronous, no flash);
 // written on every change. Set is converted to array for JSON.
 function filtersKey(pubkey) {
-  return `mynostr_events_discover_filters_${pubkey || 'anon'}`
+  return storageKey(`events_discover_filters_${pubkey || 'anon'}`)
 }
 function loadSavedFilters(pubkey) {
   try {

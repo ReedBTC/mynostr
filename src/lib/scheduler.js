@@ -9,7 +9,7 @@
  *   - cancelScheduled() — DELETE a pending event with NIP-98 auth.
  *
  * Persistence (per-pubkey, matches the project rule):
- *   localStorage `mynostr_scheduled_<npub>` is a JSON array of
+ *   localStorage storageKey(`scheduled_<npub>`) is a JSON array of
  *   `{ eventId, scheduledFor, content }` objects. The drafts tray
  *   reads this for "Scheduled" rendering; we sync from the worker
  *   on tab focus to catch cross-device cancellations.
@@ -17,6 +17,7 @@
  * Worker URL comes from VITE_SCHEDULER_URL. Without it, all entry
  * points throw a clear error so the UI can disable Schedule.
  */
+import { storageKey } from './brand.js'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, signWithTimeout } from './ndk.js'
@@ -30,7 +31,7 @@ export const MAX_FUTURE_SECONDS = 365 * 24 * 3600
 // can't wedge the UI on "Scheduling…" / "Loading…" forever.
 const FETCH_TIMEOUT_MS = 10_000
 
-const STORAGE_PREFIX = 'mynostr_scheduled_'
+const STORAGE_PREFIX = storageKey('scheduled_')
 
 function workerUrl() {
   const u = import.meta.env.VITE_SCHEDULER_URL
@@ -66,14 +67,14 @@ export function onLocalChange(fn) {
   return () => localSubscribers.delete(fn)
 }
 
-function storageKey(pubkey) {
+function storageKeyFor(pubkey) {
   if (!pubkey) return null
   try { return `${STORAGE_PREFIX}${nip19.npubEncode(pubkey)}` }
   catch { return null }
 }
 
 export function readLocalScheduled(pubkey) {
-  const key = storageKey(pubkey)
+  const key = storageKeyFor(pubkey)
   if (!key) return []
   try {
     const raw = localStorage.getItem(key)
@@ -82,7 +83,7 @@ export function readLocalScheduled(pubkey) {
 }
 
 function writeLocalScheduled(pubkey, list) {
-  const key = storageKey(pubkey)
+  const key = storageKeyFor(pubkey)
   if (!key) return
   try { localStorage.setItem(key, JSON.stringify(list)) }
   catch {}
