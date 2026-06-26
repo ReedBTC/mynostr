@@ -1,3 +1,4 @@
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, signWithTimeout, FALLBACK_RELAYS, publishToOwnOutbox } from './ndk.js'
@@ -37,7 +38,7 @@ export async function publishArticle({ content, metadata, source }) {
     ['d', titleToSlug(metadata.title)],
     ['title', metadata.title],
     ['published_at', publishedAt],
-    ['client', 'mynostr'],
+    ['client', CLIENT_TAG],
   ]
   if (metadata.summary) tags.push(['summary', metadata.summary])
   if (metadata.image) tags.push(['image', metadata.image])
@@ -112,7 +113,7 @@ export async function publishDraft({ content, metadata, source }) {
   const tags = [
     ['d', titleToSlug(metadata.title)],
     ['title', metadata.title],
-    ['client', 'mynostr'],
+    ['client', CLIENT_TAG],
   ]
   if (metadata.publishedAtDate) {
     tags.push(['published_at', String(toUnixTimestamp(parseDateString(metadata.publishedAtDate)))])

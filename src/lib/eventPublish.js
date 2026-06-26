@@ -16,6 +16,7 @@
  * dedup); both are spec-compliant. eventTypes.dedupRsvpsLatest covers
  * the read side either way.
  */
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent, NDKRelaySet } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, signWithTimeout, publishToOwnOutbox, getUserReadRelays, FALLBACK_RELAYS } from './ndk.js'
@@ -116,7 +117,7 @@ function buildCalendarEventTags(form) {
     tags.push(row)
   }
   // Client-attribution tag, matching publishProduct / publishArticle.
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
   return { tags, dTag }
 }
 
@@ -200,7 +201,7 @@ export async function publishRsvp({ targetCoord, targetEventId = '', targetAutho
   if (freeBusy && status !== 'declined' && (freeBusy === 'free' || freeBusy === 'busy')) {
     tags.push(['fb', freeBusy])
   }
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   const event = new NDKEvent(ndk)
   event.kind = KIND_RSVP
@@ -262,7 +263,7 @@ export async function deleteCalendarEvent({ kind, eventId, dTag }) {
     if (me) tags.push(['a', `${kind}:${me}:${dTag}`])
   }
   tags.push(['k', String(kind)])
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   const event = new NDKEvent(ndk)
   event.kind = 5

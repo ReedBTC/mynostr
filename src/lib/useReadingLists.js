@@ -25,6 +25,7 @@
  *   (readOnly) never decrypts anyone else's items.
  */
 
+import { CLIENT_TAG } from './brand.js'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -817,7 +818,7 @@ export function useReadingLists(user) {
           for (const art of publicArticles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
-          event.tags.push(['client', 'mynostr'])
+          event.tags.push(['client', CLIENT_TAG])
           event.content = contentOverride
         } else {
           // Strip any inherited `client` from extraTags before re-adding
@@ -828,7 +829,7 @@ export function useReadingLists(user) {
           for (const art of publicArticles) {
             if (art.aTag) event.tags.push(['a', art.aTag])
           }
-          event.tags.push(['client', 'mynostr'])
+          event.tags.push(['client', CLIENT_TAG])
 
           const hadCiphertext = !!list.privateCiphertext
           if (hasPrivateItems) {
@@ -1091,7 +1092,7 @@ export function useReadingLists(user) {
       // Tombstone the original kind — replaceables are per-kind, so a
       // 30001 tombstone wouldn't invalidate a 30003 original and vice versa.
       event.kind    = sourceKind
-      event.tags    = [['d', listId], ['client', 'mynostr']]
+      event.tags    = [['d', listId], ['client', CLIENT_TAG]]
       event.content = ''
       await signWithTimeout(event)
       // Same outbox-only reasoning as publishList — tombstones must reach

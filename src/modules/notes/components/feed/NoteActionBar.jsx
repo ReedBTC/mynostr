@@ -14,6 +14,7 @@
  * button. Label toggles Bookmark ↔ Saved based on membership in any
  * writable category.
  */
+import { CLIENT_TAG } from '../../../../lib/brand.js'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
@@ -218,7 +219,7 @@ export default function NoteActionBar({ note, profile }) {
       ev.tags = [
         ['e', note.id],
         ['p', note.pubkey],
-        ['client', 'mynostr'],
+        ['client', CLIENT_TAG],
       ]
       await signWithTimeout(ev)
       const publishedTo = await publishToPool(ev)

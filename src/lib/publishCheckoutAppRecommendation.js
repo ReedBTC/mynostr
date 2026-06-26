@@ -16,6 +16,7 @@
  * inside that event let the seller recommend several apps for the
  * same kind (the spec allows it).
  */
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -124,7 +125,7 @@ export async function publishCheckoutAppRecommendation({ handlers }) {
     ])
   }
   // Stamp `client` so other clients can attribute. Mirrors publishProduct.
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   const event = new NDKEvent(ndk)
   event.kind = KIND_HANDLER_RECOMMENDATION
@@ -192,7 +193,7 @@ export async function deleteCheckoutAppRecommendation(eventId) {
     ['e', eventId],
     ['a', `${KIND_HANDLER_RECOMMENDATION}:${me}:${RECOMMENDATION_DTAG_LISTING}`],
     ['k', String(KIND_HANDLER_RECOMMENDATION)],
-    ['client', 'mynostr'],
+    ['client', CLIENT_TAG],
   ]
   const ev = new NDKEvent(ndk)
   ev.kind = 5

@@ -11,6 +11,7 @@
  * empty-form factory + transforms without circular deps.
  */
 
+import { CLIENT_TAG } from './brand.js'
 import { titleToSlug } from './utils.js'
 import { encodeProduct, decodeProduct, KIND_PRODUCT } from './gamma.js'
 
@@ -141,7 +142,7 @@ export function formToEventTemplate(form, { pubkey = '' } = {}) {
     pubkey,
     created_at: Math.floor(Date.now() / 1000),
     content,
-    tags: tags.concat([['client', 'mynostr']]),
+    tags: tags.concat([['client', CLIENT_TAG]]),
     // Snapshot the *pre-merge* form so re-import restores the UI fields
     // (mainCategory / nsfw / shippingNotes) as separate slots rather
     // than the collapsed-into-tags/content shape gamma produces. That

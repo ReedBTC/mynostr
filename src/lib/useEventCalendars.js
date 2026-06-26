@@ -22,6 +22,7 @@
  * (an event going missing) prompts the user to re-add. Revisit if it
  * becomes a real complaint.
  */
+import { CLIENT_TAG } from './brand.js'
 import { useCallback, useEffect, useState } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -292,7 +293,7 @@ export function useEventCalendars(pubkey) {
       if (target.event?.id) tags.push(['e', target.event.id])
       tags.push(['a', `${KIND_CALENDAR}:${me}:${dTag}`])
       tags.push(['k', String(KIND_CALENDAR)])
-      tags.push(['client', 'mynostr'])
+      tags.push(['client', CLIENT_TAG])
       const ev = new NDKEvent(ndk, {
         kind: 5,
         content: '',

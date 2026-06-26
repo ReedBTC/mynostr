@@ -19,6 +19,7 @@
  *   the store rollback has already happened in either case.
  */
 
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToPool } from './ndk.js'
 import { markLiked, unmarkLiked } from './myReactionStore.js'
@@ -47,7 +48,7 @@ export async function publishLike(target) {
       tags.push(['a', addressable])
     }
     if (kind != null) tags.push(['k', String(kind)])
-    tags.push(['client', 'mynostr'])
+    tags.push(['client', CLIENT_TAG])
     ev.tags = tags
 
     await signWithTimeout(ev)

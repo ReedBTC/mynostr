@@ -9,6 +9,7 @@
  * Replaceable per (kind 31924, pubkey, dTag). Updating a calendar
  * republishes at the same dTag; relays replace the prior copy.
  */
+import { CLIENT_TAG } from './brand.js'
 import { isSafeUrl } from './utils.js'
 import { KIND_DATE_EVENT, KIND_TIME_EVENT } from './eventTypes.js'
 
@@ -57,7 +58,7 @@ export function encodeCalendar(form) {
     if (Array.isArray(t) && t.length > 0) tags.push(t)
   }
 
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   return {
     kind: KIND_CALENDAR,

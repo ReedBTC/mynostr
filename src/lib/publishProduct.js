@@ -21,6 +21,7 @@
  *   the listing. Same pattern publishNote uses.
  */
 
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent, NDKRelaySet } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
 import { getNDK, signWithTimeout, FALLBACK_RELAYS, publishToOwnOutbox } from './ndk.js'
@@ -66,7 +67,7 @@ export async function publishProduct(form) {
   const { kind, content, tags } = encodeProduct(form)
 
   // Stamp `client` so other clients can attribute. Mirrors publishArticle.
-  const finalTags = tags.concat([['client', 'mynostr']])
+  const finalTags = tags.concat([['client', CLIENT_TAG]])
 
   const now = Math.floor(Date.now() / 1000)
   let ts = Math.max(now, _lastPublishedAt + 1)

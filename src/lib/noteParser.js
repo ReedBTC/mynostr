@@ -2,6 +2,7 @@
  * noteParser.js — Parse kind 1 note content into renderable segments,
  * extract auto-generated tags, and validate uploaded events.
  */
+import { CLIENT_TAG } from './brand.js'
 import { nip19 } from 'nostr-tools'
 
 // ─── Media detection ─────────────────────────────────────────────────────────
@@ -283,7 +284,7 @@ export function mergeTags({ autoTags = [], zapSplits = [], userPubkey, userPct, 
   }
 
   // Always add client tag
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   return tags
 }

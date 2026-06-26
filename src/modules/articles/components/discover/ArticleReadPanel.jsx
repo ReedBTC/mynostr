@@ -1,3 +1,4 @@
+import { CLIENT_TAG } from '../../../../lib/brand.js'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import MDEditor from '@uiw/react-md-editor'
@@ -390,7 +391,7 @@ export default function ArticleReadPanel({
         ['p', article.pubkey],
         ['a', aTag],
         ['k', '30023'],
-        ['client', 'mynostr'],
+        ['client', CLIENT_TAG],
       ]
       if (hasRealId) ev.tags.unshift(['e', article.id])
       await signWithTimeout(ev)

@@ -20,6 +20,7 @@
  * (kind 30405, pubkey, dTag), so updates re-emit at the same dTag.
  * Deletion is via NIP-09 kind 5 with an `a` tag for the coordinate.
  */
+import { CLIENT_TAG } from './brand.js'
 import { useCallback, useEffect, useState } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -360,7 +361,7 @@ export function useCollections(pubkey) {
         kind: 5,
         content: 'Collection deleted',
         created_at: Math.floor(Date.now() / 1000),
-        tags: [['a', coord], ['client', 'mynostr']],
+        tags: [['a', coord], ['client', CLIENT_TAG]],
       })
       await signWithTimeout(ev)
       await publishToOwnOutbox(ev)

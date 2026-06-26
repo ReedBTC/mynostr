@@ -11,6 +11,7 @@
  * load-from-Nostr handler all share the same empty-form factory and
  * round-trip transforms.
  */
+import { CLIENT_TAG } from './brand.js'
 import { nip19 } from 'nostr-tools'
 import { getNDK, connectAndWait } from './ndk.js'
 import { withTimeout } from './utils.js'
@@ -279,7 +280,7 @@ export function formToEventTemplate(form, { pubkey = '' } = {}) {
   if (lowered.location) tags.push(['location', lowered.location])
   if (lowered.geohash)  tags.push(['g', lowered.geohash])
   for (const h of lowered.hashtags) tags.push(['t', h])
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
   return {
     kind: lowered.kind,
     pubkey,

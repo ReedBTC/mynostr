@@ -26,6 +26,7 @@
  * Visitor mode: when the user is read-only (viewing someone else's page),
  * we fetch the same events but disable all mutating functions.
  */
+import { CLIENT_TAG } from './brand.js'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -608,7 +609,7 @@ export function useNoteBookmarks(user) {
         for (const it of cat.items) {
           if (it?.id) event.tags.push(['e', it.id])
         }
-        event.tags.push(['client', 'mynostr'])
+        event.tags.push(['client', CLIENT_TAG])
         event.content = contentOverride
       } else {
         // Preserve the source kind (30001 or 30003) so categories authored
@@ -622,7 +623,7 @@ export function useNoteBookmarks(user) {
         for (const it of cat.items) {
           if (it?.id) event.tags.push(['e', it.id])
         }
-        event.tags.push(['client', 'mynostr'])
+        event.tags.push(['client', CLIENT_TAG])
 
         const hadCiphertext = !!cat.privateCiphertext
         if (hasPrivateItems) {
@@ -1127,7 +1128,7 @@ export function useNoteBookmarks(user) {
       const ndk = getNDK()
       const event = new NDKEvent(ndk)
       event.kind = sourceKind
-      event.tags = [['d', categoryId], ['client', 'mynostr']]
+      event.tags = [['d', categoryId], ['client', CLIENT_TAG]]
       event.content = ''
       await signWithTimeout(event)
       // Same outbox-only reasoning as publishCategory — tombstones must reach

@@ -11,6 +11,7 @@
  * Failed fetches (CORS refusal, timeout, 404, parse error) cache a {_error}
  * sentinel briefly so we don't hammer a flaky relay in a tight render loop.
  */
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, connectAndWait, signWithTimeout, FALLBACK_RELAYS, publishToOwnOutbox } from './ndk.js'
 import { createLRU, isSafeUrl } from './utils.js'
@@ -189,7 +190,7 @@ export async function publishRelayList({ relays }) {
     else if (r.read)             tags.push(['r', url, 'read'])
     // neither flag → skip (user effectively removed the relay)
   }
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   const event = new NDKEvent(ndk)
   event.kind = 10002
@@ -277,7 +278,7 @@ export async function publishDmRelayList({ relays }) {
     seen.add(url)
     tags.push(['relay', url])
   }
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
 
   const event = new NDKEvent(ndk)
   event.kind = 10050

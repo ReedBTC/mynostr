@@ -23,6 +23,7 @@
  *   Backend seam: src/functions/api/boost.js (stubbed) will handle this when ready.
  */
 
+import { CLIENT_TAG } from './brand.js'
 import { generateSecretKey, finalizeEvent, SimplePool } from 'nostr-tools'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
@@ -281,7 +282,7 @@ export async function publishBoostShareNote({
     ['t', 'mynostr'],
     ['t', 'boost'],
     ['r', pageUrl],
-    ['client', 'mynostr'],
+    ['client', CLIENT_TAG],
   ]
   if (recipientPubkey) tags.push(['p', recipientPubkey])
 

@@ -13,6 +13,7 @@
  * Phase 1 ships flat replies (top-level only) — Phase 2 can add
  * nested threading by reading lowercase `e` tags and grouping.
  */
+import { CLIENT_TAG } from '../../../lib/brand.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { useNavigate } from 'react-router-dom'
@@ -168,7 +169,7 @@ export default function CommentsThread({ parsed, sessionUser }) {
         ev.tags.push(['E', parsed.id])
         ev.tags.push(['e', parsed.id])
       }
-      ev.tags.push(['client', 'mynostr'])
+      ev.tags.push(['client', CLIENT_TAG])
       await signWithTimeout(ev)
       await publishToPool(ev)
 

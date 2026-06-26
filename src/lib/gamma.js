@@ -22,6 +22,8 @@
  * fields we don't yet understand.
  */
 
+import { CLIENT_TAG } from './brand.js'
+
 export const KIND_PRODUCT          = 30402
 export const KIND_PRODUCT_INACTIVE = 30403  // NIP-99 draft/inactive — relay-side, not used by alpha
 export const KIND_COLLECTION       = 30405
@@ -397,7 +399,7 @@ export function encodeCollection(form) {
     if (t[0] === 'client') continue
     tags.push(t)
   }
-  tags.push(['client', 'mynostr'])
+  tags.push(['client', CLIENT_TAG])
   return { kind: KIND_COLLECTION, content: form.content || '', tags }
 }
 

@@ -1,3 +1,4 @@
+import { CLIENT_TAG } from '../../../lib/brand.js'
 import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
@@ -92,7 +93,7 @@ export default function DraftDrawer({ user, onLoad, onClose }) {
       // Publish an empty replacement to "delete" the draft
       const ev = new NDKEvent(ndk)
       ev.kind = 31023
-      ev.tags = [['d', dTag], ['client', 'mynostr']]
+      ev.tags = [['d', dTag], ['client', CLIENT_TAG]]
       ev.content = ''
       await signWithTimeout(ev)
       // Draft is replaceable (kind 31023) — the empty replacement must land

@@ -11,6 +11,7 @@
  * tabs. Symptom is "the second tab's edit overwrote the first." Revisit
  * if it becomes a real complaint.
  */
+import { CLIENT_TAG } from './brand.js'
 import { useCallback, useEffect, useState } from 'react'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout, publishToOwnOutbox } from './ndk.js'
@@ -220,7 +221,7 @@ export function useShippingOptions(pubkey) {
       if (target.event?.id) tags.push(['e', target.event.id])
       tags.push(['a', `${KIND_SHIPPING_OPTION}:${me}:${dTag}`])
       tags.push(['k', String(KIND_SHIPPING_OPTION)])
-      tags.push(['client', 'mynostr'])
+      tags.push(['client', CLIENT_TAG])
       const ev = new NDKEvent(ndk, {
         kind: 5,
         content: '',

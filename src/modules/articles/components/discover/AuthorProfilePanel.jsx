@@ -1,3 +1,4 @@
+import { CLIENT_TAG } from '../../../../lib/brand.js'
 import { useState, useEffect } from 'react'
 import { nip19 } from 'nostr-tools'
 import { NDKEvent } from '@nostr-dev-kit/ndk'
@@ -61,7 +62,7 @@ export default function AuthorProfilePanel({ profile, pubkey, user, onAuthorClic
         // Follow — add this pubkey
         newTags = [...baseTags, ['p', pubkey]]
       }
-      newTags.push(['client', 'mynostr'])
+      newTags.push(['client', CLIENT_TAG])
 
       event.tags = newTags
       event.content = ''

@@ -25,6 +25,7 @@
  *   - DO NOT broaden the tag without coordinating the relay's
  *     write-policy plugin (it requires the literal string).
  */
+import { CLIENT_TAG } from './brand.js'
 import { NDKEvent, NDKRelaySet } from '@nostr-dev-kit/ndk'
 import { getNDK, signWithTimeout } from './ndk.js'
 import { withTimeout } from './utils.js'
@@ -54,7 +55,7 @@ export async function publishBugReport(content) {
   const ev = new NDKEvent(ndk)
   ev.kind    = 1
   ev.content = content
-  ev.tags    = [['t', BUG_TAG], ['client', 'mynostr']]
+  ev.tags    = [['t', BUG_TAG], ['client', CLIENT_TAG]]
 
   await signWithTimeout(ev)
 
