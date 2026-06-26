@@ -1,3 +1,4 @@
+import { APP_NAME, SITE_URL, SITE_HOST } from './brand.js'
 import JSZip from 'jszip'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -317,7 +318,7 @@ function contentOpf({ bookId, title, author, description, subjects, lang, date, 
   const creatorTag = author ? `\n    <dc:creator>${esc(author)}</dc:creator>` : ''
   const descTag = description ? `\n    <dc:description>${esc(description)}</dc:description>` : ''
   const subjectTags = subjects.map(s => `\n    <dc:subject>${esc(s)}</dc:subject>`).join('')
-  const publisherTag = '\n    <dc:publisher>MyNostr</dc:publisher>'
+  const publisherTag = `\n    <dc:publisher>${APP_NAME}</dc:publisher>`
   const createdTag = date ? `\n    <meta property="dcterms:created">${esc(date)}</meta>` : ''
   const sourceTag = naddr ? `\n    <dc:source>https://njump.me/${esc(naddr)}</dc:source>` : ''
   const coverMeta = hasCover ? '\n    <meta name="cover" content="cover-image"/>' : ''
@@ -617,7 +618,7 @@ function articleTitlePageXhtml({ title, subtitle, author, npub, dateStr, coverHr
   const metaParts = []
   if (author) metaParts.push(`by ${esc(author)}`)
   if (npub) {
-    const profileUrl = `https://mynostr.app/${encodeURIComponent(npub)}/profile`
+    const profileUrl = `${SITE_URL}/${encodeURIComponent(npub)}/profile`
     metaParts.push(`<a class="article-npub" href="${esc(profileUrl)}">${esc(npub)}</a>`)
   }
   if (dateStr) metaParts.push(esc(dateStr))
@@ -892,7 +893,7 @@ function chapterizedOpf({ bookId, title, subtitle, author, lang, date, modified,
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">urn:uuid:${bookId}</dc:identifier>
     <dc:title>${esc(title)}</dc:title>${creatorMeta}${subtitleMeta}
-    <dc:publisher>MyNostr</dc:publisher>
+    <dc:publisher>${APP_NAME}</dc:publisher>
     <dc:language>${esc(lang)}</dc:language>
     <dc:date>${esc(date)}</dc:date>
     <meta property="dcterms:modified">${esc(modified)}</meta>${coverMeta}
@@ -949,7 +950,7 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
   if (curatedBy?.name) {
     const nameSafe = esc(curatedBy.name)
     if (curatedBy.npub) {
-      const npubLink = `https://mynostr.app/${encodeURIComponent(curatedBy.npub)}/profile`
+      const npubLink = `${SITE_URL}/${encodeURIComponent(curatedBy.npub)}/profile`
       // Curator name + npub on one line, both linked.
       headerLines.push(
         `<p class="credits-curator">Curated by <a href="${esc(npubLink)}">${nameSafe}</a> · ` +
@@ -988,7 +989,7 @@ function buildCreditsXhtml({ title, subtitle, author, curatedBy, curatedDate, ch
   // attribution rather than a feature.
   const footer = `
     <div class="credits-footer">
-      <p>Published by <a href="https://mynostr.app">mynostr.app</a> for free. Consider publishing your own articles or curations on mynostr.app; donate or zap bitcoin to your favorite authors on any Nostr app.</p>
+      <p>Published by <a href="${SITE_URL}">${SITE_HOST}</a> for free. Consider publishing your own articles or curations on ${SITE_HOST}; donate or zap bitcoin to your favorite authors on any Nostr app.</p>
       <p>Nostr (notes and other stuff transmitted by relays) is a decentralized free and open protocol to host and discover information like notes, articles, recipes, events or marketplace items over the internet — publish your own work on any Nostr app for free with no ads, no email, no ID, no paywalls.</p>
     </div>`
 
@@ -1343,7 +1344,7 @@ export function exportChapterizedMd(articles, options = {}) {
   const curatorParts = []
   if (curatedBy?.name) {
     if (curatedBy.npub) {
-      const profileUrl = `https://mynostr.app/${encodeURIComponent(curatedBy.npub)}/profile`
+      const profileUrl = `${SITE_URL}/${encodeURIComponent(curatedBy.npub)}/profile`
       curatorParts.push(`Curated by [${curatedBy.name}](${profileUrl})`)
       curatorParts.push(`\`${curatedBy.npub}\``)
     } else {
@@ -1356,7 +1357,7 @@ export function exportChapterizedMd(articles, options = {}) {
   if (curatorParts.length) {
     header += `\n*${curatorParts.join(' — ')}*\n`
   } else {
-    header += `\n*${count} article${count !== 1 ? 's' : ''} — exported from MyNostr*\n`
+    header += `\n*${count} article${count !== 1 ? 's' : ''} — exported from ${APP_NAME}*\n`
   }
   sections.push(header)
 
@@ -1378,8 +1379,8 @@ export function exportChapterizedMd(articles, options = {}) {
     // when the markdown viewer outputs HTML (GitHub, Obsidian, most
     // others), giving the same copyright-page look as the EPUB.
     sections.push(
-      `<small>Published by [mynostr.app](https://mynostr.app) for free. ` +
-      `Consider publishing your own articles or curations on mynostr.app; donate or zap bitcoin to your favorite authors on any Nostr app.</small>\n\n` +
+      `<small>Published by [${SITE_HOST}](${SITE_URL}) for free. ` +
+      `Consider publishing your own articles or curations on ${SITE_HOST}; donate or zap bitcoin to your favorite authors on any Nostr app.</small>\n\n` +
       `<small>Nostr (notes and other stuff transmitted by relays) is a decentralized free and open protocol to host and discover information like notes, articles, recipes, events or marketplace items over the internet — publish your own work on any Nostr app for free with no ads, no email, no ID, no paywalls.</small>`
     )
   }

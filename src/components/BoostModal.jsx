@@ -1,3 +1,4 @@
+import { SITE_URL } from '../lib/brand.js'
 import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -159,7 +160,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
           recipientNpub: PROJECT_OWNER_NPUB,
           // Hardcoded prod URL — kind 1's published to followers should
           // direct them to the live site, not the env we authored from.
-          pageUrl: 'https://mynostr.app',
+          pageUrl: SITE_URL,
           amountSats: parseInt(amount, 10) || 0,
         })
         if (cancelled) return

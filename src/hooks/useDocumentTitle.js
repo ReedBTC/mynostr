@@ -1,7 +1,8 @@
+import { APP_TITLE, APP_NAME } from '../lib/brand.js'
 import { useEffect } from 'react'
 
-const DEFAULT_TITLE = 'MyNostr — Personal Nostr portal: notes, articles, events'
-const SUFFIX = ' — MyNostr'
+const DEFAULT_TITLE = APP_TITLE
+const SUFFIX = ` — ${APP_NAME}`
 
 /**
  * Sets `document.title` for as long as the calling component is mounted,

@@ -1,4 +1,4 @@
-import { storageKey } from '../lib/brand.js'
+import { storageKey, SITE_URL } from '../lib/brand.js'
 import { useState, useEffect, useRef } from 'react'
 import { NDKNip07Signer, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
@@ -486,7 +486,7 @@ export default function LoginScreen({ onLogin, embedded = false }) {
           relays: NC_RELAYS,
           secret,
           name: 'MyNostr',
-          url: 'https://mynostr.app',
+          url: SITE_URL,
         })
         savePendingNip46({ clientSecret, nostrConnectUri })
       }

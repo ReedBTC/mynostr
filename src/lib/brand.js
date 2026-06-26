@@ -28,3 +28,6 @@ export const storageKey = (suffix) => `${STORAGE_PREFIX}${suffix}`
 // Canonical web origin, no trailing slash. Used for shareable links, epub
 // attribution, and the boostagram page URL.
 export const SITE_URL = 'https://mynostr.app'
+
+// Bare host (no scheme) for display in prose/link text.
+export const SITE_HOST = 'mynostr.app'
