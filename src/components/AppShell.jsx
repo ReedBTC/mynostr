@@ -1,3 +1,4 @@
+import { APP_NAME, LOGO_SRC } from '../lib/brand.js'
 import { useState, useEffect } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
@@ -89,15 +90,15 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
               as the home link; no separate wordmark. Help for articles is on
               the module itself, not here. */}
           <div className="shrink-0 px-3 pt-3 pb-3 flex flex-col gap-2 border-b border-neutral-800">
-            <Link to="/" aria-label="MyNostr home" className="block">
-              <img src="/mynostr.png" alt="MyNostr" className="w-full h-auto" />
+            <Link to="/" aria-label={`${APP_NAME} home`} className="block">
+              <img src={LOGO_SRC} alt={APP_NAME} className="w-full h-auto" />
             </Link>
             <button
               onClick={() => setBoostOpen(true)}
               className="text-xs text-amber-500 hover:text-amber-300 transition-colors px-2 py-1.5 rounded border border-amber-900 hover:border-amber-700"
-              aria-label="Boost MyNostr"
+              aria-label={`Boost ${APP_NAME}`}
             >
-              Boost MyNostr
+              Boost {APP_NAME}
             </button>
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -272,7 +273,7 @@ export default function AppShell({ user, sessionUser, activeModule, onModuleChan
                     <span>{activeMod.label}</span>
                   </>
                 ) : (
-                  <span>MyNostr</span>
+                  <span>{APP_NAME}</span>
                 )}
               </span>
             </div>

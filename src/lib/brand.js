@@ -31,3 +31,6 @@ export const SITE_URL = 'https://mynostr.app'
 
 // Bare host (no scheme) for display in prose/link text.
 export const SITE_HOST = 'mynostr.app'
+
+// Wordmark/logo asset in public/. Swap the file + this path to rebrand.
+export const LOGO_SRC = '/mynostr.png'

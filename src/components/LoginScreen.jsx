@@ -1,4 +1,4 @@
-import { storageKey, SITE_URL } from '../lib/brand.js'
+import { storageKey, SITE_URL, APP_NAME, LOGO_SRC } from '../lib/brand.js'
 import { useState, useEffect, useRef } from 'react'
 import { NDKNip07Signer, NDKPrivateKeySigner } from '@nostr-dev-kit/ndk'
 import { nip19 } from 'nostr-tools'
@@ -485,7 +485,7 @@ export default function LoginScreen({ onLogin, embedded = false }) {
           clientPubkey,
           relays: NC_RELAYS,
           secret,
-          name: 'MyNostr',
+          name: APP_NAME,
           url: SITE_URL,
         })
         savePendingNip46({ clientSecret, nostrConnectUri })
@@ -1078,7 +1078,7 @@ export default function LoginScreen({ onLogin, embedded = false }) {
 
         {/* Logo */}
         <div className="text-center">
-          <img src="/mynostr.png" alt="MyNostr" className="h-16 mx-auto mb-2" />
+          <img src={LOGO_SRC} alt={APP_NAME} className="h-16 mx-auto mb-2" />
           <p className="mt-2 text-neutral-500 text-sm">Your personal Nostr portal</p>
         </div>
 

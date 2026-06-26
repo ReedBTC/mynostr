@@ -1,3 +1,4 @@
+import { APP_NAME } from '../lib/brand.js'
 import { useNavigate } from 'react-router-dom'
 import { MODULES } from '../App.jsx'
 import { truncateNpub, isSafeUrl } from '../lib/utils.js'
@@ -106,7 +107,7 @@ export default function MobileNavDrawer({
             />
           ) : (
             <div className="flex items-center gap-3 min-w-0">
-              <p className="text-sm text-neutral-200 truncate font-semibold">MyNostr</p>
+              <p className="text-sm text-neutral-200 truncate font-semibold">{APP_NAME}</p>
             </div>
           )}
           <button
@@ -221,7 +222,7 @@ export default function MobileNavDrawer({
             className="w-full flex items-center gap-3 px-3 py-2.5 text-left text-sm text-amber-500 hover:bg-neutral-900 rounded transition-colors"
           >
             <span>⚡</span>
-            <span>Boost MyNostr</span>
+            <span>Boost {APP_NAME}</span>
           </button>
           <button
             onClick={() => { onReportBug?.(); onClose() }}

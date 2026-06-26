@@ -1,4 +1,4 @@
-import { SITE_URL } from '../lib/brand.js'
+import { SITE_URL, APP_NAME } from '../lib/brand.js'
 import { useState, useEffect, useRef } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import {
@@ -364,7 +364,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
             {!invoice && !nwcSending && (
               <>
                 <p className="text-xs text-neutral-500">
-                  Support MyNostr with a lightning payment.{' '}
+                  Support {APP_NAME} with a lightning payment.{' '}
                   {recipientLud16 && <span className="text-neutral-600 font-mono">{recipientLud16}</span>}
                 </p>
 
@@ -512,7 +512,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
                     Sending boost…
                   </p>
                   <p className="text-xs text-neutral-500 mt-1">
-                    {parseInt(amount, 10).toLocaleString()} sats to MyNostr
+                    {parseInt(amount, 10).toLocaleString()} sats to {APP_NAME}
                   </p>
                 </div>
               </div>
@@ -568,7 +568,7 @@ export default function BoostModal({ user, onClose, readOnly }) {
                     {parseInt(amount, 10).toLocaleString()} sats received!
                   </p>
                   <p className="text-xs text-neutral-500 mt-1">
-                    Thanks for the boost ⚡ It helps keep MyNostr going.
+                    Thanks for the boost ⚡ It helps keep {APP_NAME} going.
                   </p>
                 </div>
                 {/* Share-to-feed result. Only relevant when the donor

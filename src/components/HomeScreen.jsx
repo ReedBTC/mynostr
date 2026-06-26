@@ -12,6 +12,7 @@
  * of navigating — a user can't visit /notes, /articles, etc. without
  * first picking an npub.
  */
+import { APP_NAME, APP_TAGLINE, LOGO_SRC } from '../lib/brand.js'
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { nip19 } from 'nostr-tools'
@@ -147,8 +148,8 @@ export default function HomeScreen({ searchInputRef, sessionUser, onLogout }) {
             a brand-name H1 to index. The tagline below it is now an H2
             so the heading hierarchy reads brand → tagline → body. */}
         <div className="flex flex-col items-center text-center">
-          <h1 className="sr-only">MyNostr — Personal Nostr portal</h1>
-          <img src="/mynostr.png" alt="MyNostr" className="w-full mb-4" />
+          <h1 className="sr-only">{APP_NAME} — {APP_TAGLINE}</h1>
+          <img src={LOGO_SRC} alt={APP_NAME} className="w-full mb-4" />
           <h2 className="text-base sm:text-lg text-neutral-200 font-medium max-w-md">
             Built for creators and curators
           </h2>

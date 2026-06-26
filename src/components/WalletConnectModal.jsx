@@ -1,3 +1,4 @@
+import { APP_NAME } from '../lib/brand.js'
 import { useState, useEffect } from 'react'
 import * as nwc from '../lib/nwc.js'
 import * as webln from '../lib/webln.js'
@@ -112,9 +113,9 @@ export default function WalletConnectModal({ user, onClose, onConnected }) {
 
           <div className="px-4 py-5 space-y-4">
             <p className="text-xs text-neutral-400 leading-snug">
-              Connect a Lightning wallet so MyNostr can send zaps directly —
+              Connect a Lightning wallet so {APP_NAME} can send zaps directly —
               no copy-paste invoices. Both options below pay through your own
-              wallet; MyNostr never holds funds.
+              wallet; {APP_NAME} never holds funds.
             </p>
 
             {weblnAvailable && (
