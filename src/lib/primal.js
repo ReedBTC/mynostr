@@ -40,6 +40,15 @@ const inflight = new Map() // key → Promise<events[]>
 
 // ─── Connection management ────────────────────────────────────────────────────
 
+// Ceiling on the WebSocket handshake itself. A socket stuck in CONNECTING
+// (TCP/TLS handshake accepted, upgrade never answered) fires neither
+// onopen nor onerror for minutes in Chrome/Firefox. Without this cap every
+// query() awaiting ensureConnected() would hang before its own per-request
+// timeout ever starts — observed 2026-08-30 when cache1.primal.net answered
+// HTTPS but stalled the WS upgrade, which froze the note composer's JSON
+// import on any content containing a nostr:npub mention.
+const CONNECT_TIMEOUT_MS = 8000
+
 function ensureConnected() {
   if (ws?.readyState === WebSocket.OPEN) return Promise.resolve()
   if (connPromise) return connPromise
@@ -47,13 +56,26 @@ function ensureConnected() {
   connPromise = new Promise((resolve, reject) => {
     const socket = new WebSocket(PRIMAL_WS_URL)
 
+    const connectTimer = setTimeout(() => {
+      if (socket.readyState === WebSocket.OPEN) return
+      connPromise = null
+      ws = null
+      // Drop the handlers first so the close() below can't double-reject
+      // via onerror/onclose, then abort the stalled handshake.
+      socket.onopen = socket.onerror = socket.onclose = socket.onmessage = null
+      try { socket.close() } catch {}
+      reject(new Error('Primal WebSocket connect timed out'))
+    }, CONNECT_TIMEOUT_MS)
+
     socket.onopen = () => {
+      clearTimeout(connectTimer)
       ws = socket
       connPromise = null
       resolve()
     }
 
     socket.onerror = () => {
+      clearTimeout(connectTimer)
       connPromise = null
       ws = null
       reject(new Error('Primal WebSocket failed to connect'))
@@ -122,7 +144,11 @@ async function query(op, params, timeoutMs = 8000) {
   })()
 
   inflight.set(key, promise)
-  promise.finally(() => inflight.delete(key))
+  // Use a two-armed then rather than .finally(): the derived promise
+  // from .finally() re-throws the rejection with nobody listening, which
+  // surfaces every timeout as an unhandled-rejection console error.
+  const release = () => inflight.delete(key)
+  promise.then(release, release)
   return promise
 }
 

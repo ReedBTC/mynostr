@@ -16,6 +16,7 @@
  */
 import { nip19 } from 'nostr-tools'
 import { fetchProfiles } from './primal.js'
+import { withTimeout } from './utils.js'
 
 const DEFAULT_SNAPSHOT = {
   content: '',
@@ -79,7 +80,9 @@ export async function buildDraftSnapshotFromEvent(event, userPubkey) {
     }
     if (pubkeys.length > 0) {
       try {
-        const profiles = await fetchProfiles([...new Set(pubkeys)])
+        // Profile names are cosmetic (the npub short-form is the fallback),
+        // so never let a slow or stalled Primal hold the import hostage.
+        const profiles = await withTimeout(fetchProfiles([...new Set(pubkeys)]), 4000)
         for (const { fullMatch, pubkey } of matchMap) {
           const p = profiles.get(pubkey)
           const name = p?.display_name || p?.name || nip19.npubEncode(pubkey).slice(0, 12)

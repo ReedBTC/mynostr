@@ -190,7 +190,20 @@ export function useViewedUser(npubParam, sessionUser) {
       let user
       if (sessionHit) {
         if (profile) sessionHit.profile = profile
-        user = { ...sessionHit, profile: sessionHit.profile || {} }
+        // sessionHit is usually an NDKUser instance, whose `pubkey` and
+        // `npub` are prototype getters over a private `_pubkey` field.
+        // Object spread copies own enumerable props only, so without the
+        // explicit identity fields below the viewed user would come out
+        // pubkey-less and the whole owner page would collapse to a
+        // "Viewing" shell. Only reachable for accounts with no kind 0
+        // (a hydrated profile short-circuits above), which is exactly
+        // the brand-new-user case.
+        user = {
+          ...sessionHit,
+          pubkey: sessionHit.pubkey,
+          npub: sessionHit.npub,
+          profile: sessionHit.profile || {},
+        }
       } else {
         user = {
           pubkey,

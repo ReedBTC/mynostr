@@ -116,6 +116,10 @@ export default function NoteComposer({
   const [previewMode, setPreviewMode] = useState(false)
   const textareaRef = useRef(null)
   const [uploadError, setUploadError] = useState(null)
+  // True while a JSON upload is being parsed + hydrated (the hydration
+  // step can fetch mention profiles, so it isn't instant). Drives the
+  // Upload button's busy state so a slow import doesn't look like a no-op.
+  const [uploadLoading, setUploadLoading] = useState(false)
   const [imageUploading, setImageUploading] = useState(false)
   const [imageError, setImageError] = useState('')
   const imageInputRef = useRef(null)
@@ -279,17 +283,18 @@ export default function NoteComposer({
       return
     }
 
-    const text = await file.text()
-    let json
+    setUploadLoading(true)
     try {
-      json = JSON.parse(text)
-    } catch {
-      // V8 includes the first ~10 chars of the input in the SyntaxError
-      // message — keep file contents out of the UI.
-      setUploadError('Invalid JSON file.')
-      return
-    }
-    try {
+      const text = await file.text()
+      let json
+      try {
+        json = JSON.parse(text)
+      } catch {
+        // V8 includes the first ~10 chars of the input in the SyntaxError
+        // message — keep file contents out of the UI.
+        setUploadError('Invalid JSON file.')
+        return
+      }
       const { valid, errors, event } = validateKind1Event(json)
 
       if (!valid) {
@@ -315,6 +320,8 @@ export default function NoteComposer({
       // loadEventIntoEditor / nevent encode never include file content
       // in their errors, but stay defensive — generic message.
       setUploadError('Could not load event from file.')
+    } finally {
+      setUploadLoading(false)
     }
   }, [loadEventIntoEditor])
 
@@ -1199,6 +1206,7 @@ export default function NoteComposer({
             <ImportExportDisclosure
               acceptedFileTypes=".json,application/json"
               onImportFile={(file) => handleFileUpload(file)}
+              importLoading={uploadLoading}
               importLabel="Upload JSON"
               importTitle="Load a kind 1 event from a JSON file"
               pasteIdValue={noteIdInput}
